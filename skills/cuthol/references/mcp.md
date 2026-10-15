@@ -1,0 +1,60 @@
+# Cuthol MCP server
+
+## Starting it
+
+The server speaks MCP over stdio. It is the same program as the CLI:
+
+```bash
+cuthol mcp                      # or: cuthol-mcp
+cuthol mcp --dir /path/to/project   # preselect a project
+```
+
+Client configuration (JSON used by most MCP clients):
+
+```json
+{
+  "mcpServers": {
+    "cuthol": {
+      "command": "node",
+      "args": ["/absolute/path/to/cuthol/dist/cli.js", "mcp"],
+      "env": {
+        "DEEPGRAM_API_KEY": "…",
+        "ELEVENLABS_API_KEY": "…"
+      }
+    }
+  }
+}
+```
+
+Requirements on the machine: Node.js ≥ 22.5, `ffmpeg`/`ffprobe` on PATH, and a Chrome that HyperFrames can launch (for overlays). API keys are only needed for transcription and voiceover; they can also live in a `.env` file inside the project folder.
+
+Environment switches:
+- **MCP server**: `CUTHOL_WORKSPACE` (default project), `CUTHOL_MCP_PROGRESSIVE=1` (start with core tools only; unlock with `discover_capabilities`), `CUTHOL_MCP_STRUCTURED=1` (also send the full JSON as `structuredContent`), `CUTHOL_MCP_TIMEOUT_MS`.
+- **User-level shared ASR/TTS cache**: By default, transcripts (`transcript_cache`) and synthesized voiceover audio/alignments (`tts_cache`, `blobs/`) are also cached across projects by SHA-256 in `~/.cuthol/cache` (`ledger.sqlite` + `blobs/`), so re-ingesting the same file or synthesizing the same voiceover in a new project hits the cache without cloud API calls.
+  - Redirect location: set `CUTHOL_CACHE_DIR=/path/to/cache` (or `CUTHOL_SHARED_CACHE_DIR` / `CUTHOL_USER_CACHE_DIR` / `CUTHOL_CACHE` / `CUTHOL_SHARED_CACHE`, either a folder or a `.sqlite`/`.db` path).
+  - Disable shared cache (keep only per-project `.cuthol/ledger.sqlite`): set `CUTHOL_CACHE_DIR=0` (or `false`, `off`, `none`) or `CUTHOL_DISABLE_SHARED_CACHE=1` (`CUTHOL_NO_SHARED_CACHE=1`, `CUTHOL_DISABLE_CACHE=1`, `CUTHOL_NO_CACHE=1`).
+- **Stage-scaled typography defaults**: Vertical `9:16` (`1080x1920`) projects use larger default typography for mobile legibility — `76 px` for titles (`max_width=70`%) and `64 px` for captions (`max_width=70`%, `max_words=4`, `max_chars=26`), compared to `56 px` titles (`max_width=76`%) and `42 px` auto-captions (`max_width=80`%, `max_words=5`, `max_chars=38`; `44 px` / `76%` for manual caption cues) on `16:9` (`1920x1080`).
+
+## Tools
+
+13 tools: `workspace`, `library`, `brief`, `spine`, `lane`, `composition`, `speech`, `mix`, `cue`, `verify`, `monitor`, `render`, `guide`. Multi-action tools take an `action` argument; every property description starts with the actions that use it, e.g. `[split] Split points …`. Unknown arguments are rejected with the valid list and the closest match — read the message instead of guessing again.
+
+## Conventions
+
+- **Project selection**: `workspace.init(dir=…)` or `workspace.open(dir=…)` sets the session project; afterwards `dir` can be omitted. Passing `dir` to any call switches to that folder for that call.
+- **Result format** (text, real example):
+  ```
+  OK spine.transition · r15 · 14.00s · 2 sp · 11 cue (1 comp, 8 cap)
+  Changed: spine.transition(sp_01): ~sp_01 (transition:fade 400ms)
+  Undo (expect_rev 15): ESKİ HALİNE DÖNER: sp_01 (transition:fade 400ms)
+  Verify: 0 error(s), 0 warning(s)
+  ```
+  The first line is always status · revision · duration · counts (sp = spine clips, comp = compositions, cap = captions). `FAILED` lines carry `[CODE] what | Öneri: fix`. `WARN [CODE] …` lines follow. `mix.normalize` adds a `Loudness:` line showing `measured_mix_before_lufs → achieved_lufs` and `target_reached=true|false`. `speech.cleanup` prints a compact `Candidates` table listing every applied, trimmed, split and rejected candidate (paginate with `cursor` / `limit` if needed) plus a separate `Review candidates` group (`cf_01`…) for contextual fillers (`yani`, `şey`, `hani`, `acaba`) that can be cut in one call via `cut_candidates`. `spine.reframe` prints a per-clip `Reframe summary` (confidence, pan range, stationary plateau count) and omits raw `focal_points` / `envelope_points` arrays from `Result:` so responses never truncate mid-JSON. `Result:` holds the remaining data as compact JSON (edits omit the echoed objects; `decision_trace` is summarized unless `dry_run=true`). Calls that did not change the edit say `No change to the edit`. Dry runs start with `DRY-RUN … nothing changed` and show `Would change:` for `workspace.undo/redo`, `speech.cleanup` and `spine.reframe`.
+  Undo/edit vocabulary in summaries: `SİLİNİR` = will be deleted, `ESKİ HALİNE DÖNER` = reverts to its previous state.
+- **Images**: `monitor.frame`, `monitor.sheet`, `monitor.timeline`, `composition.preview/check` (and `library.waveform` with `png`) return the picture as an image block (JPEG, max 1600 px wide) next to the text — including when `composition.preview/check` reports `FAILED` (e.g. lint or `G505`), so you can still inspect the contact sheet.
+- **Long calls** (`render`, `monitor`, `composition.preview`, `speech.transcribe/synthesize`) send `notifications/progress` if the client supplied a progress token, and can be cancelled. Calls that change the same project run one at a time.
+- **Loop guard**: the third identical failing call in a row is refused without running.
+- **Outside changes**: if the project was modified by something else (another agent, the CLI) since your last call, the result starts with `NOTE the project changed outside this session` — re-read with `brief`.
+- **Manual**: `guide(topic)` returns these documents: `overview`, `editing`, `speech_mix`, `compositions`, `verify_monitor`, `mcp`.
+
+Composition HTML can be edited with your own file tools (`<project>/<comp_dir>/index.html`) or, if you have none, with `composition.read(comp_dir)` / `composition.write(comp_dir, content, file?)`. `write` only accepts .html/.css/.js/.json/.svg files inside the composition folder and flags obvious contract mistakes.

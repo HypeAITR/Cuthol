@@ -1,0 +1,17 @@
+# Environment and secrets
+.env
+.env.*
+
+# Dependencies and build artifacts
+node_modules/
+dist/
+coverage/
+
+# Cuthol runtime workspace state and caches
+.cuthol/
+test-workspace/
+*.log
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm

@@ -1,0 +1,115 @@
+# Compositions: code your own motion graphics
+
+A composition is a folder with an `index.html` that HyperFrames renders frame by frame in a headless
+browser. Cuthol mounts it on a lane (normally `ln_motion`) for a time window, renders it with real
+transparency and composites it over the edit. Inside the page, `window.__cuthol` (`C`) gives you the
+edit's words, beats, audio energy and cuts **in the composition's own seconds** (0 = cue start).
+
+## Workflow
+
+1. `composition.scaffold(comp_dir="compositions/intro", preset="blank", duration="4.5s")`
+   → creates `index.html`, `assets/gsap.min.js`, `assets/cuthol-runtime.js`, `assets/cuthol-data.js`.
+   Other presets (`counter`, `beat_cards`, `audio_glow`, `cut_phases`, `lower_third`, `title_card`, `stat_callout`, `badge_overlay`) are examples you can read and adapt.
+2. Write your animation into `index.html` (template below) — with your file tools, or `composition.write(comp_dir, content)` over MCP.
+3. `lane.add_composition(comp_dir="compositions/intro", at="1.5s", duration="4.5s")` (or `anchor="sp_02"`). The duration must match `data-duration` in the HTML.
+4. `composition.preview(cue="cue_05", at=["0.3","1.2","3.0"])` → contact sheet image: checkerboard (true alpha) | over the real footage | alpha mask, plus WCAG contrast findings on the real background.
+5. `monitor.frame(at=<timeline time>)` to see it in context with captions/titles, then render.
+
+After any later edit (trim, cleanup, new music…), Cuthol rewrites `assets/cuthol-data.js` automatically if the data inside this composition's window changed. Your HTML does not change, so word-locked and beat-locked animation stays in sync.
+
+## Template (tested)
+
+```html
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <script src="assets/gsap.min.js"></script>
+    <script src="assets/cuthol-data.js"></script>
+    <script src="assets/cuthol-runtime.js"></script>
+    <style>
+      html, body { margin: 0; background: transparent; }
+      #root { position: relative; width: 1920px; height: 1080px; overflow: hidden; background: transparent; }
+      .clip { position: absolute; inset: 0; }
+      #card { position: absolute; left: 1180px; top: 150px; padding: 36px 44px; border-radius: 28px;
+              background: rgba(10,14,22,.78); box-shadow: 0 30px 80px rgba(0,0,0,.65); color: #fff; opacity: 0;
+              font: 900 64px "Segoe UI", system-ui, sans-serif; }
+      #count { font-size: 120px; color: #22C55E; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0"
+         data-width="1920" data-height="1080" data-fps="30" data-duration="4.5">
+      <section id="slot" class="clip" data-start="0" data-duration="4.5">
+        <div id="card"><div>MOONSTAR</div><div id="count">0</div></div>
+      </section>
+    </div>
+    <script>
+      const C = window.__cuthol;
+      const tl = gsap.timeline({ paused: true });
+
+      // Appear exactly when the word is spoken
+      const brand = C.word("moonstar", { fallback: 0.3 });
+      tl.fromTo("#card", { opacity: 0, y: 40 }, { opacity: 1, y: 0, duration: 0.35, ease: "power3.out" }, brand.start);
+
+      // Count up so that it lands on the spoken number
+      const num = C.word("doksan", { fallback: 1.2 });
+      C.value(tl, { from: 0, to: 990, at: num.start - 0.6, duration: 0.8 },
+        (v) => { document.getElementById("count").textContent = Math.round(v); });
+
+      // Continuous audio-reactive motion (seek-safe)
+      C.drive(tl, (t) => {
+        const low = C.audio("low", t, 0.05);
+        gsap.set("#count", { scale: 1 + 0.08 * low });   // gsap.set keeps other GSAP transforms intact
+      });
+
+      tl.set({}, {}, C.duration);          // timeline must span the whole composition
+      window.__timelines["main"] = tl;     // key = data-composition-id
+    </script>
+  </body>
+</html>
+```
+
+Use the stage size from `brief` (16:9 → 1920x1080, 9:16 → 1080x1920) for `#root` and the `data-width/height`. `C.safe` gives the title-safe box in px.
+
+## Hard rules (the render is a frame-by-frame seek, not playback)
+
+- One GSAP timeline, created `paused: true`, registered in `window.__timelines[<data-composition-id>]`, extended to `C.duration`.
+- Everything visible must be a function of timeline time. No `setTimeout`, `setInterval`, `requestAnimationFrame`, `Date.now()`, unseeded `Math.random()`, CSS transitions, or `onUpdate`-only logic — `tl.seek()` suppresses callbacks. For per-frame logic use `C.drive`; for numbers use `C.value`.
+- **`gsap.fromTo` / `immediateRender` trap at `t = 0`:** Because GSAP defaults `immediateRender: true` on `fromTo`/`from` tweens, a later tween on the same element (or a `fromTo` that only animates `scale`/`y` while CSS leaves `opacity: 1`) applies its `from` values immediately when the timeline is built — making elements appear at `t = 0` before their cue time or overwriting an earlier tween's initial state during seek-based rendering. **Fix:** start elements hidden in CSS (`opacity: 0`) or with `tl.set(el, { opacity: 0 }, 0)`, pass `immediateRender: false` on later chained `fromTo`/`from` tweens on the same target, or use `tl.set(el, { opacity: 0, y: 40 }, 0)` followed by `tl.to(el, { opacity: 1, y: 0, duration: 0.35 }, startTime)`.
+- Keep `html, body, #root` transparent. Don't paint a full-frame background unless you want to hide the video (G505 warns about an opaque overlay).
+- No network: no CDN scripts, web fonts or remote images. Put files in `assets/` and reference them relatively. System fonts are safe.
+- Never tween `visibility`, `display` or `autoAlpha` on `.clip` elements.
+- `hyperframes lint` may warn `nested_structure_needs_subcomposition`; that only affects HyperFrames' own editor and can be ignored.
+
+## `window.__cuthol` API
+
+All times are seconds relative to the composition start (`0 … C.duration`).
+
+| Call | Returns / does |
+|---|---|
+| `C.word(query, {nth, after, pre, post, minDur, fallback})` | `{found, start, end, duration, text, clipped}` for a word or phrase spoken inside this window. Matching ignores case and Turkish diacritics (`çekiliş` = `cekilis`). Not found → `found:false`, `start = fallback ?? 0`, and a message in `C.warnings`. `clipped` = word only partly inside the window. Spell numbers as spoken words (`"doksan"`, not `"90"`). |
+| `C.beats({from, to, strong, threshold, div, grid})` | Beat times (`number[]`) inside this window, from the music on `ln_bgm` (falls back to spine audio when there is no music). By default (`grid` omitted or `false`) returns detected spectral-flux **onset** times (`beats.times`; `strong:true` filters by `strength >= threshold`, default `0.7`, or downbeats). Pass `grid:true` to get the regular tempo/phase **beat grid** (`beats.grid`; `strong:true` returns bar downbeats every 4 beats). `div:2` subdivides into half-beats. |
+| `C.beatGrid({from, to, strong, div})` | Shorthand for `C.beats({ ...opts, grid: true })` — returns the regular tempo/phase beat grid (`number[]`) inside this window (`strong:true` = bar downbeats, `div:2` = half-beats). |
+| `C.audio(band, t, smoothSec?)` | Energy of the **mixed** audio (spine + voiceover + music) at `t`, band `"low"` (20–250 Hz), `"mid"` (250–4000 Hz, voice) or `"high"`. Each band is normalized over this window: ~0.05 quiet … 1.0 loudest moment; 0 = silence. |
+| `C.cuts()` | `{cuts: number[], segments: [{t0, t1, index, duration, clipId}]}` — spine cuts inside the window and the shot segments between them. |
+| `C.drive(tl, fn, {start, end})` | Calls `fn(t)` for every rendered frame between `start` and `end` (default whole composition). |
+| `C.value(tl, {from, to, at, duration, ease}, fn)` | Tweens a number and calls `fn(value)` each frame. |
+| `C.duration`, `C.fps`, `C.width`, `C.height`, `C.bpm` | Composition facts. |
+| `C.safe` | `{x, y, w, h, cx, cy, norm}` title-safe area in px. |
+| `C.props` | Props passed with `lane.add_composition(props={...})`. |
+| `C.warnings` | Lookups that failed (e.g. word not found). Check during development. |
+| `C.data` | Raw data (`words`, `beats`, `audio`, `cuts`, …) if you need something custom. |
+
+Word data covers voiceover cues and transcribed spine clips; transcribe first (`speech.transcribe`). Beats are analyzed automatically.
+
+## Overlay modes
+
+- `mode="overlay_alpha"` (default): rendered with a real alpha channel (ProRes 4444) and blended in 10-bit. Shadows, glows, anti-aliasing and green colours survive. Use this for almost everything.
+- `mode="scene_host"`: only when your CSS must read the video underneath — `backdrop-filter: blur()` (frosted glass) or `mix-blend-mode` other than normal. Cuthol embeds the underlying footage inside the page for that window. In overlay mode such CSS produces G406.
+
+## Debugging an overlay
+
+- Nothing visible in `composition.preview`? Check the alpha-mask column. Fully black = the page drew nothing: usually a script error (missing `assets/gsap.min.js`, a typo) or `opacity:0` never animated. Open the HTML in a browser or run `npx hyperframes lint <comp_dir>`.
+- Element appears at the wrong time: print `brand.found` / `brand.start` into a temporary debug `<div>` and preview; remember times are composition-local.
+- Wrong place: compositions use stage pixels; `monitor.frame` draws the measured overlay box (from its alpha) for comparison.

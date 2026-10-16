@@ -26,6 +26,7 @@ import { computeSequenceDurationMs, resolveCueStartMs } from "../core/timeline.j
 import {
   AudioProcessingChain,
   CutholSequence,
+  getCuePlaybackRate,
   LaneCue,
   ParameterEnvelope,
   SpineClip,
@@ -53,6 +54,7 @@ import {
   getCutholRuntimeJsSource,
   normTurkish,
 } from "./cuthol_runtime.js";
+import { resolveExtension } from "../extensions/manager.js";
 
 let isAutoAnalyzingInBridge = false;
 
@@ -268,8 +270,9 @@ export function exportBridgeDataForCue(
               we = tw.sequence_end_ms + cueShiftMs;
             } else {
               const srcIn = otherCue.source_in_ms ?? 0;
-              ws = cStart + Math.max(0, tw.source_start_ms - srcIn);
-              we = cStart + Math.min(otherCue.duration_ms, tw.source_end_ms - srcIn);
+              const cueRate = getCuePlaybackRate(otherCue);
+              ws = cStart + Math.max(0, (tw.source_start_ms - srcIn) / cueRate);
+              we = cStart + Math.min(otherCue.duration_ms, (tw.source_end_ms - srcIn) / cueRate);
             }
             if (we > ws && overlapsWindow(ws, we)) {
               rawSeqWords.push({
@@ -286,11 +289,13 @@ export function exportBridgeDataForCue(
             const doc = ledger.getLatestTranscript<TranscriptDocument>(asset.digest_sha256);
             if (doc?.words?.length) {
               const srcIn = otherCue.source_in_ms ?? 0;
-              const srcOut = otherCue.source_out_ms ?? srcIn + otherCue.duration_ms;
+              const cueRate = getCuePlaybackRate(otherCue);
+              const srcOut =
+                otherCue.source_out_ms ?? srcIn + Math.round(otherCue.duration_ms * cueRate);
               for (const w of doc.words) {
                 if (w.source_end_ms <= srcIn || w.source_start_ms >= srcOut) continue;
-                const ws = cStart + Math.max(0, w.source_start_ms - srcIn);
-                const we = cStart + Math.min(otherCue.duration_ms, w.source_end_ms - srcIn);
+                const ws = cStart + Math.max(0, (w.source_start_ms - srcIn) / cueRate);
+                const we = cStart + Math.min(otherCue.duration_ms, (w.source_end_ms - srcIn) / cueRate);
                 if (overlapsWindow(ws, we)) {
                   rawSeqWords.push({
                     seqStartMs: ws,
@@ -899,8 +904,9 @@ export function exportBridgeDataForCue(
               we = tw.sequence_end_ms + cueShiftMs;
             } else {
               const srcIn = otherCue.source_in_ms ?? 0;
-              ws = cStart + Math.max(0, tw.source_start_ms - srcIn);
-              we = cStart + Math.min(otherCue.duration_ms, tw.source_end_ms - srcIn);
+              const cueRate = getCuePlaybackRate(otherCue);
+              ws = cStart + Math.max(0, (tw.source_start_ms - srcIn) / cueRate);
+              we = cStart + Math.min(otherCue.duration_ms, (tw.source_end_ms - srcIn) / cueRate);
             }
             if (we > ws && we > 0 && ws < seqDurationMs) {
               globalRawWords.push({ seqStartMs: ws, seqEndMs: we, text: tw.word });
@@ -912,11 +918,13 @@ export function exportBridgeDataForCue(
             const doc = ledger.getLatestTranscript<TranscriptDocument>(asset.digest_sha256);
             if (doc?.words?.length) {
               const srcIn = otherCue.source_in_ms ?? 0;
-              const srcOut = otherCue.source_out_ms ?? srcIn + otherCue.duration_ms;
+              const cueRate = getCuePlaybackRate(otherCue);
+              const srcOut =
+                otherCue.source_out_ms ?? srcIn + Math.round(otherCue.duration_ms * cueRate);
               for (const w of doc.words) {
                 if (w.source_end_ms <= srcIn || w.source_start_ms >= srcOut) continue;
-                const ws = cStart + Math.max(0, w.source_start_ms - srcIn);
-                const we = cStart + Math.min(otherCue.duration_ms, w.source_end_ms - srcIn);
+                const ws = cStart + Math.max(0, (w.source_start_ms - srcIn) / cueRate);
+                const we = cStart + Math.min(otherCue.duration_ms, (w.source_end_ms - srcIn) / cueRate);
                 if (we > ws && we > 0 && ws < seqDurationMs) {
                   globalRawWords.push({ seqStartMs: ws, seqEndMs: we, text: w.word });
                 }
@@ -1357,7 +1365,7 @@ export function syncCompositionBridgeFiles(
     const runtimeIdx = runtimeMatch ? runtimeMatch.index : -1;
     let nextHtml = html;
 
-    if (dataIdx === -1 && runtimeIdx === -1) {
+    if ( dataIdx === -1 && runtimeIdx === -1) {
       if (/<template[\s>]/i.test(html) && /<script[\s>]/i.test(html)) {
         nextHtml = html.replace(/<script[\s>]/i, `${dataTag}\n      ${runtimeTag}\n      $&`);
       } else if (/<\/head>/i.test(html)) {
@@ -1375,6 +1383,98 @@ export function syncCompositionBridgeFiles(
         ""
       );
       nextHtml = withoutRuntime.replace(exactDataRe, `$&\n    ${runtimeTag}`);
+    }
+
+    // 4b. Sync enabled project extensions (composition helpers & asset packs).
+    // If no extensions are enabled and no stale cuthol-ext-* tags exist, `nextHtml` is untouched.
+    const activeHelperNames: string[] = [];
+    const enabledRefs = seq.extensions ?? [];
+    if (enabledRefs.length > 0) {
+      for (const extRef of enabledRefs) {
+        try {
+          const ext = resolveExtension(extRef.name, paths.rootDir);
+          if (ext.assetsRelDir) {
+            const srcAssetsDir = path.join(ext.dir, ext.assetsRelDir);
+            const destAssetsDir = path.join(assetsDir, "ext", ext.name);
+            const syncDirConditionally = (sDir: string, dDir: string): void => {
+              fs.mkdirSync(dDir, { recursive: true });
+              for (const ent of fs.readdirSync(sDir, { withFileTypes: true })) {
+                if (ent.name.startsWith(".tmp") || ent.name === ".DS_Store") continue;
+                const sFull = path.join(sDir, ent.name);
+                const dFull = path.join(dDir, ent.name);
+                if (ent.isDirectory()) {
+                  syncDirConditionally(sFull, dFull);
+                } else if (ent.isFile()) {
+                  const sBuf = fs.readFileSync(sFull);
+                  const dExists = fs.existsSync(dFull);
+                  if (!dExists || Buffer.compare(sBuf, fs.readFileSync(dFull)) !== 0) {
+                    fs.writeFileSync(dFull, sBuf);
+                    updated = true;
+                  }
+                }
+              }
+            };
+            if (fs.existsSync(srcAssetsDir)) {
+              syncDirConditionally(srcAssetsDir, destAssetsDir);
+            }
+          }
+          if (ext.helperRelPath) {
+            const srcHelperPath = path.join(ext.dir, ext.helperRelPath);
+            if (fs.existsSync(srcHelperPath)) {
+              activeHelperNames.push(ext.name);
+              const rawHelper = fs.readFileSync(srcHelperPath, "utf8");
+              const wrappedHelper =
+                `if (typeof window !== "undefined") { window.__cuthol = window.__cuthol || {}; window.__cuthol.ext = window.__cuthol.ext || {}; }\n` +
+                rawHelper;
+              const destHelperPath = path.join(assetsDir, `cuthol-ext-${ext.name}.js`);
+              const existingHelper = fs.existsSync(destHelperPath)
+                ? fs.readFileSync(destHelperPath, "utf8")
+                : null;
+              if (existingHelper !== wrappedHelper) {
+                fs.writeFileSync(destHelperPath, wrappedHelper, "utf8");
+                updated = true;
+              }
+            }
+          }
+        } catch {
+          // Verified by Gate 2 (`verifySequence`)
+        }
+      }
+    }
+
+    // Remove any stale exact `<script src="assets/cuthol-ext-<name>.js"></script>` tags for disabled extensions
+    const activeSet = new Set(activeHelperNames);
+    nextHtml = nextHtml.replace(
+      /[ \t]*<script\s+src=(["'])assets\/cuthol-ext-([a-z0-9_-]+)\.js\1\s*><\/script>\r?\n?/gi,
+      (fullMatch, _q: string, extName: string) => {
+        if (activeSet.has(extName)) return fullMatch;
+        const staleFile = path.join(assetsDir, `cuthol-ext-${extName}.js`);
+        if (fs.existsSync(staleFile)) {
+          try {
+            fs.unlinkSync(staleFile);
+            updated = true;
+          } catch {
+            // ignore
+          }
+        }
+        return "";
+      }
+    );
+
+    // Ensure each active helper script tag is injected right after `assets/cuthol-runtime.js`
+    if (activeHelperNames.length > 0) {
+      let anchorRe = exactRuntimeRe;
+      for (const extName of activeHelperNames) {
+        const extTag = `<script src="assets/cuthol-ext-${extName}.js"></script>`;
+        const exactExtRe = new RegExp(
+          `<script\\s+src=(["'])assets\\/cuthol-ext-${extName}\\.js\\1\\s*><\\/script>`,
+          "i"
+        );
+        if (!exactExtRe.test(nextHtml)) {
+          nextHtml = nextHtml.replace(anchorRe, `$&\n    ${extTag}`);
+        }
+        anchorRe = exactExtRe;
+      }
     }
 
     if (nextHtml !== html) {

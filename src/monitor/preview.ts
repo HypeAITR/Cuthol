@@ -14,15 +14,25 @@
  */
 
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
-import { activeVisualCueIdsAt, computeSequenceDurationMs, resolveCueStartMs } from "../core/timeline.js";
+import {
+  activeVisualCueIdsAt,
+  computeRenderDurationMs,
+  computeSequenceDurationMs,
+  resolveCueStartMs,
+} from "../core/timeline.js";
 import { CutholDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { PngCanvas, RgbaColor } from "../core/png_canvas.js";
 import { CutholSequence, LaneCue } from "../core/schema.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
 import { formatTimecode } from "../core/time.js";
 import { loadSequence } from "../core/workspace.js";
-import { ensurePreviewCompositeMp4, renderSingleCompositeFrameRgb24 } from "../render/renderer.js";
+import {
+  prefetchCompositeFramesForTimestamps,
+  renderMultipleCompositeFramesRgb24,
+  renderSingleCompositeFrameRgb24,
+} from "../render/renderer.js";
 import { evaluateEnvelopeAt } from "../sequence/spine.js";
 import { measureCuePixelBox } from "../verify/gates.js";
 
@@ -578,11 +588,10 @@ export function captureMonitorSheet(options: {
   const rows = Math.max(1, Math.min(6, options.rows ?? 3));
   const showBoxes = options.showBoxes ?? true;
 
-  const { mp4Path, width: cellW, height: cellH, durationMs } = ensurePreviewCompositeMp4(
-    sequence,
-    paths,
-    "draft_480p"
-  );
+  const durationMs = computeRenderDurationMs(sequence);
+  const scaleFactor = 480 / Math.min(sequence.stage.width, sequence.stage.height);
+  const cellW = Math.max(16, Math.round((sequence.stage.width * scaleFactor) / 2) * 2);
+  const cellH = Math.max(16, Math.round((sequence.stage.height * scaleFactor) / 2) * 2);
 
   const actualSeqDurMs = computeSequenceDurationMs(sequence);
   const defaultEndMs = actualSeqDurMs > 0 ? Math.min(durationMs, actualSeqDurMs) : durationMs;
@@ -591,6 +600,16 @@ export function captureMonitorSheet(options: {
   const span = Math.max(1, winEnd - winStart);
 
   const totalCells = cols * rows;
+  const cellTimestampsMs: number[] = [];
+  for (let idx = 0; idx < totalCells; idx++) {
+    // Sample midpoints of each equal sub-interval so we don't hit exact 0ms/endMs boundary transitions
+    const sampleRatio = (idx + 0.5) / totalCells;
+    const tMs = Math.min(winEnd - 1, Math.max(winStart, Math.round(winStart + span * sampleRatio)));
+    cellTimestampsMs.push(tMs);
+  }
+
+  prefetchCompositeFramesForTimestamps(sequence, paths, cellTimestampsMs, "draft_480p");
+
   const headerH = 44;
   const pad = 12;
   const sheetW = pad + cols * (cellW + pad);
@@ -610,17 +629,32 @@ export function captureMonitorSheet(options: {
   const blankFramesMs: number[] = [];
   const diagnostics: CutholDiagnostic[] = [];
 
-  for (let idx = 0; idx < totalCells; idx++) {
-    // Sample midpoints of each equal sub-interval so we don't hit exact 0ms/endMs boundary transitions
-    const sampleRatio = (idx + 0.5) / totalCells;
-    const tMs = Math.min(winEnd - 1, Math.max(winStart, Math.round(winStart + span * sampleRatio)));
+  const renderedCells = renderMultipleCompositeFramesRgb24(
+    sequence,
+    paths,
+    cellTimestampsMs,
+    "draft_480p"
+  );
 
-    const { canvas: cellCanvas, metrics, diagnostic } = extractRawFrameToCanvas(
-      mp4Path,
-      cellW,
-      cellH,
-      tMs,
-      durationMs,
+  for (let idx = 0; idx < totalCells; idx++) {
+    const { rgbBuf, width: frameW, height: frameH, clampedMs, bboxUpdates } = renderedCells[idx];
+    if (showBoxes && bboxUpdates.length > 0) {
+      for (const u of bboxUpdates) {
+        if (u.bboxJson !== null) {
+          try {
+            fs.mkdirSync(path.dirname(u.bboxPath), { recursive: true });
+            fs.writeFileSync(u.bboxPath, u.bboxJson, "utf8");
+          } catch {
+            // ignore sidecar write error
+          }
+        }
+      }
+    }
+    const { canvas: cellCanvas, metrics, diagnostic } = annotateRgb24BufferToCanvas(
+      rgbBuf,
+      frameW,
+      frameH,
+      clampedMs,
       sequence,
       showBoxes,
       paths.rootDir

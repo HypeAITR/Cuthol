@@ -26,18 +26,19 @@ Client configuration (JSON used by most MCP clients):
 }
 ```
 
-Requirements on the machine: Node.js ≥ 22.5, `ffmpeg`/`ffprobe` on PATH, and a Chrome that HyperFrames can launch (for overlays). API keys are only needed for transcription and voiceover; they can also live in a `.env` file inside the project folder. After adding or editing `.mcp.json`, restart the MCP client session and approve the server; to verify the server directly over stdio, send `initialize` followed by `tools/list` to `node dist/cli.js mcp` and confirm 13 tools are returned.
+Requirements on the machine: Node.js ≥ 22.5, `ffmpeg`/`ffprobe` on PATH, and a Chrome that HyperFrames can launch (for overlays). API keys are only needed for transcription and voiceover; they can also live in a `.env` file inside the project folder. After adding or editing `.mcp.json`, restart the MCP client session and approve the server; to verify the server directly over stdio, send `initialize` followed by `tools/list` to `node dist/cli.js mcp` and confirm 14 tools are returned.
 
 Environment switches:
 - **MCP server**: `CUTHOL_WORKSPACE` (default project), `CUTHOL_MCP_PROGRESSIVE=1` (start with core tools only; unlock with `discover_capabilities`), `CUTHOL_MCP_STRUCTURED=1` (also send the full JSON as `structuredContent`), `CUTHOL_MCP_TIMEOUT_MS`.
 - **User-level shared ASR/TTS cache**: By default, transcripts (`transcript_cache`) and synthesized voiceover audio/alignments (`tts_cache`, `blobs/`) are also cached across projects by SHA-256 in `~/.cuthol/cache` (`ledger.sqlite` + `blobs/`), so re-ingesting the same file or synthesizing the same voiceover in a new project hits the cache without cloud API calls.
   - Redirect location: set `CUTHOL_CACHE_DIR=/path/to/cache` (or `CUTHOL_SHARED_CACHE_DIR` / `CUTHOL_USER_CACHE_DIR` / `CUTHOL_CACHE` / `CUTHOL_SHARED_CACHE`, either a folder or a `.sqlite`/`.db` path).
   - Disable shared cache (keep only per-project `.cuthol/ledger.sqlite`): set `CUTHOL_CACHE_DIR=0` (or `false`, `off`, `none`) or `CUTHOL_DISABLE_SHARED_CACHE=1` (`CUTHOL_NO_SHARED_CACHE=1`, `CUTHOL_DISABLE_CACHE=1`, `CUTHOL_NO_CACHE=1`).
+- **Persistent extensions directory**: Persistent extensions live in `~/.cuthol/extensions/<name>/` (`scope="persistent"`), while project-local extensions live in `<project>/.cuthol/extensions/<name>/` (`scope="project"`, which wins on name collision). Redirect persistent extensions with `CUTHOL_EXTENSIONS_DIR=/path/to/extensions` or disable with `CUTHOL_EXTENSIONS_DIR=0`.
 - **Stage-scaled typography defaults**: Vertical `9:16` (`1080x1920`) projects use larger default typography for mobile legibility — `76 px` for titles (`max_width=70`%) and `64 px` for captions (`max_width=70`%, `max_words=4`, `max_chars=26`), compared to `56 px` titles (`max_width=76`%) and `42 px` auto-captions (`max_width=80`%, `max_words=5`, `max_chars=38`; `44 px` / `76%` for manual caption cues) on `16:9` (`1920x1080`).
 
 ## Tools
 
-13 tools: `workspace`, `library`, `brief`, `spine`, `lane`, `composition`, `speech`, `mix`, `cue`, `verify`, `monitor`, `render`, `guide`. Multi-action tools take an `action` argument; every property description starts with the actions that use it, e.g. `[split] Split points …`. Unknown arguments are rejected with the valid list and the closest match — read the message instead of guessing again.
+14 tools: `workspace`, `library`, `brief`, `spine`, `lane`, `composition`, `speech`, `mix`, `cue`, `verify`, `monitor`, `render`, `extension`, `guide`. Multi-action tools take an `action` argument; every property description starts with the actions that use it, e.g. `[split] Split points …`. Unknown arguments are rejected with the valid list and the closest match — read the message instead of guessing again.
 
 ## Conventions
 
@@ -56,6 +57,6 @@ Environment switches:
 - **Long calls** (`render`, `monitor`, `composition.preview`, `speech.transcribe/synthesize`) send `notifications/progress` if the client supplied a progress token, and can be cancelled. Calls that change the same project run one at a time.
 - **Loop guard**: the third identical failing call in a row is refused without running.
 - **Outside changes**: if the project was modified by something else (another agent, the CLI) since your last call, the result starts with `NOTE the project changed outside this session` — re-read with `brief`.
-- **Manual**: `guide(topic)` returns these documents: `overview`, `editing`, `speech_mix`, `compositions`, `verify_monitor`, `mcp`.
+- **Manual**: `guide(topic)` returns these documents: `overview`, `editing`, `speech_mix`, `compositions`, `verify_monitor`, `extensions`, `mcp`, or `ext:<name>` for an installed extension's `README.md`.
 
 Composition HTML can be edited with your own file tools (`<project>/<comp_dir>/index.html`) or, if you have none, with `composition.read(comp_dir)` / `composition.write(comp_dir, content, file?)`. `write` only accepts .html/.css/.js/.json/.svg files inside the composition folder and flags obvious contract mistakes.

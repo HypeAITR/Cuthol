@@ -57,6 +57,240 @@ export interface HyperFramesValidationResult {
   ok: boolean;
   composition_id: string | null;
   findings: string[];
+  lint_findings?: HyperFramesLintFinding[];
+  lint_info_findings?: HyperFramesLintFinding[];
+  lint_cached?: boolean;
+}
+
+export interface HyperFramesLintFinding {
+  code: string;
+  severity: "error" | "warning" | "info";
+  message: string;
+  fixHint?: string;
+  selector?: string;
+  elementId?: string;
+  snippet?: string;
+  file?: string;
+  line?: number;
+  column?: number;
+}
+
+export interface HyperFramesLintResult {
+  ok: boolean;
+  cached: boolean;
+  content_hash: string;
+  findings: HyperFramesLintFinding[];
+  info_findings: HyperFramesLintFinding[];
+}
+
+const SIZE_AND_SPLIT_LINT_CODES = new Set([
+  "composition_file_too_large",
+  "nested_structure_needs_subcomposition",
+  "timeline_track_too_dense",
+]);
+
+const LINT_IGNORED_BRIDGE_FILES = new Set([
+  "assets/cuthol-data.json",
+  "assets/cuthol-data.js",
+  "assets/cuthol-vars.json",
+  "assets/cuthol-runtime.js",
+  "assets/cuthol-bbox.json",
+  "cuthol-bbox.json",
+]);
+
+const lintMemoryCache = new Map<string, Omit<HyperFramesLintResult, "cached">>();
+
+function computeCompositionLintHash(absCompDir: string, entryHtml: string): string {
+  const hash = crypto.createHash("sha256").update(`hf-lint-v1:${entryHtml}\n`);
+  const visitedDirs = new Set<string>();
+  const walk = (currentDir: string, relPrefix: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (
+        entry.name.startsWith(".tmp.") ||
+        entry.name.endsWith(".tmp.mp4") ||
+        entry.name.endsWith(".tmp.mov")
+      ) {
+        continue;
+      }
+      const relPath = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+      if (LINT_IGNORED_BRIDGE_FILES.has(relPath)) continue;
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        if (
+          entry.name === ".hyperframes" ||
+          entry.name === "snapshots" ||
+          entry.name === "renders" ||
+          entry.name === "build" ||
+          entry.name === "node_modules" ||
+          entry.name === ".git" ||
+          entry.name === ".cuthol"
+        ) {
+          continue;
+        }
+        let realDir = fullPath;
+        try {
+          realDir = fs.realpathSync(fullPath);
+        } catch {
+          realDir = path.resolve(fullPath);
+        }
+        if (visitedDirs.has(realDir)) continue;
+        visitedDirs.add(realDir);
+        walk(fullPath, relPath);
+      } else if (entry.isFile()) {
+        try {
+          const buf = fs.readFileSync(fullPath);
+          const digest = crypto.createHash("sha256").update(buf).digest("hex");
+          hash.update(`file:${relPath}:${buf.length}:${digest}\n`);
+        } catch {
+          // ignore unreadable transient file
+        }
+      }
+    }
+  };
+  walk(absCompDir, "");
+  return hash.digest("hex");
+}
+
+export function lintHyperFramesComposition(
+  compositionDir: string,
+  entryHtml = "index.html",
+  cacheDir?: string
+): HyperFramesLintResult {
+  const absCompDir = path.resolve(compositionDir);
+  const entryPath = path.join(absCompDir, entryHtml);
+  if (!fs.existsSync(entryPath)) {
+    return {
+      ok: false,
+      cached: false,
+      content_hash: "missing",
+      findings: [
+        {
+          code: "missing_entry_html",
+          severity: "error",
+          message: `Missing composition entry HTML: ${entryPath}`,
+        },
+      ],
+      info_findings: [],
+    };
+  }
+
+  const contentHash = computeCompositionLintHash(absCompDir, entryHtml);
+  const memHit = lintMemoryCache.get(contentHash);
+  if (memHit) {
+    return { ...memHit, cached: true };
+  }
+
+  const diskCachePath = cacheDir
+    ? path.join(cacheDir, `hf_lint_${contentHash.slice(0, 24)}.json`)
+    : null;
+  if (diskCachePath && fs.existsSync(diskCachePath)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(diskCachePath, "utf8")) as Omit<
+        HyperFramesLintResult,
+        "cached"
+      >;
+      if (parsed && Array.isArray(parsed.findings) && parsed.content_hash === contentHash) {
+        lintMemoryCache.set(contentHash, parsed);
+        return { ...parsed, cached: true };
+      }
+    } catch {
+      // ignore corrupt cache file
+    }
+  }
+
+  const findings: HyperFramesLintFinding[] = [];
+  const infoFindings: HyperFramesLintFinding[] = [];
+  const hfBin = findLocalHyperFramesCliMjs();
+
+  if (fs.existsSync(hfBin)) {
+    const proc = spawnSync(process.execPath, [hfBin, "lint", absCompDir, "--json"], {
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    const rawOut = (proc.stdout || "").trim();
+    const jsonStart = rawOut.indexOf("{");
+    if (jsonStart >= 0) {
+      try {
+        const parsed = JSON.parse(rawOut.slice(jsonStart)) as {
+          findings?: Array<{
+            code?: string;
+            severity?: "error" | "warning" | "info";
+            message?: string;
+            fixHint?: string;
+            selector?: string;
+            elementId?: string;
+            snippet?: string;
+            file?: string;
+            line?: number;
+            column?: number;
+          }>;
+        };
+        for (const f of parsed.findings ?? []) {
+          const code = String(f.code ?? "hyperframes_lint");
+          const item: HyperFramesLintFinding = {
+            code,
+            severity: SIZE_AND_SPLIT_LINT_CODES.has(code)
+              ? "info"
+              : f.severity === "error" || f.severity === "warning"
+                ? f.severity
+                : "info",
+            message: String(f.message ?? ""),
+            ...(f.fixHint ? { fixHint: String(f.fixHint) } : {}),
+            ...(f.selector ? { selector: String(f.selector) } : {}),
+            ...(f.elementId ? { elementId: String(f.elementId) } : {}),
+            ...(f.snippet ? { snippet: String(f.snippet) } : {}),
+            ...(f.file ? { file: String(f.file) } : {}),
+            ...(typeof f.line === "number" ? { line: f.line } : {}),
+            ...(typeof f.column === "number" ? { column: f.column } : {}),
+          };
+          if (item.severity === "info") {
+            infoFindings.push(item);
+          } else {
+            findings.push(item);
+          }
+        }
+      } catch {
+        if (proc.status !== 0) {
+          findings.push({
+            code: "hyperframes_lint_failed",
+            severity: "warning",
+            message: (proc.stderr || proc.stdout || "hyperframes lint failed").trim(),
+          });
+        }
+      }
+    } else if (proc.status !== 0) {
+      findings.push({
+        code: "hyperframes_lint_failed",
+        severity: "warning",
+        message: (proc.stderr || proc.stdout || "hyperframes lint failed").trim(),
+      });
+    }
+  }
+
+  const entry: Omit<HyperFramesLintResult, "cached"> = {
+    ok: findings.every((f) => f.severity !== "error"),
+    content_hash: contentHash,
+    findings,
+    info_findings: infoFindings,
+  };
+  lintMemoryCache.set(contentHash, entry);
+  if (diskCachePath) {
+    try {
+      fs.mkdirSync(path.dirname(diskCachePath), { recursive: true });
+      fs.writeFileSync(diskCachePath, JSON.stringify(entry, null, 2), "utf8");
+    } catch {
+      // ignore cache write failure
+    }
+  }
+
+  return { ...entry, cached: false };
 }
 
 function findLocalHyperFramesCliMjs(): string {
@@ -770,15 +1004,20 @@ export function validateHyperFramesCompositionContract(
     findings.push("Contract violation (video_nested_in_timed_element): <video data-start> must not sit inside another timed element.");
   }
 
+  let lintFindings: HyperFramesLintFinding[] | undefined;
+  let lintInfoFindings: HyperFramesLintFinding[] | undefined;
+  let lintCached: boolean | undefined;
+
   if (runCliLint && findings.length === 0) {
-    const hfBin = findLocalHyperFramesCliMjs();
-    if (fs.existsSync(hfBin)) {
-      const proc = spawnSync(process.execPath, [hfBin, "lint", path.resolve(compositionDir)], {
-        encoding: "utf8",
-        timeout: 30_000,
-      });
-      if (proc.status !== 0) {
-        findings.push(`hyperframes lint failed: ${(proc.stderr || proc.stdout || "").trim()}`);
+    const lintRes = lintHyperFramesComposition(compositionDir, entryHtml);
+    lintFindings = lintRes.findings;
+    lintInfoFindings = lintRes.info_findings;
+    lintCached = lintRes.cached;
+    for (const lf of lintRes.findings) {
+      if (lf.severity === "error") {
+        findings.push(
+          `hyperframes lint (${lf.code}): ${lf.message}${lf.fixHint ? ` — ${lf.fixHint}` : ""}`
+        );
       }
     }
   }
@@ -787,6 +1026,9 @@ export function validateHyperFramesCompositionContract(
     ok: findings.length === 0,
     composition_id: compId,
     findings,
+    ...(lintFindings !== undefined ? { lint_findings: lintFindings } : {}),
+    ...(lintInfoFindings !== undefined ? { lint_info_findings: lintInfoFindings } : {}),
+    ...(lintCached !== undefined ? { lint_cached: lintCached } : {}),
   };
 }
 
@@ -1146,6 +1388,89 @@ export function renderHyperFramesCompositionToMp4(options: {
   }
 }
 
+function extractFrameFromVideoBlob(
+  videoPath: string,
+  frameIdx: number,
+  fps: number,
+  outPng: string
+): boolean {
+  const tmpPng = `${outPng}.${process.pid}.tmp.png`;
+  const seekSec = (frameIdx / fps).toFixed(6);
+  const seekProc = spawnSync(
+    "ffmpeg",
+    [
+      "-y",
+      "-v",
+      "error",
+      "-ss",
+      seekSec,
+      "-i",
+      videoPath,
+      "-vf",
+      "format=rgba",
+      "-frames:v",
+      "1",
+      tmpPng,
+    ],
+    { encoding: "utf8" }
+  );
+  if (seekProc.status === 0 && fs.existsSync(tmpPng) && fs.statSync(tmpPng).size > 200) {
+    fs.renameSync(tmpPng, outPng);
+    return true;
+  }
+  const extProc = spawnSync(
+    "ffmpeg",
+    [
+      "-y",
+      "-v",
+      "error",
+      "-i",
+      videoPath,
+      "-vf",
+      `select='eq(n\\,${frameIdx})',format=rgba`,
+      "-frames:v",
+      "1",
+      tmpPng,
+    ],
+    { encoding: "utf8" }
+  );
+  if (extProc.status === 0 && fs.existsSync(tmpPng) && fs.statSync(tmpPng).size > 200) {
+    fs.renameSync(tmpPng, outPng);
+    return true;
+  }
+  // Fallback to last frame (`-sseof -0.1`) if `frameIdx` exceeded encoded frame count by 1
+  const eofProc = spawnSync(
+    "ffmpeg",
+    [
+      "-y",
+      "-v",
+      "error",
+      "-sseof",
+      "-0.1",
+      "-i",
+      videoPath,
+      "-vf",
+      "format=rgba",
+      "-frames:v",
+      "1",
+      tmpPng,
+    ],
+    { encoding: "utf8" }
+  );
+  if (eofProc.status === 0 && fs.existsSync(tmpPng) && fs.statSync(tmpPng).size > 200) {
+    fs.renameSync(tmpPng, outPng);
+    return true;
+  }
+  if (fs.existsSync(tmpPng)) {
+    try {
+      fs.unlinkSync(tmpPng);
+    } catch {
+      // ignore
+    }
+  }
+  return false;
+}
+
 /**
  * Captures a single frame-grid-snapped RGBA PNG from a HyperFrames composition for fast `monitor frame --at <ms>`
  * without rendering the entire composition video when uncached.
@@ -1211,61 +1536,6 @@ export function renderHyperFramesSingleFramePng(options: {
     return { pngPath: outPng, snappedSec, frameIdx };
   }
 
-  const extractFrameFromVideoBlob = (videoPath: string): boolean => {
-    const tmpPng = `${outPng}.${process.pid}.tmp.png`;
-    const extProc = spawnSync(
-      "ffmpeg",
-      [
-        "-y",
-        "-v",
-        "error",
-        "-i",
-        videoPath,
-        "-vf",
-        `select='eq(n\\,${frameIdx})',format=rgba`,
-        "-frames:v",
-        "1",
-        tmpPng,
-      ],
-      { encoding: "utf8" }
-    );
-    if (extProc.status === 0 && fs.existsSync(tmpPng) && fs.statSync(tmpPng).size > 200) {
-      fs.renameSync(tmpPng, outPng);
-      return true;
-    }
-    // Fallback to last frame (`-sseof -0.1`) if `frameIdx` exceeded encoded frame count by 1
-    const eofProc = spawnSync(
-      "ffmpeg",
-      [
-        "-y",
-        "-v",
-        "error",
-        "-sseof",
-        "-0.1",
-        "-i",
-        videoPath,
-        "-vf",
-        "format=rgba",
-        "-frames:v",
-        "1",
-        tmpPng,
-      ],
-      { encoding: "utf8" }
-    );
-    if (eofProc.status === 0 && fs.existsSync(tmpPng) && fs.statSync(tmpPng).size > 200) {
-      fs.renameSync(tmpPng, outPng);
-      return true;
-    }
-    if (fs.existsSync(tmpPng)) {
-      try {
-        fs.unlinkSync(tmpPng);
-      } catch {
-        // ignore
-      }
-    }
-    return false;
-  };
-
   // If the full video blob (.mov or .mp4) is ALREADY cached, extract the exact frame `frameIdx` from it
   const cachedMov = path.join(options.blobsDir, `hf_comp_${hash}.mov`);
   const cachedMp4 = path.join(options.blobsDir, `hf_comp_${hash}.mp4`);
@@ -1276,7 +1546,7 @@ export function renderHyperFramesSingleFramePng(options: {
       : null;
 
   if (cachedVideo && fs.statSync(cachedVideo).size > 1000) {
-    if (extractFrameFromVideoBlob(cachedVideo)) {
+    if (extractFrameFromVideoBlob(cachedVideo, frameIdx, options.fps, outPng)) {
       if (options.transparent && !isSceneHost) {
         recordCompositionAlphaBboxSidecar(absCompDir, outPng);
       }
@@ -1366,8 +1636,234 @@ export function renderHyperFramesSingleFramePng(options: {
     mode,
     backdropVideoPath: options.backdropVideoPath,
   });
-  extractFrameFromVideoBlob(fullBlob);
+  extractFrameFromVideoBlob(fullBlob, frameIdx, options.fps, outPng);
   return { pngPath: outPng, snappedSec, frameIdx };
+}
+
+function parseSnapshotFrameSecFromFilename(filePath: string): number | null {
+  const base = path.basename(filePath);
+  const m = /^frame-(?:\d+-at-)?([\d.]+)s\.png$/i.exec(base);
+  if (!m) return null;
+  const val = Number(m[1]);
+  return Number.isFinite(val) ? val : null;
+}
+
+/**
+ * Captures multiple frame-grid-snapped RGBA PNGs from a HyperFrames composition in a single
+ * `snapshot --at t1,t2,...` invocation and writes them into the shared `hf_frame_<hash>_f<idx>.png`
+ * cache so `renderSingleCompositeFrameRgb24` hits the cache for every cell in `monitor sheet`.
+ */
+export function renderHyperFramesBatchFramesPng(options: {
+  compositionDir: string;
+  entryHtml: string;
+  blobsDir: string;
+  width: number;
+  height: number;
+  fps: number;
+  durationMs: number;
+  localSecs: number[];
+  props: Record<string, unknown>;
+  transparent: boolean;
+  mode?: "overlay_alpha" | "scene_host";
+  backdropVideoPath?: string;
+}): Array<{ pngPath: string; snappedSec: number; frameIdx: number }> {
+  if (options.localSecs.length === 0) {
+    return [];
+  }
+
+  const absCompDir = path.resolve(options.compositionDir);
+  const entryPath = path.join(absCompDir, options.entryHtml);
+  if (!fs.existsSync(entryPath)) {
+    throw new CutholError(DIAGNOSTICS.MISSING_FILE_ON_DISK("composition", entryPath));
+  }
+
+  const mode = options.mode ?? "overlay_alpha";
+  let htmlSource = fs.readFileSync(entryPath, "utf8");
+  if (
+    options.transparent &&
+    mode !== "scene_host" &&
+    /(?:body|#root)\s*\{[^}]*?background\s*:\s*#00ff00\b/i.test(htmlSource)
+  ) {
+    htmlSource = htmlSource.replace(
+      /((?:body|#root)\s*\{[^}]*?)background\s*:\s*#00ff00\b/gi,
+      "$1background: transparent"
+    );
+    fs.writeFileSync(entryPath, htmlSource, "utf8");
+  }
+
+  const durationSec = Math.max(0.1, Number((options.durationMs / 1000).toFixed(3)));
+  const totalFrames = Math.max(1, Math.round(durationSec * options.fps));
+
+  const { hash, isSceneHost } = syncScalarVarsAndComputeCompositionHash({
+    absCompDir,
+    entryHtml: options.entryHtml,
+    htmlSource,
+    width: options.width,
+    height: options.height,
+    fps: options.fps,
+    durationMs: options.durationMs,
+    props: options.props,
+    transparent: options.transparent,
+    mode,
+    backdropVideoPath: options.backdropVideoPath,
+  });
+
+  fs.mkdirSync(options.blobsDir, { recursive: true });
+
+  const requestedItems = options.localSecs.map((localSec) => {
+    const frameIdx = Math.max(
+      0,
+      Math.min(totalFrames - 1, Math.floor(localSec * options.fps + 1e-6))
+    );
+    const snappedSec = Number((frameIdx / options.fps).toFixed(6));
+    const pngPath = path.join(options.blobsDir, `hf_frame_${hash}_f${frameIdx}.png`);
+    return { pngPath, snappedSec, frameIdx };
+  });
+
+  const uniqueMissingByFrame = new Map<number, { pngPath: string; snappedSec: number; frameIdx: number }>();
+  for (const item of requestedItems) {
+    if (!fs.existsSync(item.pngPath) || fs.statSync(item.pngPath).size <= 200) {
+      uniqueMissingByFrame.set(item.frameIdx, item);
+    }
+  }
+
+  const missingTargets = [...uniqueMissingByFrame.values()].sort((a, b) => a.frameIdx - b.frameIdx);
+  if (missingTargets.length === 0) {
+    const bboxSidecarPath = path.join(absCompDir, "assets/cuthol-bbox.json");
+    if (options.transparent && !isSceneHost && !fs.existsSync(bboxSidecarPath)) {
+      recordCompositionAlphaBboxSidecar(absCompDir, requestedItems[0].pngPath);
+    }
+    return requestedItems;
+  }
+
+  const cachedMov = path.join(options.blobsDir, `hf_comp_${hash}.mov`);
+  const cachedMp4 = path.join(options.blobsDir, `hf_comp_${hash}.mp4`);
+  const cachedVideo = fs.existsSync(cachedMov)
+    ? cachedMov
+    : fs.existsSync(cachedMp4)
+      ? cachedMp4
+      : null;
+
+  const stillMissing: Array<{ pngPath: string; snappedSec: number; frameIdx: number }> = [];
+  if (cachedVideo && fs.statSync(cachedVideo).size > 1000) {
+    for (const target of missingTargets) {
+      if (!extractFrameFromVideoBlob(cachedVideo, target.frameIdx, options.fps, target.pngPath)) {
+        stillMissing.push(target);
+      }
+    }
+  } else {
+    stillMissing.push(...missingTargets);
+  }
+
+  const hfBin = findLocalHyperFramesCliMjs();
+  if (stillMissing.length > 0 && fs.existsSync(hfBin)) {
+    const tmpSnapDir = path.join(
+      options.blobsDir,
+      `hf_snap_batch_${hash}_${process.pid}_${Date.now()}`
+    );
+    let tempSceneHostDir: string | null = null;
+    try {
+      let targetSnapDir = absCompDir;
+      if (isSceneHost && options.backdropVideoPath) {
+        tempSceneHostDir = stageSceneHostCompositionDir({
+          absCompDir,
+          entryHtml: options.entryHtml,
+          blobsDir: options.blobsDir,
+          hash,
+          durationSec,
+          backdropVideoPath: options.backdropVideoPath,
+        });
+        targetSnapDir = tempSceneHostDir;
+      }
+
+      const snapProc = spawnSync(
+        process.execPath,
+        [
+          hfBin,
+          "snapshot",
+          targetSnapDir,
+          "--at",
+          stillMissing.map((t) => String(t.snappedSec)).join(","),
+          "--no-end",
+          "--describe",
+          "false",
+          "--output",
+          tmpSnapDir,
+        ],
+        { encoding: "utf8", timeout: Math.max(60_000, stillMissing.length * 10_000) }
+      );
+
+      if (snapProc.status === 0 && fs.existsSync(tmpSnapDir)) {
+        const capturedPngs = fs
+          .readdirSync(tmpSnapDir)
+          .filter((f) => f.startsWith("frame-") && f.endsWith(".png"))
+          .map((f) => path.join(tmpSnapDir, f))
+          .sort((a, b) => {
+            const sa = parseSnapshotFrameSecFromFilename(a);
+            const sb = parseSnapshotFrameSecFromFilename(b);
+            if (sa !== null && sb !== null) return sa - sb;
+            return a.localeCompare(b);
+          });
+
+        for (let i = 0; i < stillMissing.length; i++) {
+          const target = stillMissing[i];
+          let matchedPng: string | undefined;
+          let bestDiff = Infinity;
+          for (const candidate of capturedPngs) {
+            const cSec = parseSnapshotFrameSecFromFilename(candidate);
+            if (cSec !== null) {
+              const diff = Math.abs(cSec - target.snappedSec);
+              if (diff < bestDiff && diff <= Math.max(0.05, 1.5 / options.fps)) {
+                bestDiff = diff;
+                matchedPng = candidate;
+              }
+            }
+          }
+          if (!matchedPng && i < capturedPngs.length) {
+            matchedPng = capturedPngs[i];
+          }
+          if (matchedPng && fs.existsSync(matchedPng)) {
+            fs.copyFileSync(matchedPng, target.pngPath);
+          }
+        }
+      }
+    } finally {
+      if (fs.existsSync(tmpSnapDir)) {
+        try {
+          fs.rmSync(tmpSnapDir, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
+      if (tempSceneHostDir && fs.existsSync(tempSceneHostDir)) {
+        try {
+          fs.rmSync(tempSceneHostDir, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  for (const target of stillMissing) {
+    if (!fs.existsSync(target.pngPath) || fs.statSync(target.pngPath).size <= 200) {
+      renderHyperFramesSingleFramePng({
+        ...options,
+        localSec: target.snappedSec,
+      });
+    }
+  }
+
+  if (options.transparent && !isSceneHost && requestedItems.length > 0) {
+    const firstValid = requestedItems.find(
+      (r) => fs.existsSync(r.pngPath) && fs.statSync(r.pngPath).size > 200
+    );
+    if (firstValid) {
+      recordCompositionAlphaBboxSidecar(absCompDir, firstValid.pngPath);
+    }
+  }
+
+  return requestedItems;
 }
 
 export interface MeasuredAlphaBboxPct {

@@ -10,7 +10,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { computeRenderDurationMs, resolveCueStartMs } from "../core/timeline.js";
-import { CutholSequence, isStillGraphic, maxSourceDurationMs, ParameterEnvelope, TransitionSpec } from "../core/schema.js";
+import { CutholSequence, getCuePlaybackRate, isStillGraphic, maxSourceDurationMs, ParameterEnvelope, TransitionSpec } from "../core/schema.js";
 import { WorkspacePaths } from "../core/workspace.js";
 import { resolveLibraryItemPath } from "../library/probe.js";
 import { sequenceMsToSourceMs } from "../sequence/spine.js";
@@ -161,16 +161,27 @@ function buildSingleAudioTrackFilterChain(options: {
   srcInSec: string;
   srcOutSec: string;
   effectiveRate: number;
+  preservePitch?: boolean;
+  sampleRate?: number | null;
   audioChain: CutholSequence["spine"]["clips"][number]["audio_chain"] | undefined;
   envelopes: ParameterEnvelope[];
   postTrimDurationMs: number;
   timelineStartMs: number;
   totalDurationSec: number;
 }): string {
+  const rateFilters =
+    options.preservePitch === false && Math.abs(options.effectiveRate - 1.0) > 0.001
+      ? (() => {
+          const sr = options.sampleRate && options.sampleRate > 0 ? options.sampleRate : 48000;
+          const pitchedRate = Math.max(4000, Math.min(384000, Math.round(sr * options.effectiveRate)));
+          return [`asetrate=${pitchedRate}`, `aresample=${sr}`, `asetpts=PTS-STARTPTS`];
+        })()
+      : buildAtempoChain(options.effectiveRate);
+
   const aFilters: string[] = [
     `atrim=start=${options.srcInSec}:end=${options.srcOutSec}`,
     `asetpts=PTS-STARTPTS`,
-    ...buildAtempoChain(options.effectiveRate),
+    ...rateFilters,
   ];
 
   const ac = options.audioChain;
@@ -286,12 +297,19 @@ export function compileSequenceAudioPlan(
 
       const cueStartMs = resolveCueStartMs(seq, cue);
       const absAssetPath = resolveLibraryItemPath(paths.rootDir, asset);
+      const cueRate = getCuePlaybackRate(cue);
       const srcInMs = cue.source_in_ms ?? 0;
-      const maxOutByDuration = srcInMs + cue.duration_ms;
+      const maxOutByDuration =
+        cueRate === 1.0
+          ? srcInMs + cue.duration_ms
+          : srcInMs + Math.round(cue.duration_ms * cueRate);
       const requestedOut = cue.source_out_ms ?? maxOutByDuration;
       const srcOutMs = Math.min(maxSourceDurationMs(asset), requestedOut, maxOutByDuration);
       const srcInSec = (srcInMs / 1000).toFixed(3);
       const srcOutSec = (srcOutMs / 1000).toFixed(3);
+      const effectiveRate = Math.max(0.1, Math.min(16.0, cueRate));
+      const postTrimDurationMs =
+        cueRate === 1.0 ? Math.max(0, srcOutMs - srcInMs) : cue.duration_ms;
 
       const inIdx = addInput(["-i", absAssetPath]);
       const aPad = `[a_cue_${++aStepCounter}]`;
@@ -301,10 +319,12 @@ export function compileSequenceAudioPlan(
           outputPad: aPad,
           srcInSec,
           srcOutSec,
-          effectiveRate: 1.0,
+          effectiveRate,
+          preservePitch: cue.playback?.preserve_pitch,
+          sampleRate: asset.probe.sample_rate,
           audioChain: cue.audio_chain,
           envelopes: cue.envelopes,
-          postTrimDurationMs: Math.max(0, srcOutMs - srcInMs),
+          postTrimDurationMs,
           timelineStartMs: cueStartMs,
           totalDurationSec,
         })
@@ -339,6 +359,8 @@ export function compileSequenceAudioPlan(
         srcInSec,
         srcOutSec,
         effectiveRate,
+        preservePitch: clip.playback.preserve_pitch,
+        sampleRate: asset.probe.sample_rate,
         audioChain: clip.audio_chain,
         envelopes: clip.envelopes,
         postTrimDurationMs: clip.duration_ms,
@@ -582,8 +604,11 @@ export function compileSequenceRenderPlan(
     if (lane.muted) return;
 
     let laneHasTypography = false;
+    const orderedCues = lane.cues.some((c) => c.z_index !== undefined)
+      ? [...lane.cues].sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0))
+      : lane.cues;
 
-    for (const cue of lane.cues) {
+    for (const cue of orderedCues) {
       if (cue.typography && cue.typography.text.trim()) {
         laneHasTypography = true;
       }
@@ -793,9 +818,13 @@ export function compileSequenceRenderPlan(
         if (!asset) continue;
 
         const absAssetPath = resolveLibraryItemPath(paths.rootDir, asset);
+        const cueRate = getCuePlaybackRate(cue);
         const srcInMs = cue.source_in_ms ?? 0;
-        // Always bound srcOutMs by both asset.probe.duration_ms and srcInMs + cue.duration_ms
-        const maxOutByDuration = srcInMs + cue.duration_ms;
+        // Always bound srcOutMs by both asset.probe.duration_ms and srcInMs + cue.duration_ms * cueRate
+        const maxOutByDuration =
+          cueRate === 1.0
+            ? srcInMs + cue.duration_ms
+            : srcInMs + Math.round(cue.duration_ms * cueRate);
         const requestedOut = cue.source_out_ms ?? maxOutByDuration;
         const srcOutMs = Math.min(maxSourceDurationMs(asset), requestedOut, maxOutByDuration);
         const srcInSec = (srcInMs / 1000).toFixed(3);
@@ -841,18 +870,20 @@ export function compileSequenceRenderPlan(
           // envelopes (`rotate`, `geq` opacity, `scale`) evaluate over `t = 0 .. cueDuration` even when `srcInMs > 0`.
           // Frame-exact tail padding ensures non-30fps / VFR sources cover every output frame until `cueEndSec`.
           const cueSrcFps = Math.max(1, asset.probe.fps || fps);
-          const cueRawSrcSpanSec = Math.max(0, (srcOutMs - srcInMs) / 1000);
+          const cueRawSrcSpanSec = Math.max(0, (srcOutMs - srcInMs) / (1000 * cueRate));
           const cueDurSec = cue.duration_ms / 1000;
           const cueTailPadSec = Math.max(
             0.1,
-            Math.max(0, cueDurSec - cueRawSrcSpanSec) + 3 / cueSrcFps + 2 / fps
+            Math.max(0, cueDurSec - cueRawSrcSpanSec) + 3 / (cueSrcFps * cueRate) + 2 / fps
           ).toFixed(3);
           const vFilters: string[] = isStill
             ? [`fps=${fps}:eof_action=pass`, `tpad=stop_mode=clone:stop_duration=${cueTailPadSec}`]
             : [
                 `settb=AVTB`,
                 `trim=start=${srcInSec}:end=${srcOutSec}`,
-                `setpts=PTS-STARTPTS`,
+                cueRate === 1.0
+                  ? `setpts=PTS-STARTPTS`
+                  : `setpts=(PTS-STARTPTS)/${cueRate.toFixed(4)}`,
                 `fps=${fps}:eof_action=pass`,
                 `tpad=stop_mode=clone:stop_duration=${cueTailPadSec}`,
               ];

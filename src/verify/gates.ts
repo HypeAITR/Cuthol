@@ -19,7 +19,7 @@ import {
   DIAGNOSTICS,
   VerificationGateId,
 } from "../core/diagnostics.js";
-import { CutholSequence, isStillGraphic, LaneCue } from "../core/schema.js";
+import { CutholSequence, getCuePlaybackRate, isStillGraphic, LaneCue } from "../core/schema.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
 import { minClipDurationMs } from "../core/time.js";
 import { commitSequenceMutation, loadSequence, WorkspacePaths } from "../core/workspace.js";
@@ -27,8 +27,10 @@ import { MediaLedger } from "../library/ledger.js";
 import { LoudnessMetrics } from "../library/loudness.js";
 import { resolveLibraryItemPath } from "../library/probe.js";
 import { syncAllCompositionBridges } from "../compositor/bridge_exporter.js";
+import { resolveExtension } from "../extensions/manager.js";
 import {
   detectSceneHostFeaturesInComposition,
+  lintHyperFramesComposition,
   validateHyperFramesCompositionContract,
 } from "../compositor/hyperframes_bridge.js";
 import { wrapTypographyLines } from "../compositor/ass_generator.js";
@@ -331,6 +333,38 @@ export function verifySequence(
           }
         }
       }
+
+      if (seq.extensions && seq.extensions.length > 0) {
+        for (const extRef of seq.extensions) {
+          try {
+            const currentExt = resolveExtension(extRef.name, paths.rootDir);
+            if (
+              currentExt.contentHash !== extRef.content_hash ||
+              currentExt.version !== extRef.version
+            ) {
+              diagnostics.push(
+                DIAGNOSTICS.EXTENSION_HASH_MISMATCH(
+                  extRef.name,
+                  extRef.version,
+                  extRef.content_hash,
+                  currentExt.version,
+                  currentExt.contentHash
+                )
+              );
+            }
+          } catch {
+            diagnostics.push(
+              DIAGNOSTICS.EXTENSION_HASH_MISMATCH(
+                extRef.name,
+                extRef.version,
+                extRef.content_hash,
+                "missing",
+                "missing"
+              )
+            );
+          }
+        }
+      }
     }
 
     for (const clip of seq.spine.clips) {
@@ -359,8 +393,19 @@ export function verifySequence(
           const asset = libMap.get(cue.asset_handle);
           if (asset) {
             const isStaticGraphic = isStillGraphic(asset);
+            const cueRate = getCuePlaybackRate(cue);
             const effectiveInMs = cue.source_in_ms ?? 0;
-            const effectiveOutMs = cue.source_out_ms ?? effectiveInMs + cue.duration_ms;
+            const effectiveOutMs =
+              cue.source_out_ms ??
+              (cueRate === 1.0
+                ? effectiveInMs + cue.duration_ms
+                : effectiveInMs + Math.round(cue.duration_ms * cueRate));
+            const maxAllowedCueDurationMs =
+              cue.source_out_ms !== undefined
+                ? cueRate === 1.0
+                  ? cue.source_out_ms - effectiveInMs
+                  : Math.ceil((cue.source_out_ms - effectiveInMs) / cueRate) + 1
+                : cue.duration_ms;
 
             if (effectiveInMs < 0) {
               diagnostics.push(
@@ -381,12 +426,12 @@ export function verifySequence(
             } else if (
               !isStaticGraphic &&
               cue.source_out_ms !== undefined &&
-              cue.duration_ms > cue.source_out_ms - effectiveInMs
+              cue.duration_ms > maxAllowedCueDurationMs
             ) {
               diagnostics.push(
                 DIAGNOSTICS.SOURCE_RANGE_EXCEEDED(
                   cue.id,
-                  effectiveInMs + cue.duration_ms,
+                  effectiveInMs + Math.round(cue.duration_ms * cueRate),
                   cue.source_out_ms
                 )
               );
@@ -451,6 +496,14 @@ export function verifySequence(
 
     for (const lane of seq.lanes) {
       for (const cue of lane.cues) {
+        if (
+          cue.playback &&
+          (!Number.isFinite(cue.playback.rate) ||
+            cue.playback.rate < 0.1 ||
+            cue.playback.rate > 16.0)
+        ) {
+          diagnostics.push(DIAGNOSTICS.INVALID_PLAYBACK_RATE(cue.id, cue.playback.rate));
+        }
         if (!Number.isFinite(cue.duration_ms) || cue.duration_ms < minMs) {
           diagnostics.push(DIAGNOSTICS.SUB_FRAME_DURATION(cue.id, cue.duration_ms, minMs));
         }
@@ -595,7 +648,7 @@ export function verifySequence(
         evaluatedCues.push({
           cue,
           laneId: lane.id,
-          zIndex: lane.z_index,
+          zIndex: cue.z_index ?? lane.z_index,
           orderIndex: evaluatedCues.length,
           startMs,
           endMs,
@@ -603,12 +656,13 @@ export function verifySequence(
         });
 
         // Check if composition in overlay_alpha mode uses backdrop-filter / mix-blend-mode (CUTHOL-G406)
+        // and run cached HyperFrames lint (CUTHOL-G407)
         if (cue.kind === "composition" && cue.composition && paths) {
           const mode = cue.composition.mode ?? "overlay_alpha";
+          const compDir = path.isAbsolute(cue.composition.composition_dir)
+            ? cue.composition.composition_dir
+            : path.resolve(paths.rootDir, cue.composition.composition_dir);
           if (mode === "overlay_alpha") {
-            const compDir = path.isAbsolute(cue.composition.composition_dir)
-              ? cue.composition.composition_dir
-              : path.resolve(paths.rootDir, cue.composition.composition_dir);
             const shFeatures = detectSceneHostFeaturesInComposition(
               compDir,
               cue.composition.entry_html
@@ -616,6 +670,16 @@ export function verifySequence(
             if (shFeatures.length > 0) {
               diagnostics.push(DIAGNOSTICS.SCENE_HOST_RECOMMENDED(cue.id, shFeatures));
             }
+          }
+          const lintRes = lintHyperFramesComposition(
+            compDir,
+            cue.composition.entry_html,
+            paths.blobsDir
+          );
+          for (const lf of lintRes.findings) {
+            diagnostics.push(
+              DIAGNOSTICS.COMPOSITION_LINT_FINDING(cue.id, lf.code, lf.message, lf.fixHint)
+            );
           }
         }
 

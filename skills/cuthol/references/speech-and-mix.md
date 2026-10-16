@@ -2,9 +2,10 @@
 
 ## Transcription
 
-`speech.transcribe(handle, lang="tr")` sends the asset to the ASR provider once and caches the result by file content (re-running is free). It returns a digest: word count, words per minute, low-confidence spans (`attention`), a short preview and query hints. Read words with `library.query(handle, kind="transcript", range="3s..6s" | text="moonstar")` — the text search ignores Turkish diacritics and case.
+`speech.transcribe(handle, lang="tr")` sends the asset to the ASR provider once and caches the result by file content (re-running is free). It returns a digest: word count, words per minute, low-confidence spans (`attention`), a short preview and query hints. Read words with `library.query(handle, kind="transcript", range="3s..6s" | text="moonstar", format="default" | "compact")` — the text search ignores Turkish diacritics and case.
 
-- Transcribe the **asset** (`vid_01`, `aud_01`), not a clip. Words are projected onto every clip and voiceover cue that uses that asset, and they stay correct after trims, speed changes and cuts.
+- **Compact word index (`format="compact"`):** `library.query(handle="aud_01", kind="transcript", format="compact")` returns `i:word@sec` strings (e.g. `"0:Kısaca,@0.08"`, default `limit=600`) so hundreds of words come back in a single MCP/CLI call without pagination. The index `i` matches `C.global.words[i]` inside compositions. Omit `format` (or pass `format="default"`) for full word objects (`{index, word, source_start_ms, source_end_ms, confidence}`).
+- Transcribe the **asset** (`vid_01`, `aud_01`), not a clip. Words are projected onto every clip and voiceover cue that uses that asset, and they stay correct after trims, speed changes (both `spine.speed` and `lane.update_cue(cue, rate=…)`) and cuts.
 - Transcripts and synthesized voiceovers are cached both in the project (`.cuthol/ledger.sqlite`) and in the user-level shared cache (`~/.cuthol/cache/ledger.sqlite` + `blobs/`, configurable via `CUTHOL_CACHE_DIR`, disabled via `CUTHOL_CACHE_DIR=0` or `CUTHOL_DISABLE_SHARED_CACHE=1`), so reusing the same media file or TTS text across projects hits the cache without calling cloud APIs.
 - Brand names and rare proper nouns are often misheard. Check them with `library.query(text=…)` before building captions or word-locked animations on them.
 - Providers: `deepgram` (default, needs `DEEPGRAM_API_KEY`) or `local` (needs a `<file>.transcript.json` sidecar or `CUTHOL_LOCAL_ASR_CMD`).
@@ -13,7 +14,7 @@
 
 `speech.synthesize(text, voice?, speed?, place_on_lane="ln_vo", at | anchor+offset)` creates a `vo_XX` asset with exact word timings from the TTS itself (no ASR pass needed, spelling is preserved). Default provider `elevenlabs` (needs `ELEVENLABS_API_KEY`). `provider="local"` without `CUTHOL_LOCAL_TTS_CMD` gives placeholder tones (`is_placeholder_audio: true`) — fine for timing tests, not for delivery.
 
-To use an existing narration file instead: `library.ingest` it, place it with `lane.add_cue(lane="ln_vo", kind="voiceover", asset=…, at=…, duration=<its length>)`, then `speech.transcribe` it.
+To use an existing narration file instead: `library.ingest` it, place it with `lane.add_cue(lane="ln_vo", kind="voiceover", asset=…, at=…, duration=<its length>)`, then `speech.transcribe` it. To speed up or slow down the voiceover inside Cuthol (without pre-converting in ffmpeg), call `lane.update_cue(cue="cue_01", rate=1.3)` (or pass `rate=1.3` to `lane.add_cue`); Cuthol updates the cue duration, runs `atempo` (pitch-preserved by default, `preserve_pitch=true`) in the shared audio graph, and scales all projected word timestamps in `C.global.words` / `C.word` and `speech.captions`.
 
 ## Cleaning up a talking clip
 

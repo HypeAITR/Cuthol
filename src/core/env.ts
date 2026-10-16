@@ -38,6 +38,11 @@ export interface SharedCacheConfig {
   blobsDir: string | null;
 }
 
+export interface SharedExtensionsConfig {
+  enabled: boolean;
+  extensionsDir: string | null;
+}
+
 const DISABLED_TOKENS = new Set(["0", "false", "off", "none", "no", "disable", "disabled"]);
 const ENABLED_TOKENS = new Set(["1", "true", "on", "yes", "enable", "enabled"]);
 
@@ -133,6 +138,72 @@ export function resolveSharedCacheConfig(overrideDir?: string | false | null): S
     cacheDir: defaultDir,
     sqlitePath: path.join(defaultDir, "ledger.sqlite"),
     blobsDir: path.join(defaultDir, "blobs"),
+  };
+}
+
+/**
+ * Resolves the user-level persistent extensions root (`~/.cuthol/extensions`).
+ * - Can be redirected via `CUTHOL_EXTENSIONS_DIR` (or `CUTHOL_USER_EXTENSIONS_DIR` / `CUTHOL_SHARED_EXTENSIONS_DIR`).
+ * - Can be disabled via `CUTHOL_EXTENSIONS_DIR=0|false|off|none` or `CUTHOL_DISABLE_EXTENSIONS=1`.
+ * - If `CUTHOL_EXTENSIONS_DIR` is not set and `CUTHOL_CACHE_DIR` is redirected to a directory,
+ *   defaults to the sibling `extensions/` directory under the same root; if `CUTHOL_CACHE_DIR=0`,
+ *   persistent extensions are disabled so tests never touch `~/.cuthol/extensions`.
+ */
+export function resolveSharedExtensionsConfig(
+  overrideDir?: string | false | null
+): SharedExtensionsConfig {
+  if (overrideDir === false) {
+    return { enabled: false, extensionsDir: null };
+  }
+  if (typeof overrideDir === "string" && overrideDir.trim()) {
+    const cleanOverride = overrideDir.trim();
+    if (DISABLED_TOKENS.has(cleanOverride.toLowerCase())) {
+      return { enabled: false, extensionsDir: null };
+    }
+    return { enabled: true, extensionsDir: path.resolve(cleanOverride) };
+  }
+
+  const disableFlags = [
+    process.env.CUTHOL_DISABLE_EXTENSIONS,
+    process.env.CUTHOL_NO_EXTENSIONS,
+    process.env.CUTHOL_DISABLE_SHARED_EXTENSIONS,
+  ];
+  for (const flag of disableFlags) {
+    if (flag && ENABLED_TOKENS.has(flag.trim().toLowerCase())) {
+      return { enabled: false, extensionsDir: null };
+    }
+  }
+
+  const rawExtCandidates = [
+    process.env.CUTHOL_EXTENSIONS_DIR,
+    process.env.CUTHOL_SHARED_EXTENSIONS_DIR,
+    process.env.CUTHOL_USER_EXTENSIONS_DIR,
+  ];
+  for (const raw of rawExtCandidates) {
+    if (raw === undefined) continue;
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const lower = trimmed.toLowerCase();
+    if (DISABLED_TOKENS.has(lower)) {
+      return { enabled: false, extensionsDir: null };
+    }
+    if (ENABLED_TOKENS.has(lower)) {
+      continue;
+    }
+    return { enabled: true, extensionsDir: path.resolve(trimmed) };
+  }
+
+  const cacheCfg = resolveSharedCacheConfig();
+  if (!cacheCfg.enabled || !cacheCfg.cacheDir) {
+    return { enabled: false, extensionsDir: null };
+  }
+
+  const cacheBase = path.basename(cacheCfg.cacheDir).toLowerCase();
+  const rootCutholDir =
+    cacheBase === "cache" ? path.dirname(cacheCfg.cacheDir) : cacheCfg.cacheDir;
+  return {
+    enabled: true,
+    extensionsDir: path.join(rootCutholDir, "extensions"),
   };
 }
 

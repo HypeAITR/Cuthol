@@ -30,6 +30,7 @@ import {
   validateActionArgs,
   WORKSPACELESS_TOOLS,
 } from "./catalog.js";
+import { resolveExtension } from "../extensions/manager.js";
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT_DIR = path.resolve(MODULE_DIR, "../..");
@@ -46,12 +47,13 @@ export const GUIDE_TOPICS: Record<string, string> = {
   speech_mix: "references/speech-and-mix.md",
   compositions: "references/compositions.md",
   verify_monitor: "references/verify-and-monitor.md",
+  extensions: "references/extensions.md",
   mcp: "references/mcp.md",
 };
 
 /** Tools visible before `discover_capabilities` when progressive disclosure is enabled. */
 const PROGRESSIVE_CORE_TOOLS = new Set(["workspace", "library", "brief", "spine", "lane", "verify", "monitor", "guide"]);
-const SPECIALIST_TOOLS = ["composition", "speech", "mix", "cue", "render"];
+const SPECIALIST_TOOLS = ["composition", "speech", "mix", "cue", "render", "extension"];
 
 export const SERVER_INSTRUCTIONS = `Cuthol is a video editor you drive through tools. A project is a folder with cuthol.sequence.json.
 
@@ -68,7 +70,8 @@ Rules:
 - Every edit returns the new revision, what changed and what an undo would revert. Undo with expect_rev; use dry_run when unsure.
 - Errors explain the fix ("Öneri"). Do not repeat an identical failing call; change the arguments.
 - For your own animations: composition.scaffold preset=blank, write index.html (your file tools or composition.write) using window.__cuthol (C.word, C.beats, C.beatGrid, C.audio, C.cuts, C.drive, C.value), mount with lane.add_composition, then composition.preview. Read guide(topic='compositions') first.
-- Read guide(topic=...) for details: overview, editing, speech_mix, compositions, verify_monitor, mcp.`;
+- For reusable custom helpers, brand kits, media processors or multi-step recipes: use the extension tool (list/create/show/enable/disable/promote/remove/run) and read guide(topic='extensions') or guide(topic='ext:<name>').
+- Read guide(topic=...) for details: overview, editing, speech_mix, compositions, verify_monitor, extensions, mcp.`;
 
 export interface McpContent {
   type: "text" | "image";
@@ -955,7 +958,15 @@ export class CutholMcpServer {
     }
 
     if (spec.tool === "guide") {
-      return this.recordOutcome(signature, this.readGuide(String(values.topic ?? "overview")), false);
+      const hintDir =
+        typeof args.dir === "string" && args.dir.trim()
+          ? path.resolve(args.dir.trim())
+          : this.sessionDir;
+      return this.recordOutcome(
+        signature,
+        this.readGuide(String(values.topic ?? "overview"), hintDir),
+        false
+      );
     }
 
     // Resolve the project folder.
@@ -970,6 +981,15 @@ export class CutholMcpServer {
       } else if (fs.existsSync(path.join(process.cwd(), "cuthol.sequence.json"))) {
         workspaceDir = process.cwd();
       }
+      const isWorkspacelessExtensionAction =
+        spec.tool === "extension" &&
+        (spec.action === "list" ||
+          spec.action === "show" ||
+          (spec.action === "create" && values.scope === "persistent") ||
+          (spec.action === "remove" && values.scope === "persistent"));
+      if (!workspaceDir && isWorkspacelessExtensionAction) {
+        workspaceDir = process.cwd();
+      }
       if (!workspaceDir) {
         return this.textResult(
           spec.action === "init"
@@ -980,7 +1000,11 @@ export class CutholMcpServer {
           true
         );
       }
-      if (!(spec.tool === "workspace" && spec.action === "init") && !fs.existsSync(path.join(workspaceDir, "cuthol.sequence.json"))) {
+      if (
+        !(spec.tool === "workspace" && spec.action === "init") &&
+        !isWorkspacelessExtensionAction &&
+        !fs.existsSync(path.join(workspaceDir, "cuthol.sequence.json"))
+      ) {
         return this.textResult(
           `FAILED ${label}: '${workspaceDir}' is not a Cuthol project (no cuthol.sequence.json). Use workspace.init to create one.`,
           true
@@ -1118,11 +1142,36 @@ export class CutholMcpServer {
     );
   }
 
-  private readGuide(topic: string): McpToolResult {
-    const rel = GUIDE_TOPICS[topic];
+  private readGuide(topic: string, workspaceDir?: string | null): McpToolResult {
+    const trimmed = (topic || "overview").trim();
+    if (/^ext:/i.test(trimmed)) {
+      const extName = trimmed.slice(4).trim();
+      try {
+        const ext = resolveExtension(extName, workspaceDir);
+        const guideRel = ext.guideRelPath ?? "README.md";
+        const guideFile = path.join(ext.dir, guideRel);
+        if (!fs.existsSync(guideFile)) {
+          return this.textResult(
+            `FAILED guide: extension '${ext.name}' does not have a guide file ('${guideRel}') in ${ext.dir}.`,
+            true
+          );
+        }
+        const text = fs.readFileSync(guideFile, "utf8").replace(/^---[\s\S]*?---\s*/, "");
+        return this.textResult(text, false);
+      } catch (err) {
+        return this.textResult(
+          `FAILED guide: ${err instanceof Error ? err.message : String(err)}`,
+          true
+        );
+      }
+    }
+    const rel = GUIDE_TOPICS[trimmed];
     const file = rel ? path.join(SKILL_DIR, rel) : null;
     if (!file || !fs.existsSync(file)) {
-      return this.textResult(`FAILED guide: topic '${topic}' not available. Topics: ${Object.keys(GUIDE_TOPICS).join(", ")}.`, true);
+      return this.textResult(
+        `FAILED guide: topic '${trimmed}' not available. Topics: ${Object.keys(GUIDE_TOPICS).join(", ")}, or ext:<name>.`,
+        true
+      );
     }
     const text = fs.readFileSync(file, "utf8").replace(/^---[\s\S]*?---\s*/, "");
     return this.textResult(text, false);

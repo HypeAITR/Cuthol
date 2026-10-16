@@ -7,7 +7,7 @@ You cannot watch video; these tools are how you see. MCP returns the images inli
 | Call | What you get | Cost |
 |---|---|---|
 | `monitor.frame(at="4.2s", boxes=true)` | One composited frame from the same pipeline as the final render, plus luma stats and blank-frame check. Boxes show safe areas and each visible cue (overlays are measured from their alpha). | seconds |
-| `monitor.sheet(start, end, grid="4x3")` | A grid of frames across a window, each labelled with time and active handles. Best overview after an edit. | ~10–20 s |
+| `monitor.sheet(start, end, grid="4x3")` | A grid of frames across `[start, end]`, each rendered through the same single-frame pipeline as `monitor.frame` (composition frames are captured in one batched `snapshot` call and cached per frame, without rendering the full sequence). | ~10–20 s cold, <5 s warm |
 | `monitor.timeline()` | Lane diagram: spine clips and transitions, every cue, music beats and the ducking curve. Best for spotting gaps, overlaps and lanes outlasting the spine. | ~1 s |
 | `composition.preview(cue, at=[…])` | An overlay alone: checkerboard / over footage (over the stage backdrop when nothing visual plays underneath) / alpha mask. | Chrome render |
 
@@ -48,6 +48,7 @@ What to check, concretely:
 | G402 | G4 WARN | Caption reading speed too high → fewer words per caption. |
 | G403 | G4 WARN | Text covered by a higher layer. |
 | G406 | G4 WARN | Overlay uses backdrop-filter / blend modes in overlay mode → `mode="scene_host"`. |
+| G407 | G4 WARN | HyperFrames lint finding inside a mounted composition (e.g. `gsap_non_transform_motion` tweening `left`/`width`, `duplicate_media_discovery_risk`; cached by composition content hash, size/sub-composition split hints are ignored) → apply the finding's `Öneri` fix hint. |
 | G501 | G5 WARN | True peak above −1 dBTP → lower gain or `mix.normalize`. |
 | G502 | G5 WARN | Blank or backdrop-filled frame (even with a caption/small overlay on top); also emitted after `render` with event timestamps if a spine clip drops to backdrop outside intentional fades. Without spine clips only frames with no visual cue count: dark frames a composition draws itself are not reported. |
 | G503 | G5 ERROR | HyperFrames could not render an overlay; the render stops with `ok:false` and nothing is substituted. The message carries the HyperFrames error → open the composition with `composition.preview`, fix it, render again. Renders have no time limit: a long video simply takes longer (MCP reports progress and can be cancelled). |

@@ -11,9 +11,15 @@ edit's words, beats, audio energy and cuts **in the composition's own seconds** 
    → creates `index.html`, `assets/gsap.min.js`, `assets/cuthol-runtime.js`, `assets/cuthol-data.js`.
    Other presets (`counter`, `beat_cards`, `audio_glow`, `cut_phases`, `lower_third`, `title_card`, `stat_callout`, `badge_overlay`) are examples you can read and adapt.
 2. Write your animation into `index.html` (template below) — with your file tools, or `composition.write(comp_dir, content)` over MCP.
-3. `lane.add_composition(comp_dir="compositions/intro", at="1.5s", duration="4.5s")` (or `anchor="sp_02"`). The duration must match `data-duration` in the HTML.
+3. `lane.add_composition(comp_dir="compositions/intro", at="1.5s", duration="4.5s", z_index?)` (or `anchor="sp_02"`). The duration must match `data-duration` in the HTML.
 4. `composition.preview(cue="cue_05", at=["0.3","1.2","3.0"])` → contact sheet image: checkerboard (true alpha) | over the real footage | alpha mask, plus WCAG contrast findings on the real background.
 5. `monitor.frame(at=<timeline time>)` to see it in context with captions/titles, then render.
+
+## Long single compositions and simultaneous layers
+
+- **Full-length single compositions are normal:** A composition does not have to be a short 3–5 s card; it can span the entire video (e.g. 90+ seconds) and drive multiple scenes from `C.global.words` or `C.word`. You do not need to split a long composition into sub-compositions unless you want to.
+- **Layered compositions at the same time:** Multiple composition cues can overlap in time. For example, one composition can render changing scenes across `0..98.7s` while a second composition renders a continuous mascot or corner badge on top across the same `0..98.7s` window.
+- **Layer order:** Across lanes, higher `lane.z_index` renders on top (new composition lanes created via `lane.add_composition(lane="ln_mascot", ...)` default to a higher `z_index` above `ln_motion`). Within the same lane (`ln_motion`), cues with higher `z_index` render on top, and cues with equal/omitted `z_index` render in cue order (later cues on top of earlier cues). Use `z_index` on `lane.add_composition` or `lane.update_cue` whenever you want explicit ordering within a lane.
 
 After any later edit (trim, cleanup, new music…), Cuthol rewrites `assets/cuthol-data.js` automatically if the data inside this composition's window changed. Your HTML does not change, so word-locked and beat-locked animation stays in sync. During sync, Cuthol only touches the exact `<script src="assets/cuthol-data.js"></script>` and `<script src="assets/cuthol-runtime.js"></script>` tags and never modifies any other `<script>` tags in your HTML.
 
@@ -79,8 +85,8 @@ Use the stage size from `brief` (16:9 → 1920x1080, 9:16 → 1080x1920) for `#r
 - **`gsap.fromTo` / `immediateRender` trap at `t = 0`:** Because GSAP defaults `immediateRender: true` on `fromTo`/`from` tweens, a later tween on the same element (or a `fromTo` that only animates `scale`/`y` while CSS leaves `opacity: 1`) applies its `from` values immediately when the timeline is built — making elements appear at `t = 0` before their cue time or overwriting an earlier tween's initial state during seek-based rendering. **Fix:** start elements hidden in CSS (`opacity: 0`) or with `tl.set(el, { opacity: 0 }, 0)`, pass `immediateRender: false` on later chained `fromTo`/`from` tweens on the same target, or use `tl.set(el, { opacity: 0, y: 40 }, 0)` followed by `tl.to(el, { opacity: 1, y: 0, duration: 0.35 }, startTime)`.
 - Keep `html, body, #root` transparent. Don't paint a full-frame background unless you want to hide the video (G505 warns about an opaque overlay).
 - No network: no CDN scripts, web fonts or remote images. Put files in `assets/` and reference them relatively. System fonts are safe.
-- Never tween `visibility`, `display` or `autoAlpha` on `.clip` elements.
-- `hyperframes lint` may warn `nested_structure_needs_subcomposition`; that only affects HyperFrames' own editor and can be ignored.
+- Never tween `visibility`, `display` or `autoAlpha` on `.clip` elements, and never tween layout/reflow properties (`left`, `top`, `width`, `height`, `fontSize`) with GSAP (`gsap_non_transform_motion` — use transforms `x`, `y`, `scale`, `scaleX`, `scaleY`, `opacity` instead).
+- `verify` runs HyperFrames lint on every mounted composition (cached by content hash) and surfaces real lint issues as `CUTHOL-G407` warnings; size/splitting advisories (`composition_file_too_large`, `nested_structure_needs_subcomposition`, `timeline_track_too_dense`) are treated as info, not warnings.
 
 ## `window.__cuthol` API
 

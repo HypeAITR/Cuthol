@@ -32,8 +32,8 @@ interface you are using.
 - **Spine**: the main storyline. Clips `sp_01, sp_02 …` play back-to-back with no gaps. It may stay empty (graphics-only video, below). Trimming, cutting or removing a clip ripples everything after it. Handles (`sp_XX`, `cue_XX`, `mk_XX`, `vo_XX`) are never reused after deletion within the same project (tracked in `meta.handle_counters`, consistent across undo/redo).
 - **Lanes**: parallel tracks for cues `cue_01 …`
   `ln_titles` (text, z 25) · `ln_captions` (z 30) · `ln_motion` (HyperFrames overlays, z 20) · `ln_broll` (z 10) · `ln_vo` voiceover · `ln_sfx` · `ln_bgm` music.
-  A cue sits at an absolute time (`at`) or is **anchored** to a spine clip (`anchor="sp_02", offset="300ms"`) and then moves with that clip through edits.
-- **Two clocks**: transcripts store source time; Cuthol projects words onto the timeline for you, including after trims, speed changes and cuts.
+  A cue sits at an absolute time (`at`) or is **anchored** to a spine clip (`anchor="sp_02", offset="300ms"`) and then moves with that clip through edits. Audio/media cues on lanes also support playback speed (`rate`, `preserve_pitch=true` via `lane.add_cue` / `lane.update_cue`), which rescales cue duration and projects transcript word times automatically. Multiple composition cues can run simultaneously (stacked on `ln_motion` in cue order / `z_index`, or on separate composition lanes).
+- **Two clocks**: transcripts store source time; Cuthol projects words onto the timeline for you, including after trims, speed changes (on spine clips or `ln_vo` voiceover cues) and cuts.
 - **Time literals**: `1500ms`, `1.5s`, `00:01.500`. **Positions**: lane `x`/`y` are % offsets from the centre of the stage (`y=-30` is towards the top).
 - **Stage-scaled typography defaults**: On vertical `9:16` (`1080x1920`), titles default to `76 px` (`max_width=70`%) and captions to `64 px` (`max_width=70`%, `max_words=4`, `max_chars=26`); on landscape `16:9` (`1920x1080`), titles default to `56 px` (`max_width=76`%) and auto-captions to `42 px` (`max_width=80`%, `max_words=5`, `max_chars=38`; manual lane captions `44 px` / `76%`).
 
@@ -51,8 +51,15 @@ interface you are using.
 ## Graphics-only video (no footage)
 
 Leave the spine empty; the lanes are then the whole edit and the sequence lasts until the latest lane cue ends. Place cues with `at` (anchors need a spine clip).
-`workspace.init` → `workspace.backdrop(color="#RRGGBB")` (the base colour that shows through transparent parts of compositions) → `library.ingest` (voiceover, effects, music) → `lane.add_cue` for the audio → `composition.scaffold` + `lane.add_composition` on `ln_motion`, back to back so every moment has a picture → `verify()` → `monitor.sheet` → `mix.normalize()` → `render`.
+`workspace.init` → `workspace.backdrop(color="#RRGGBB")` (the base colour that shows through transparent parts of compositions) → `library.ingest` (voiceover, effects, music) → `lane.add_cue` for the audio (use `rate` on `ln_vo` if the narration should run faster/slower) → `composition.scaffold` + `lane.add_composition` on `ln_motion` (a single full-length composition covering the whole edit, or stacked/sequential composition layers such as a continuous mascot/badge layer over scene layers) → `verify()` → `monitor.sheet` → `mix.normalize()` → `render`.
 Where no visual cue is on screen only the stage backdrop shows (G308). A project with nothing on it gives G307, and `render` refuses it.
+
+## Extensions (when to write your own tool)
+
+When a task needs a reusable niche helper across scenes or projects — such as an audio-reactive mascot mouth state (`C.ext.mouth.state(t)`), a shared brand kit of fonts/logos (`assets/ext/kit/...`), a custom media processor (`ffmpeg` filter chain like `atempo` or a child-process `node` script) or a parameterized multi-step workflow recipe — package it as a Cuthol extension instead of repeating boilerplate:
+- **Temporary (project-only):** `<project>/.cuthol/extensions/<name>/` (`scope="project"`). Overrides a persistent extension of the same name.
+- **Persistent (all projects):** `~/.cuthol/extensions/<name>/` (`scope="persistent"`, redirected via `CUTHOL_EXTENSIONS_DIR`, or promoted from project via `extension.promote`).
+- Create or run immediately with `extension(action="create"|"enable"|"run"|"list"|"show"|"promote"|"disable"|"remove")` — no rebuild or MCP server restart needed. Enabled extensions are pinned by `content_hash` in `cuthol.sequence.json`; if modified later, `verify` warns with `CUTHOL-G205` until re-enabled. See `references/extensions.md` (`guide(topic="extensions")`).
 
 ## Rules
 
@@ -61,7 +68,7 @@ Where no visual cue is on screen only the stage backdrop shows (G308). A project
 3. **Undo safely.** Check the undo line first, pass `expect_rev`, use `dry_run=true` when unsure, and `lane.lock` lanes you must not lose (e.g. finished titles).
 4. **Never repeat a failing call unchanged.** Errors carry `Öneri:` (the fix). The MCP server refuses the third identical failure.
 5. **Anchor what belongs to a clip.** Titles/b-roll that describe a shot should be anchored to that clip, so later trims don't desync them.
-6. **Prefer digests and queries.** Analyzers return short digests; read details with `library.query(handle, kind, range|text)` instead of `verbose`.
+6. **Prefer digests and queries.** Analyzers return short digests; read details with `library.query(handle, kind, range|text, format?)` instead of `verbose` (pass `format="compact"` on transcripts to get hundreds of `i:word@sec` tokens in a single call).
 7. **Overlays are code.** Write HyperFrames HTML with `window.__cuthol`; never use green-screen keying. Default mode `overlay_alpha` keeps real transparency.
 8. **Speech services cost money.** Transcripts and voiceovers are cached by SHA-256 both inside the project (`.cuthol/ledger.sqlite`) and in the user-level shared cache (`~/.cuthol/cache`, redirected via `CUTHOL_CACHE_DIR`, disabled via `CUTHOL_CACHE_DIR=0` or `CUTHOL_DISABLE_SHARED_CACHE=1`); don't re-transcribe edited copies needlessly. `provider="local"` TTS without a configured command produces placeholder tones, not speech.
 
@@ -73,4 +80,5 @@ Where no visual cue is on screen only the stage backdrop shows (G308). A project
 | Transcription, cleanup, captions, voiceover, loudness, ducking, beat alignment | `references/speech-and-mix.md` | `guide(topic="speech_mix")` |
 | Writing HyperFrames overlays, `window.__cuthol` API, overlay modes, preview | `references/compositions.md` | `guide(topic="compositions")` |
 | Verification gates and all diagnostic codes, monitor, render | `references/verify-and-monitor.md` | `guide(topic="verify_monitor")` |
+| Extensions: manifest, composition helpers (`C.ext`), asset packs, processors, recipes, security | `references/extensions.md` | `guide(topic="extensions")` or `guide(topic="ext:<name>")` |
 | MCP server setup and conventions | `references/mcp.md` | `guide(topic="mcp")` |

@@ -97,6 +97,12 @@ export class MediaLedger {
         alignment_json TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS extension_cache (
+        cache_key TEXT PRIMARY KEY,
+        output_path TEXT NOT NULL,
+        meta_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
     `);
   }
 
@@ -476,6 +482,117 @@ export class MediaLedger {
              VALUES (?, ?, ?, ?)`
           )
           .run(cacheKey, sharedAudioPath, serialized, now);
+      } catch {
+        // non-blocking shared cache write
+      }
+    }
+  }
+
+  public getExtensionProcessorResult<T>(
+    cacheKey: string,
+    localBlobsDir?: string
+  ): { outputPath: string; meta: T } | null {
+    const row = this.db
+      .prepare(`SELECT output_path, meta_json FROM extension_cache WHERE cache_key = ?`)
+      .get(cacheKey) as { output_path: string; meta_json: string } | undefined;
+    if (row && fs.existsSync(row.output_path)) {
+      const shared = this.getSharedDb();
+      if (shared && this.sharedConfig.blobsDir) {
+        try {
+          const existingShared = shared
+            .prepare(`SELECT output_path FROM extension_cache WHERE cache_key = ?`)
+            .get(cacheKey) as { output_path: string } | undefined;
+          if (!existingShared || !fs.existsSync(existingShared.output_path)) {
+            fs.mkdirSync(this.sharedConfig.blobsDir, { recursive: true });
+            const ext = path.extname(row.output_path) || ".bin";
+            const sharedOutPath = path.join(
+              this.sharedConfig.blobsDir,
+              `ext_${cacheKey.slice(0, 16)}${ext}`
+            );
+            if (path.resolve(row.output_path) !== path.resolve(sharedOutPath)) {
+              fs.copyFileSync(row.output_path, sharedOutPath);
+            }
+            shared
+              .prepare(
+                `INSERT OR REPLACE INTO extension_cache (cache_key, output_path, meta_json, created_at)
+                 VALUES (?, ?, ?, ?)`
+              )
+              .run(cacheKey, sharedOutPath, row.meta_json, new Date().toISOString());
+          }
+        } catch {
+          // non-blocking shared cache promotion
+        }
+      }
+      return {
+        outputPath: row.output_path,
+        meta: JSON.parse(row.meta_json) as T,
+      };
+    }
+
+    const shared = this.getSharedDb();
+    if (shared) {
+      try {
+        const sharedRow = shared
+          .prepare(`SELECT output_path, meta_json FROM extension_cache WHERE cache_key = ?`)
+          .get(cacheKey) as { output_path: string; meta_json: string } | undefined;
+        if (sharedRow && fs.existsSync(sharedRow.output_path)) {
+          let finalOutPath = sharedRow.output_path;
+          if (localBlobsDir) {
+            fs.mkdirSync(localBlobsDir, { recursive: true });
+            const ext = path.extname(sharedRow.output_path) || ".bin";
+            const localCopy = path.join(localBlobsDir, `ext_${cacheKey.slice(0, 16)}${ext}`);
+            if (path.resolve(sharedRow.output_path) !== path.resolve(localCopy)) {
+              fs.copyFileSync(sharedRow.output_path, localCopy);
+            }
+            finalOutPath = localCopy;
+          }
+          this.db
+            .prepare(
+              `INSERT OR REPLACE INTO extension_cache (cache_key, output_path, meta_json, created_at)
+               VALUES (?, ?, ?, ?)`
+            )
+            .run(cacheKey, finalOutPath, sharedRow.meta_json, new Date().toISOString());
+          return {
+            outputPath: finalOutPath,
+            meta: JSON.parse(sharedRow.meta_json) as T,
+          };
+        }
+      } catch {
+        // non-blocking shared cache read
+      }
+    }
+
+    return null;
+  }
+
+  public setExtensionProcessorResult<T>(cacheKey: string, outputPath: string, meta: T): void {
+    const serialized = JSON.stringify(meta);
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO extension_cache (cache_key, output_path, meta_json, created_at)
+         VALUES (?, ?, ?, ?)`
+      )
+      .run(cacheKey, outputPath, serialized, now);
+
+    const shared = this.getSharedDb();
+    if (shared && this.sharedConfig.blobsDir && fs.existsSync(outputPath)) {
+      try {
+        fs.mkdirSync(this.sharedConfig.blobsDir, { recursive: true });
+        const ext = path.extname(outputPath) || ".bin";
+        const sharedOutPath = path.join(
+          this.sharedConfig.blobsDir,
+          `ext_${cacheKey.slice(0, 16)}${ext}`
+        );
+        if (path.resolve(outputPath) !== path.resolve(sharedOutPath)) {
+          fs.copyFileSync(outputPath, sharedOutPath);
+        }
+        shared
+          .prepare(
+            `INSERT OR REPLACE INTO extension_cache (cache_key, output_path, meta_json, created_at)
+             VALUES (?, ?, ?, ?)`
+          )
+          .run(cacheKey, sharedOutPath, serialized, now);
       } catch {
         // non-blocking shared cache write
       }

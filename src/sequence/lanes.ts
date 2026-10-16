@@ -14,7 +14,9 @@ import {
   createDefaultPlacement,
   CueAnchor,
   CutholSequence,
+  getCuePlaybackRate,
   HyperFramesMountSpec,
+  isStillGraphic,
   LaneCue,
   LaneKind,
   ParallelLane,
@@ -42,8 +44,19 @@ function collectAllCueIds(seq: CutholSequence): string[] {
 function ensureLaneExists(seq: CutholSequence, laneId: string, kind: LaneKind, zIndex?: number): ParallelLane {
   let lane = seq.lanes.find((l) => l.id === laneId);
   if (!lane) {
-    const defaultZ =
-      zIndex ?? (kind === "music" || kind === "sfx" || kind === "voiceover" ? -10 : 15);
+    let defaultZ: number;
+    if (zIndex !== undefined) {
+      defaultZ = zIndex;
+    } else if (kind === "music" || kind === "sfx" || kind === "voiceover") {
+      defaultZ = -10;
+    } else if (kind === "composition") {
+      const maxCompZ = seq.lanes
+        .filter((l) => l.kind === "composition")
+        .reduce((max, l) => Math.max(max, l.z_index), 20);
+      defaultZ = maxCompZ + 1;
+    } else {
+      defaultZ = 15;
+    }
     lane = {
       id: laneId,
       kind,
@@ -66,8 +79,12 @@ export function addLaneCue(options: {
   anchor?: CueAnchor | null;
   atMs?: number;
   durationMs: number;
+  explicitDuration?: boolean;
   sourceInMs?: number;
   sourceOutMs?: number;
+  rate?: number;
+  preservePitch?: boolean;
+  zIndex?: number;
   xPct?: number;
   yPct?: number;
   scale?: number;
@@ -84,10 +101,18 @@ export function addLaneCue(options: {
     (seq) => {
       const existingLane = seq.lanes.find((l) => l.id === options.laneId);
       const kind = options.kind ?? existingLane?.kind ?? "title";
-      const lane = ensureLaneExists(seq, options.laneId, kind);
+      const lane = ensureLaneExists(seq, options.laneId, kind, options.zIndex);
 
       const id = options.explicitId ?? allocateNextHandle(collectAllCueIds(seq), "cue", seq);
       syncSequenceHandleCounters(seq, [id]);
+
+      if (
+        options.rate !== undefined &&
+        (!Number.isFinite(options.rate) || options.rate < 0.1 || options.rate > 16.0)
+      ) {
+        throw new CutholError(DIAGNOSTICS.INVALID_PLAYBACK_RATE(id, options.rate));
+      }
+
       const placement = createDefaultPlacement();
       if (options.xPct !== undefined) placement.x_pct = options.xPct;
       if (options.yPct !== undefined) placement.y_pct = options.yPct;
@@ -120,15 +145,55 @@ export function addLaneCue(options: {
           ? createDefaultAudioChain()
           : undefined;
 
+      let sourceInMs = options.sourceInMs;
+      let sourceOutMs = options.sourceOutMs;
+      let durationMs = options.durationMs;
+      const rate = options.rate ?? 1.0;
+      const asset = options.assetHandle
+        ? seq.library.find((a) => a.handle === options.assetHandle)
+        : undefined;
+
+      if (options.rate !== undefined || options.preservePitch !== undefined) {
+        const srcIn = sourceInMs ?? 0;
+        if (sourceOutMs !== undefined) {
+          sourceInMs = srcIn;
+          if (!options.explicitDuration) {
+            durationMs = Math.max(1, Math.round(Math.max(1, sourceOutMs - srcIn) / rate));
+          }
+        } else if (asset && !isStillGraphic(asset)) {
+          sourceInMs = srcIn;
+          if (options.explicitDuration) {
+            sourceOutMs = Math.min(
+              asset.probe.duration_ms,
+              srcIn + Math.max(1, Math.round(durationMs * rate))
+            );
+            durationMs = Math.max(1, Math.round(Math.max(1, sourceOutMs - srcIn) / rate));
+          } else {
+            sourceOutMs = asset.probe.duration_ms;
+            durationMs = Math.max(1, Math.round(Math.max(1, sourceOutMs - srcIn) / rate));
+          }
+        }
+      }
+
+      const playback =
+        options.rate !== undefined || options.preservePitch !== undefined
+          ? {
+              rate,
+              preserve_pitch: options.preservePitch ?? true,
+            }
+          : undefined;
+
       const newCue: LaneCue = {
         id,
         kind,
         asset_handle: options.assetHandle,
         anchor: options.anchor ?? null,
         at_ms: options.atMs ?? 0,
-        duration_ms: options.durationMs,
-        source_in_ms: options.sourceInMs,
-        source_out_ms: options.sourceOutMs,
+        duration_ms: durationMs,
+        source_in_ms: sourceInMs,
+        source_out_ms: sourceOutMs,
+        ...(playback ? { playback } : {}),
+        ...(options.zIndex !== undefined ? { z_index: options.zIndex } : {}),
         placement,
         audio_chain: audioChain,
         typography,
@@ -150,6 +215,11 @@ export function updateLaneCue(options: {
   cueId: string;
   atMs?: number;
   durationMs?: number;
+  sourceInMs?: number;
+  sourceOutMs?: number;
+  rate?: number;
+  preservePitch?: boolean;
+  zIndex?: number;
   anchor?: CueAnchor | null;
   xPct?: string | number;
   yPct?: string | number;
@@ -176,6 +246,19 @@ export function updateLaneCue(options: {
         throw new CutholError(DIAGNOSTICS.UNKNOWN_HANDLE(options.cueId));
       }
 
+      if (
+        options.rate !== undefined &&
+        (!Number.isFinite(options.rate) || options.rate < 0.1 || options.rate > 16.0)
+      ) {
+        throw new CutholError(DIAGNOSTICS.INVALID_PLAYBACK_RATE(targetCue.id, options.rate));
+      }
+
+      const oldRate = getCuePlaybackRate(targetCue);
+      const oldDurationMs = targetCue.duration_ms;
+      const asset = targetCue.asset_handle
+        ? seq.library.find((a) => a.handle === targetCue.asset_handle)
+        : undefined;
+
       if (options.anchor !== undefined) targetCue.anchor = options.anchor;
       if (options.atMs !== undefined) {
         targetCue.at_ms = options.atMs;
@@ -183,7 +266,69 @@ export function updateLaneCue(options: {
           targetCue.anchor = null;
         }
       }
-      if (options.durationMs !== undefined) targetCue.duration_ms = options.durationMs;
+      if (options.sourceInMs !== undefined) targetCue.source_in_ms = options.sourceInMs;
+      if (options.sourceOutMs !== undefined) targetCue.source_out_ms = options.sourceOutMs;
+
+      if (options.rate !== undefined || options.preservePitch !== undefined) {
+        const nextRate = options.rate ?? oldRate;
+        const nextPreservePitch =
+          options.preservePitch ?? targetCue.playback?.preserve_pitch ?? true;
+
+        if (options.rate !== undefined) {
+          const srcIn = targetCue.source_in_ms ?? 0;
+          let srcOut = targetCue.source_out_ms;
+          if (srcOut === undefined) {
+            const rawSpan = Math.max(1, Math.round(oldDurationMs * oldRate));
+            srcOut =
+              asset && !isStillGraphic(asset)
+                ? Math.min(asset.probe.duration_ms, srcIn + rawSpan)
+                : srcIn + rawSpan;
+          }
+          targetCue.source_in_ms = srcIn;
+          targetCue.source_out_ms = srcOut;
+          if (options.durationMs === undefined) {
+            const srcSpan = Math.max(1, srcOut - srcIn);
+            targetCue.duration_ms = Math.max(1, Math.round(srcSpan / nextRate));
+          }
+        }
+
+        targetCue.playback = {
+          rate: nextRate,
+          preserve_pitch: nextPreservePitch,
+        };
+      }
+
+      if (options.durationMs !== undefined) {
+        targetCue.duration_ms = options.durationMs;
+        if (targetCue.source_out_ms !== undefined && options.sourceOutMs === undefined) {
+          const effRate = getCuePlaybackRate(targetCue);
+          const srcIn = targetCue.source_in_ms ?? 0;
+          const newSpan = Math.max(1, Math.round(options.durationMs * effRate));
+          targetCue.source_out_ms =
+            asset && !isStillGraphic(asset)
+              ? Math.min(asset.probe.duration_ms, srcIn + newSpan)
+              : srcIn + newSpan;
+        }
+      }
+
+      if (
+        targetCue.duration_ms !== oldDurationMs &&
+        oldDurationMs > 0 &&
+        targetCue.envelopes.length > 0
+      ) {
+        for (const env of targetCue.envelopes) {
+          for (const pt of env.points) {
+            pt.offset_ms = Math.min(
+              targetCue.duration_ms,
+              Math.max(0, Math.round((pt.offset_ms * targetCue.duration_ms) / oldDurationMs))
+            );
+          }
+        }
+      }
+
+      if (options.zIndex !== undefined) {
+        targetCue.z_index = options.zIndex;
+      }
       if (options.xPct !== undefined) {
         targetCue.placement.x_pct = applyNumericDeltaOrValue(targetCue.placement.x_pct, options.xPct);
       }

@@ -121,6 +121,16 @@ function renderOverviewLens(seq: CutholSequence): string {
     );
   }
 
+  if (seq.extensions && seq.extensions.length > 0) {
+    lines.push("");
+    lines.push(`## Enabled Extensions (${seq.extensions.length})`);
+    for (const ext of seq.extensions) {
+      lines.push(
+        `- \`${ext.name}\` v${ext.version} (\`${ext.scope}\`, hash: \`${ext.content_hash}\`)`
+      );
+    }
+  }
+
   return lines.join("\n");
 }
 

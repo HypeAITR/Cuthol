@@ -145,10 +145,16 @@ export const TOOL_SPECS: ToolSpec[] = [
       "Render the edit to MP4. draft_480p for checks, master_1080p for delivery. Long-running (progress notifications are sent). Run verify first and inspect the output with monitor.",
   },
   {
+    name: "extension",
+    title: "Extensions & custom tools",
+    description:
+      "Create, inspect, enable/disable, promote, remove and run project-local (.cuthol/extensions/<name>) or persistent (~/.cuthol/extensions/<name>) extensions providing composition helpers (window.__cuthol.ext.<name>), asset packs (assets/ext/<name>/), media processors (ffmpeg filters or child-process node scripts) and multi-step recipes.",
+  },
+  {
     name: "guide",
     title: "Cuthol manual",
     description:
-      "Read the Cuthol manual. Topics: overview (workflow & rules), editing (spine/lanes/time/undo), speech_mix (ASR, captions, cleanup, ducking), compositions (writing HyperFrames overlays with window.__cuthol), verify_monitor (gates, frames, render), mcp (this server's conventions).",
+      "Read the Cuthol manual. Topics: overview (workflow & rules), editing (spine/lanes/time/undo), speech_mix (ASR, captions, cleanup, ducking), compositions (writing HyperFrames overlays with window.__cuthol), verify_monitor (gates, frames, render), extensions (writing & using extensions), mcp (this server's conventions), or ext:<name> (an extension's README.md).",
   },
 ];
 
@@ -319,9 +325,10 @@ export const ACTION_SPECS: ActionSpec[] = [
     params: [
       p.handle("Asset handle, or 'ln_captions' for caption cues."),
       { name: "kind", type: "string", description: "Which analysis to read.", enum: ["transcript", "beats", "waveform", "scenes", "captions"] },
+      { name: "format", type: "string", description: "Output format for transcript queries: 'default' (word objects) or 'compact' ('i:word@sec' strings, hundreds of words per page).", enum: ["default", "compact"] },
       { name: "range", type: "string", description: "Time window, e.g. '2s..8s' (source time of the asset)." },
       { name: "text", type: "string", description: "Find transcript words (Turkish-diacritic insensitive), or pass 'onset' with kind='beats' to query detected onset peaks instead of the regular beat grid." },
-      { name: "limit", type: "number", description: "Max items (default 40)." },
+      { name: "limit", type: "number", description: "Max items (default 40; 600 when format='compact')." },
       { name: "cursor", type: "string", description: "Pagination cursor from a previous result." },
       { name: "max_tokens", type: "number", description: "Approximate output budget." },
     ],
@@ -548,7 +555,12 @@ export const ACTION_SPECS: ActionSpec[] = [
       { name: "at", type: "time", description: `Absolute timeline start (default 0). Ignored when anchor is set. ${TIME_HELP}` },
       { name: "anchor", type: "string", description: "Spine clip id to attach to; the cue then follows that clip through edits." },
       { name: "offset", type: "time", description: "Offset from the anchor clip's start (default 0)." },
-      { name: "duration", type: "time", description: "Cue length (default 3000ms)." },
+      { name: "duration", type: "time", description: "Cue length (default 3000ms, or scaled from asset length when rate is set)." },
+      { name: "in", type: "time", description: `Source in point for media cues (default 0). ${TIME_HELP}` },
+      { name: "out", type: "time", description: `Source out point for media cues. ${TIME_HELP}` },
+      { name: "rate", type: "number", description: "Playback rate for audio/media cues, e.g. 1.3 (faster) or 0.75 (slower)." },
+      { name: "preserve_pitch", type: "boolean", description: "Keep audio pitch when changing playback rate (default true, uses atempo)." },
+      { name: "z_index", type: "number", description: "Layer stacking order (higher renders on top)." },
       { name: "size", type: "number", description: "Font size in px (titles)." },
       { name: "color", type: "string", description: "Text colour hex, e.g. '#FFFFFF'." },
       { name: "max_width", type: "number", description: "Max text width in % of stage width." },
@@ -572,6 +584,7 @@ export const ACTION_SPECS: ActionSpec[] = [
       { name: "anchor", type: "string", description: "Spine clip id to attach to." },
       { name: "offset", type: "time", description: "Offset from the anchor clip's start." },
       { name: "duration", type: "time", description: "Overlay length (default 4000ms)." },
+      { name: "z_index", type: "number", description: "Layer stacking order (higher renders on top; within the same lane, higher z_index or later cues render on top)." },
       { name: "props", type: "object", description: "Scalar props exposed to the HTML as window.__cuthol.props and HyperFrames variables." },
       { name: "mode", type: "string", description: "overlay_alpha (default, true alpha) or scene_host (only for backdrop-filter / mix-blend-mode that must read the video).", enum: ["overlay_alpha", "scene_host"] },
       { name: "entry", type: "string", description: "Entry HTML file (default index.html)." },
@@ -583,12 +596,17 @@ export const ACTION_SPECS: ActionSpec[] = [
     tool: "lane",
     action: "update_cue",
     argv: ["lane", "update-cue"],
-    summary: "Change timing, placement, text or gain of an existing cue. Placement values accept '+=' / '-='.",
+    summary: "Change timing, playback rate, placement, text or gain of an existing cue. Placement values accept '+=' / '-='.",
     mutates: true,
     params: [
       { name: "cue", type: "string", description: "Cue id (cue_XX).", required: true },
       { name: "at", type: "time", description: "New absolute start." },
       { name: "duration", type: "time", description: "New length." },
+      { name: "in", type: "time", description: `New source in point for media cues. ${TIME_HELP}` },
+      { name: "out", type: "time", description: `New source out point for media cues. ${TIME_HELP}` },
+      { name: "rate", type: "number", description: "Playback rate for audio/media cues (0.1..16.0, e.g. 1.3; rescales cue duration and projected word timings)." },
+      { name: "preserve_pitch", type: "boolean", description: "Keep audio pitch when changing playback rate (default true, uses atempo)." },
+      { name: "z_index", type: "number", description: "Layer stacking order within the lane (higher renders on top)." },
       { name: "x", type: "string", description: "Horizontal offset % (absolute or '+=5')." },
       { name: "y", type: "string", description: "Vertical offset % (absolute or '-=3')." },
       { name: "scale", type: "string", description: "Scale (absolute or relative)." },
@@ -946,16 +964,210 @@ export const ACTION_SPECS: ActionSpec[] = [
     ],
   },
 
+  // ---------------------------------------------------------------- extension
+  {
+    tool: "extension",
+    action: "list",
+    argv: ["extension", "list"],
+    summary: "List persistent, project-local and enabled extensions.",
+    mutates: false,
+    params: [
+      {
+        name: "scope",
+        type: "string",
+        description: "Optional filter by scope ('project' or 'persistent').",
+        enum: ["project", "persistent"],
+      },
+    ],
+  },
+  {
+    tool: "extension",
+    action: "create",
+    argv: ["extension", "create"],
+    summary: "Scaffold a new extension (cuthol-extension.json + sample files).",
+    mutates: false,
+    params: [
+      {
+        name: "name",
+        type: "string",
+        description: "Extension name (lowercase alphanumeric, '-', '_').",
+        required: true,
+      },
+      {
+        name: "scope",
+        type: "string",
+        description:
+          "Target scope: 'project' (.cuthol/extensions/<name>, default when a project is open) or 'persistent' (~/.cuthol/extensions/<name>).",
+        enum: ["project", "persistent"],
+      },
+      {
+        name: "template",
+        type: "string",
+        description: "Scaffold template kind (default 'full').",
+        enum: ["full", "helper", "processor_ffmpeg", "processor_node", "assets", "recipe"],
+      },
+      {
+        name: "description",
+        type: "string",
+        description: "Description of what the extension provides.",
+      },
+      {
+        name: "version",
+        type: "string",
+        description: "Extension version string (default '1.0.0').",
+      },
+      {
+        name: "network",
+        type: "boolean",
+        description: "Declare true if the extension requires network access.",
+      },
+      {
+        name: "overwrite",
+        type: "boolean",
+        description: "Overwrite existing extension folder if present.",
+      },
+    ],
+  },
+  {
+    tool: "extension",
+    action: "show",
+    argv: ["extension", "show"],
+    summary: "Show an extension's validated manifest, content hash and file list.",
+    mutates: false,
+    params: [
+      { name: "name", type: "string", description: "Extension name to inspect.", required: true },
+      {
+        name: "scope",
+        type: "string",
+        description: "Optional explicit scope ('project' or 'persistent').",
+        enum: ["project", "persistent"],
+      },
+    ],
+  },
+  {
+    tool: "extension",
+    action: "enable",
+    argv: ["extension", "enable"],
+    summary:
+      "Enable an extension in the active project (or update its pinned content hash) and sync composition bridges.",
+    mutates: true,
+    params: [
+      { name: "name", type: "string", description: "Extension name to enable.", required: true },
+      {
+        name: "scope",
+        type: "string",
+        description: "Optional explicit scope ('project' or 'persistent').",
+        enum: ["project", "persistent"],
+      },
+      p.dryRun("Preview enabling without writing."),
+    ],
+  },
+  {
+    tool: "extension",
+    action: "disable",
+    argv: ["extension", "disable"],
+    summary: "Disable an extension in the active project and remove its helper tag from compositions.",
+    mutates: true,
+    params: [
+      { name: "name", type: "string", description: "Extension name to disable.", required: true },
+      p.dryRun("Preview disabling without writing."),
+    ],
+  },
+  {
+    tool: "extension",
+    action: "promote",
+    argv: ["extension", "promote"],
+    summary: "Promote a project-local extension (.cuthol/extensions/<name>) to persistent (~/.cuthol/extensions/<name>).",
+    mutates: false,
+    params: [
+      { name: "name", type: "string", description: "Extension name to promote.", required: true },
+      {
+        name: "overwrite",
+        type: "boolean",
+        description: "Overwrite existing persistent extension with the same name (default true).",
+      },
+    ],
+  },
+  {
+    tool: "extension",
+    action: "remove",
+    argv: ["extension", "remove"],
+    summary: "Remove an extension folder from project or persistent storage.",
+    mutates: false,
+    params: [
+      { name: "name", type: "string", description: "Extension name to remove.", required: true },
+      {
+        name: "scope",
+        type: "string",
+        description: "Scope to remove from ('project' or 'persistent').",
+        enum: ["project", "persistent"],
+      },
+    ],
+  },
+  {
+    tool: "extension",
+    action: "run",
+    argv: ["extension", "run"],
+    summary: "Run an extension processor (producing a cached, journaled library asset) or multi-step recipe.",
+    mutates: true,
+    long: true,
+    params: [
+      { name: "name", type: "string", description: "Extension name.", required: true },
+      {
+        name: "processor",
+        type: "string",
+        description: "Processor name to run (auto-selected if the extension has only one processor).",
+      },
+      {
+        name: "recipe",
+        type: "string",
+        description: "Recipe name to run (auto-selected if no processor is given and the extension has one recipe).",
+      },
+      {
+        name: "input",
+        type: "string",
+        description: "Input library handle (e.g. 'aud_01', 'vid_01') or file path for a processor.",
+      },
+      {
+        name: "handle",
+        type: "string",
+        description: "Alias for 'input': input library handle to process.",
+      },
+      {
+        name: "target_handle",
+        type: "string",
+        description: "Optional explicit handle for the newly created library asset.",
+      },
+      {
+        name: "params",
+        type: "object",
+        description: "Parameters JSON object passed to the processor or recipe (e.g. { rate: 1.3 }).",
+      },
+      {
+        name: "scope",
+        type: "string",
+        description: "Optional explicit scope ('project' or 'persistent').",
+        enum: ["project", "persistent"],
+      },
+      p.dryRun("Preview processor/recipe run without mutating the sequence."),
+    ],
+  },
+
   // ---------------------------------------------------------------- guide
   {
     tool: "guide",
     action: null,
     argv: [],
     mcpOnly: true,
-    summary: "Read a manual topic.",
+    summary: "Read a manual topic or an extension's README.md ('ext:<name>').",
     mutates: false,
     params: [
-      { name: "topic", type: "string", description: "Manual topic (default overview).", enum: ["overview", "editing", "speech_mix", "compositions", "verify_monitor", "mcp"] },
+      {
+        name: "topic",
+        type: "string",
+        description:
+          "Manual topic: overview (default), editing, speech_mix, compositions, verify_monitor, extensions, mcp, or 'ext:<name>' for an extension's README.md.",
+      },
     ],
   },
 ];

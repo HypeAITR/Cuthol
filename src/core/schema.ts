@@ -211,6 +211,11 @@ export interface CueAnchor {
   offset_ms: number;
 }
 
+export interface CuePlaybackSpec {
+  rate: number;
+  preserve_pitch: boolean;
+}
+
 export interface LaneCue {
   id: string;
   kind: LaneKind;
@@ -220,11 +225,18 @@ export interface LaneCue {
   duration_ms: number;
   source_in_ms?: number;
   source_out_ms?: number;
+  playback?: CuePlaybackSpec;
+  z_index?: number;
   placement: SpatialPlacement;
   audio_chain?: AudioProcessingChain;
   typography?: TypographySpec;
   composition?: HyperFramesMountSpec;
   envelopes: ParameterEnvelope[];
+}
+
+export function getCuePlaybackRate(cue: Pick<LaneCue, "playback">): number {
+  const r = cue.playback?.rate;
+  return typeof r === "number" && Number.isFinite(r) && r > 0 ? r : 1.0;
 }
 
 export interface ParallelLane {
@@ -247,6 +259,14 @@ export interface MasterAudioBusSpec {
   gain_db: number;
   target_lufs: number;
   true_peak_ceiling_dbtp: number;
+}
+
+export interface MountedExtensionRef {
+  name: string;
+  version: string;
+  content_hash: string;
+  scope: "project" | "persistent";
+  enabled_at: string;
 }
 
 export interface CutholSequence {
@@ -280,6 +300,7 @@ export interface CutholSequence {
   };
   lanes: ParallelLane[];
   markers: TimelineMarker[];
+  extensions?: MountedExtensionRef[];
 }
 
 export function resolveAspectDimensions(aspect: AspectPreset): { width: number; height: number } {

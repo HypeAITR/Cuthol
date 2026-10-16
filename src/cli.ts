@@ -98,6 +98,20 @@ import { AsrProviderId, TtsProviderId } from "./speech/providers.js";
 import { synthesizeVoiceover } from "./speech/synthesize.js";
 import { transcribeLibraryAsset } from "./speech/transcribe.js";
 import { runWorkspaceVerification } from "./verify/gates.js";
+import {
+  createExtension,
+  disableExtensionInWorkspace,
+  enableExtensionInWorkspace,
+  ExtensionScope,
+  ExtensionTemplateKind,
+  listExtensions,
+  promoteExtension,
+  removeExtension,
+   resolveExtension,
+  runExtensionProcessor,
+  runExtensionRecipe,
+  showExtension,
+} from "./extensions/manager.js";
 
 interface ParsedArgs {
   positionals: string[];
@@ -127,6 +141,8 @@ const BOOLEAN_FLAGS = new Set([
   "replace",
   "include-empty",
   "preserve-duration",
+  "network",
+  "overwrite",
 ]);
 
 const KNOWN_CLI_FLAGS = new Set([
@@ -198,6 +214,7 @@ const KNOWN_CLI_FLAGS = new Set([
   "cue",
   "cues",
   "gain-db",
+  "z-index",
   "gates",
   "lang",
   "provider",
@@ -228,6 +245,15 @@ const KNOWN_CLI_FLAGS = new Set([
   "window",
   "deadband",
   "focal-points",
+  "scope",
+  "template",
+  "description",
+  "version",
+  "processor",
+  "recipe",
+  "input",
+  "params",
+  "topic",
 ]);
 
 function levenshtein(a: string, b: string): number {
@@ -423,9 +449,12 @@ async function main(): Promise<void> {
   activeCliSub = rest[0];
 
   const formatFlag = typeof flags["format"] === "string" ? flags["format"].trim().toLowerCase() : "";
+  const isLibraryQuery = group === "library" && action === "query";
   activeCliCompactMode =
     !flags["json"] &&
-    (boolFlag(flags, "compact", false) === true || formatFlag === "text" || formatFlag === "compact");
+    (boolFlag(flags, "compact", false) === true ||
+      formatFlag === "text" ||
+      (formatFlag === "compact" && !isLibraryQuery));
 
   const invokedBin = path.basename(process.argv[1] ?? "").toLowerCase();
   if (group === "mcp" || invokedBin.startsWith("cuthol-mcp")) {
@@ -441,7 +470,13 @@ async function main(): Promise<void> {
       );
     }
   }
-  if (formatFlag && formatFlag !== "json" && formatFlag !== "text" && formatFlag !== "compact") {
+  if (
+    formatFlag &&
+    formatFlag !== "json" &&
+    formatFlag !== "text" &&
+    formatFlag !== "compact" &&
+    !(isLibraryQuery && formatFlag === "default")
+  ) {
     throw new CutholError(
       DIAGNOSTICS.UNKNOWN_FLAG(
         `--format ${String(flags["format"])}`,
@@ -659,10 +694,17 @@ async function main(): Promise<void> {
       if (action === "query") {
         const handle = strFlag(flags, "handle") ?? rest[0];
         if (!handle) throw new Error("Provide --handle <vid_XX|aud_XX|ln_captions>.");
+        const qFormat =
+          formatFlag === "compact"
+            ? "compact"
+            : formatFlag === "default"
+              ? "default"
+              : undefined;
         const qRes = queryLibraryAnalysis({
           workspaceDir,
           handle,
           kind: strFlag(flags, "kind") as QueryableMediaKind | undefined,
+          format: qFormat,
           range: strFlag(flags, "range"),
           text: strFlag(flags, "text"),
           limit: numFlag(flags, "limit"),
@@ -936,6 +978,10 @@ async function main(): Promise<void> {
         const laneId = strFlag(flags, "lane", "ln_titles")!;
         const kind = strFlag(flags, "kind") as LaneKind | undefined;
         const durRaw = strFlag(flags, "duration", "3000ms")!;
+        const inRaw = strFlag(flags, "in");
+        const outRaw = strFlag(flags, "out");
+        const rateRaw = strFlag(flags, "rate");
+        const rate = rateRaw !== undefined ? Number(rateRaw.replace(/x$/i, "")) : undefined;
         const anchorRef = strFlag(flags, "anchor");
         const offsetRaw = strFlag(flags, "offset", "0ms")!;
         const atRaw = strFlag(flags, "at", "0ms")!;
@@ -948,6 +994,12 @@ async function main(): Promise<void> {
           anchor: anchorRef ? { ref: anchorRef, offset_ms: parseTimeMs(offsetRaw) } : null,
           atMs: parseTimeMs(atRaw),
           durationMs: parseTimeMs(durRaw),
+          explicitDuration: flags["duration"] !== undefined,
+          sourceInMs: inRaw ? parseTimeMs(inRaw) : undefined,
+          sourceOutMs: outRaw ? parseTimeMs(outRaw) : undefined,
+          rate,
+          preservePitch: boolFlag(flags, "preserve-pitch"),
+          zIndex: numFlag(flags, "z-index"),
           text: strFlag(flags, "text"),
           fontSizePx: numFlag(flags, "size"),
           colorHex: strFlag(flags, "color"),
@@ -1018,6 +1070,7 @@ async function main(): Promise<void> {
           anchor: anchorRef ? { ref: anchorRef, offset_ms: parseTimeMs(offsetRaw) } : null,
           atMs: parseTimeMs(atRaw),
           durationMs,
+          zIndex: numFlag(flags, "z-index"),
           composition: {
             composition_dir: compDir,
             entry_html: entryHtml,
@@ -1038,11 +1091,20 @@ async function main(): Promise<void> {
         if (!cueId) throw new Error("Provide --cue <cue_XX>.");
         const atRaw = strFlag(flags, "at");
         const durRaw = strFlag(flags, "duration");
+        const inRaw = strFlag(flags, "in");
+        const outRaw = strFlag(flags, "out");
+        const rateRaw = strFlag(flags, "rate");
+        const rate = rateRaw !== undefined ? Number(rateRaw.replace(/x$/i, "")) : undefined;
         const res = updateLaneCue({
           workspaceDir,
           cueId,
           atMs: atRaw ? parseTimeMs(atRaw) : undefined,
           durationMs: durRaw ? parseTimeMs(durRaw) : undefined,
+          sourceInMs: inRaw ? parseTimeMs(inRaw) : undefined,
+          sourceOutMs: outRaw ? parseTimeMs(outRaw) : undefined,
+          rate,
+          preservePitch: boolFlag(flags, "preserve-pitch"),
+          zIndex: numFlag(flags, "z-index"),
           xPct: strFlag(flags, "x"),
           yPct: strFlag(flags, "y"),
           scale: strFlag(flags, "scale"),
@@ -1439,6 +1501,182 @@ async function main(): Promise<void> {
       console.log(md);
       return;
     }
+
+    case "extension": {
+      const extAction = action ?? "list";
+      const scopeRaw = strFlag(flags, "scope") as ExtensionScope | undefined;
+      if (extAction === "list") {
+        const res = listExtensions(workspaceDir);
+        const filtered = scopeRaw
+          ? res.extensions.filter((e) => e.scope === scopeRaw)
+          : res.extensions;
+        emitEnvelopeJson(workspaceDir, "extension.list", {
+          ...res,
+          extensions: filtered,
+        });
+        return;
+      }
+
+      if (extAction === "create") {
+        const name = strFlag(flags, "name") ?? rest[0];
+        if (!name) {
+          throw new CutholError(
+            DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Eklenti adı ('--name') zorunludur.")
+          );
+        }
+        const res = createExtension({
+          name,
+          workspaceDir,
+          scope: scopeRaw,
+          template: strFlag(flags, "template") as ExtensionTemplateKind | undefined,
+          description: strFlag(flags, "description"),
+          version: strFlag(flags, "version"),
+          network: boolFlag(flags, "network", false),
+          overwrite: boolFlag(flags, "overwrite", false),
+        });
+        emitEnvelopeJson(workspaceDir, "extension.create", { ...res });
+        return;
+      }
+
+      if (extAction === "show") {
+        const name = strFlag(flags, "name") ?? rest[0];
+        if (!name) {
+          throw new CutholError(
+            DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Eklenti adı ('--name') zorunludur.")
+          );
+        }
+        const res = showExtension({
+          name,
+          workspaceDir,
+          scope: scopeRaw,
+        });
+        emitEnvelopeJson(workspaceDir, "extension.show", { ...res });
+        return;
+      }
+
+      if (extAction === "enable") {
+        const name = strFlag(flags, "name") ?? rest[0];
+        if (!name) {
+          throw new CutholError(
+            DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Eklenti adı ('--name') zorunludur.")
+          );
+        }
+        const res = enableExtensionInWorkspace({
+          workspaceDir,
+          name,
+          scope: scopeRaw,
+          dryRun: boolFlag(flags, "dry-run", false),
+        });
+        emitEnvelopeJson(workspaceDir, "extension.enable", { ...res });
+        return;
+      }
+
+      if (extAction === "disable") {
+        const name = strFlag(flags, "name") ?? rest[0];
+        if (!name) {
+          throw new CutholError(
+            DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Eklenti adı ('--name') zorunludur.")
+          );
+        }
+        const res = disableExtensionInWorkspace({
+          workspaceDir,
+          name,
+          dryRun: boolFlag(flags, "dry-run", false),
+        });
+        emitEnvelopeJson(workspaceDir, "extension.disable", { ...res });
+        return;
+      }
+
+      if (extAction === "promote") {
+        const name = strFlag(flags, "name") ?? rest[0];
+        if (!name) {
+          throw new CutholError(
+            DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Eklenti adı ('--name') zorunludur.")
+          );
+        }
+        const res = promoteExtension({
+          name,
+          workspaceDir,
+          overwrite: boolFlag(flags, "overwrite", true),
+        });
+        emitEnvelopeJson(workspaceDir, "extension.promote", { ...res });
+        return;
+      }
+
+      if (extAction === "remove") {
+        const name = strFlag(flags, "name") ?? rest[0];
+        if (!name) {
+          throw new CutholError(
+            DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Eklenti adı ('--name') zorunludur.")
+          );
+        }
+        const res = removeExtension({
+          name,
+          workspaceDir,
+          scope: scopeRaw,
+        });
+        emitEnvelopeJson(workspaceDir, "extension.remove", { ...res });
+        return;
+      }
+
+      if (extAction === "run") {
+        const name = strFlag(flags, "name") ?? rest[0];
+        if (!name) {
+          throw new CutholError(
+            DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Eklenti adı ('--name') zorunludur.")
+          );
+        }
+        const processorName = strFlag(flags, "processor");
+        const recipeName = strFlag(flags, "recipe");
+        const inputVal = strFlag(flags, "input") ?? strFlag(flags, "handle");
+        const rawParams = strFlag(flags, "params");
+        const paramsObj = rawParams ? parsePropsJsonFlag(rawParams, "extension.run") : {};
+        const dryRun = boolFlag(flags, "dry-run", false);
+
+        const ext = resolveExtension(name, workspaceDir, scopeRaw);
+        const hasProcs = Object.keys(ext.manifest.processors ?? {}).length > 0;
+        const hasRecipes = Object.keys(ext.manifest.recipes ?? {}).length > 0;
+
+        const shouldRunRecipe =
+          Boolean(recipeName) || (!processorName && !inputVal && hasRecipes && !hasProcs);
+
+        if (shouldRunRecipe) {
+          const res = runExtensionRecipe({
+            workspaceDir,
+            extensionName: name,
+            recipeName,
+            params: paramsObj,
+            scope: scopeRaw,
+            dryRun,
+          });
+          emitEnvelopeJson(workspaceDir, "extension.run", { ...res });
+          return;
+        }
+
+        if (!inputVal) {
+          throw new CutholError(
+            DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+              name,
+              processorName || "processor",
+              "İşlemci çalıştırmak için '--input <handle|path>' (veya '--handle') zorunludur."
+            )
+          );
+        }
+        const res = runExtensionProcessor({
+          workspaceDir,
+          extensionName: name,
+          processorName,
+          inputHandleOrPath: inputVal,
+          targetHandle: strFlag(flags, "target-handle"),
+          params: paramsObj,
+          scope: scopeRaw,
+          dryRun,
+        });
+        emitEnvelopeJson(workspaceDir, "extension.run", { ...res });
+        return;
+      }
+      break;
+    }
   }
 
   printHelp();
@@ -1473,6 +1711,7 @@ function printHelp(): void {
       "  cuthol monitor timeline [--width 1400] [--include-empty] [--out <timeline.png>] [--dir <dir>]",
       "  cuthol render [--preset draft_480p|master_1080p] [--out <render.mp4>] [--dir <dir>]",
       "  cuthol brief [--lens overview|flow|canvas|detail] [--id <id1,id2>] [--window 0s..10s] [--json] [--dir <dir>]",
+      "  cuthol extension [list|create|show|enable|disable|promote|remove|run] --name <ext> ...",
       "  cuthol mcp",
       "",
       "Global output flags: [--compact | --format text|json]",

@@ -274,6 +274,26 @@ export function computeSequenceDelta(
     affectedIds.add("spine");
   }
 
+  // 5. Mounted extensions
+  const prevExts = new Map((prevSeq.extensions ?? []).map((e) => [e.name, e]));
+  const nextExts = new Map((nextSeq.extensions ?? []).map((e) => [e.name, e]));
+  for (const [name, ext] of nextExts) {
+    const pe = prevExts.get(name);
+    if (!pe) {
+      addedItems.push(`ext:${name}@${ext.version} (${ext.content_hash.slice(0, 15)})`);
+      affectedIds.add(`ext:${name}`);
+    } else if (pe.content_hash !== ext.content_hash || pe.version !== ext.version || pe.scope !== ext.scope) {
+      modifiedItems.push(`ext:${name}@${ext.version} (${pe.content_hash.slice(0, 13)}->${ext.content_hash.slice(0, 13)})`);
+      affectedIds.add(`ext:${name}`);
+    }
+  }
+  for (const [name, pe] of prevExts) {
+    if (!nextExts.has(name)) {
+      removedItems.push(`ext:${name}@${pe.version}`);
+      affectedIds.add(`ext:${name}`);
+    }
+  }
+
   const parts: string[] = [];
   if (addedItems.length > 0) parts.push(`+${addedItems.slice(0, 3).join(", ")}${addedItems.length > 3 ? ` (+${addedItems.length - 3} more)` : ""}`);
   if (removedItems.length > 0) parts.push(`-${removedItems.slice(0, 3).join(", ")}${removedItems.length > 3 ? ` (-${removedItems.length - 3} more)` : ""}`);
@@ -316,6 +336,7 @@ export function buildEnvelopeState(seq: CutholSequence): CutholEnvelopeState {
     spine: seq.spine,
     lanes: seq.lanes,
     markers: seq.markers,
+    ...(seq.extensions && seq.extensions.length > 0 ? { extensions: seq.extensions } : {}),
   };
   const stateHash =
     "sha256:" +

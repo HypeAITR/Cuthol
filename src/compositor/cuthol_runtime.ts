@@ -204,6 +204,7 @@ export interface CutholRuntimeApi {
     norm: { x: number; y: number; w: number; h: number };
   };
   props: Record<string, unknown>;
+  ext: Record<string, unknown>;
   data: CutholBridgeV1;
   global: CutholGlobalRuntimeApi;
   warnings: string[];
@@ -1000,6 +1001,7 @@ export function createCutholRuntime(
     bpm,
     safe,
     props: mergedProps,
+    ext: {},
     data: {
       schema: CUTHOL_BRIDGE_SCHEMA,
       hash: d.hash ?? "",
@@ -1788,6 +1790,7 @@ export function getCutholRuntimeJsSource(): string {
       bpm: bpm,
       safe: safe,
       props: mergedProps,
+      ext: (typeof window !== "undefined" && window.__cuthol && window.__cuthol.ext) ? window.__cuthol.ext : {},
       data: normalizedData,
       global: globalApi,
       warnings: warnings,

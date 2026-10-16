@@ -317,6 +317,23 @@ export const DIAGNOSTICS = {
       cueId
     ),
 
+  COMPOSITION_LINT_FINDING: (
+    cueId: string,
+    ruleCode: string,
+    message: string,
+    fixHint?: string
+  ) =>
+    createDiagnostic(
+      "CUTHOL-G407",
+      "G4_STAGE",
+      "WARN",
+      `'${cueId}' kompozisyonunda HyperFrames lint bulgusu (${ruleCode}): ${message}`,
+      fixHint && fixHint.trim()
+        ? fixHint.trim()
+        : `Kompozisyon HTML/GSAP kodunu '${ruleCode}' kuralına göre düzeltin.`,
+      cueId
+    ),
+
   // --- Gate 5: Audio Signal & Render Frame Sanity (G5_SIGNAL) ---
   TRUE_PEAK_CEILING_EXCEEDED: (itemId: string, peakDbtp: number, ceilingDbtp: number) =>
     createDiagnostic(
@@ -414,5 +431,71 @@ export const DIAGNOSTICS = {
       "ERROR",
       `'${operation}' işlemi kilitli/korumalı varlıkları ('${targetIds.join(", ")}') silecek veya değiştirecek.`,
       `Önce '--dry-run' ile planı inceleyin; gerçekten silmek/değiştirmek istiyorsanız '--allow-protected ${targetIds.join(",")}' bayrağını ekleyin.`
+    ),
+
+  INVALID_EXTENSION_MANIFEST: (extNameOrPath: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G112",
+      "G1_SCHEMA",
+      "ERROR",
+      `'${extNameOrPath}' eklentisinin manifest dosyası ('cuthol-extension.json') geçersiz: ${detail}`,
+      `Manifest şemasını ('name', 'version', 'description' ve isteğe bağlı 'network', 'helper', 'assets', 'processors', 'recipes', 'guide') kontrol edin; kılavuz için 'cuthol guide --topic extensions' çalıştırın.`,
+      extNameOrPath
+    ),
+
+  EXTENSION_ALREADY_EXISTS: (name: string, dirPath: string) =>
+    createDiagnostic(
+      "CUTHOL-G113",
+      "G1_SCHEMA",
+      "ERROR",
+      `'${name}' eklentisi '${dirPath}' konumunda zaten mevcut.`,
+      `Farklı bir ad seçin, mevcut eklentiyi düzenleyin veya önce 'cuthol extension remove --name ${name}' ile silin.`,
+      name
+    ),
+
+  EXTENSION_NOT_FOUND: (name: string, searchedPaths: string[]) =>
+    createDiagnostic(
+      "CUTHOL-G204",
+      "G2_ASSETS",
+      "ERROR",
+      `'${name}' eklentisi ne proje eklenti klasöründe ne de kalıcı eklenti klasöründe bulundu (aranan: ${searchedPaths.join(", ") || "yok"}).`,
+      `'cuthol extension list' ile mevcut eklentileri görün veya 'cuthol extension create --name ${name}' ile oluşturun.`,
+      name
+    ),
+
+  EXTENSION_HASH_MISMATCH: (
+    name: string,
+    expectedVersion: string,
+    expectedHash: string,
+    actualVersion: string,
+    actualHash: string
+  ) =>
+    createDiagnostic(
+      "CUTHOL-G205",
+      "G2_ASSETS",
+      "WARN",
+      `Projede etkin olan '${name}' eklentisi diskte değişmiş (sekansta kayıtlı: v${expectedVersion} ${expectedHash}, diskte güncel: v${actualVersion} ${actualHash}).`,
+      `Değişikliği onaylayıp yeni içerik özetine (hash) geçmek ve kompozisyonları senkronlamak için 'cuthol extension enable --name ${name}' çalıştırın.`,
+      name
+    ),
+
+  EXTENSION_SECURITY_VIOLATION: (name: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G206",
+      "G2_ASSETS",
+      "ERROR",
+      `'${name}' eklentisi güvenlik sınırını ihlal etti: ${detail}`,
+      `Eklenti yalnızca kendi klasörü içindeki dosyaları okuyabilir ve yalnızca Cuthol'un verdiği çıktı yoluna yazabilir.`,
+      name
+    ),
+
+  EXTENSION_EXECUTION_FAILED: (name: string, target: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-SYS08",
+      "SYS",
+      "ERROR",
+      `'${name}' eklentisinin '${target}' çalıştırması başarısız oldu: ${detail}`,
+      `Eklenti betiğini/filtresini ve girdi parametrelerini ('cuthol extension show --name ${name}') kontrol edin.`,
+      name
     ),
 } as const;

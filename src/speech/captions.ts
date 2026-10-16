@@ -14,6 +14,7 @@ import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import {
   allocateNextHandle,
   createDefaultPlacement,
+  getCuePlaybackRate,
   LaneCue,
   syncSequenceHandleCounters,
   TimedWordToken,
@@ -107,10 +108,12 @@ export function generateSequenceCaptions(options: {
       if (!detectedTranscriptLang && doc.language) detectedTranscriptLang = doc.language;
       const cueStart = resolveCueStartMs(initialSeq, voCue);
       targetClipWindow = { startMs: cueStart, endMs: cueStart + voCue.duration_ms };
+      const cueRate = getCuePlaybackRate(voCue);
       const cueSourceIn = voCue.source_in_ms ?? 0;
+      const maxSpanMs = Math.round(voCue.duration_ms * cueRate);
       const cueSourceOut = Math.min(
-        voCue.source_out_ms ?? cueSourceIn + voCue.duration_ms,
-        cueSourceIn + voCue.duration_ms
+        voCue.source_out_ms ?? cueSourceIn + maxSpanMs,
+        cueSourceIn + maxSpanMs
       );
       for (const w of doc.words) {
         if (w.source_end_ms <= cueSourceIn || w.source_start_ms >= cueSourceOut) {
@@ -123,8 +126,11 @@ export function generateSequenceCaptions(options: {
           skippedExcisedCount++;
           continue;
         }
-        const seqStart = cueStart + (clampedStart - cueSourceIn);
-        const seqEnd = Math.max(seqStart + 1, cueStart + Math.min(voCue.duration_ms, clampedEnd - cueSourceIn));
+        const seqStart = cueStart + Math.round((clampedStart - cueSourceIn) / cueRate);
+        const seqEnd = Math.max(
+          seqStart + 1,
+          cueStart + Math.min(voCue.duration_ms, Math.round((clampedEnd - cueSourceIn) / cueRate))
+        );
         allProjectedWords.push({
           word: w.punctuated_word || w.word,
           source_start_ms: clampedStart,
@@ -189,20 +195,22 @@ export function generateSequenceCaptions(options: {
             const doc = loadCachedTranscriptForAsset(options.workspaceDir, voCue.asset_handle, lang);
             if (!detectedTranscriptLang && doc.language) detectedTranscriptLang = doc.language;
             const cueStart = resolveCueStartMs(initialSeq, voCue);
+            const cueRate = getCuePlaybackRate(voCue);
             const cueSourceIn = voCue.source_in_ms ?? 0;
+            const maxSpanMs = Math.round(voCue.duration_ms * cueRate);
             const cueSourceOut = Math.min(
-              voCue.source_out_ms ?? cueSourceIn + voCue.duration_ms,
-              cueSourceIn + voCue.duration_ms
+              voCue.source_out_ms ?? cueSourceIn + maxSpanMs,
+              cueSourceIn + maxSpanMs
             );
             for (const w of doc.words) {
               if (w.source_end_ms <= cueSourceIn || w.source_start_ms >= cueSourceOut) continue;
               const clampedStart = Math.max(cueSourceIn, w.source_start_ms);
               const clampedEnd = Math.min(cueSourceOut, w.source_end_ms);
               if (clampedEnd <= clampedStart) continue;
-              const seqStart = cueStart + (clampedStart - cueSourceIn);
+              const seqStart = cueStart + Math.round((clampedStart - cueSourceIn) / cueRate);
               const seqEnd = Math.max(
                 seqStart + 1,
-                cueStart + Math.min(voCue.duration_ms, clampedEnd - cueSourceIn)
+                cueStart + Math.min(voCue.duration_ms, Math.round((clampedEnd - cueSourceIn) / cueRate))
               );
               allProjectedWords.push({
                 word: w.punctuated_word || w.word,

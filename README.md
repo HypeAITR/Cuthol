@@ -15,15 +15,17 @@ An agent edits through a CLI (`cuthol`) or an MCP server (`cuthol mcp`). It read
   - Word-highlighted captions and voiceover synthesis.
 - **Mix.** Loudness normalization to a target (ITU-R BS.1770, e.g. −14 LUFS / −1 dBTP), voice polish, music ducking under speech, and cut alignment to a regular beat grid.
 - **Reframe.** Single-subject tracking when placing 16:9 footage on a 9:16 stage, with manual correction.
+- **Long-form friendly.** A long recording or a single long composition is normal use: compositions can overlap in layers, audio on lanes can be sped up (pitch kept, word timings follow), and transcripts can be read compactly.
 - **Motion graphics.** HyperFrames compositions composited with true alpha. Each composition gets a runtime (`window.__cuthol`) exposing word times, beats, the beat grid and cut points, both for its own window and for the whole edit (`C.global`). A video can be made entirely of motion graphics, with no footage on the main storyline; set the base colour with `workspace backdrop --color`.
 - **Seeing the edit.**
-  - A fast frame preview that matches the render.
-  - Contact sheets and a timeline diagram.
+  - A fast frame preview that matches the render; contact sheets are built from the same frames in seconds.
+  - A timeline diagram.
   - Blank-frame detection on monitor frames and on the rendered output.
 - **Safety.**
   - Integer-millisecond model with typed handles (`vid_01`, `sp_01`, `cue_01`) that are never reused.
   - An atomic edit journal with undo previews and `expect_rev`, plus lane locking.
-  - 5 verification gates (schema, assets, timing, stage, signal) with structured diagnostics.
+  - 5 verification gates (schema, assets, timing, stage, signal) with structured diagnostics, including HyperFrames lint findings for each composition.
+- **Extensions.** Agents can add their own tools without rebuilding Cuthol: composition helpers, asset packs (fonts, mascots, icons), audio/video/image processors and multi-step recipes. An extension is kept for one project or installed for every project.
 
 ## Requirements
 
@@ -67,9 +69,9 @@ Register the stdio server in your MCP client:
 }
 ```
 
-Most clients read MCP servers only when a session starts. After adding or changing the configuration (for example a project `.mcp.json`), start a new session and approve the `cuthol` server when asked. To check the server on its own, run `node dist/cli.js mcp` and send `initialize` and then `tools/list`; it should list 13 tools.
+Most clients read MCP servers only when a session starts. After adding or changing the configuration (for example a project `.mcp.json`), start a new session and approve the `cuthol` server when asked. To check the server on its own, run `node dist/cli.js mcp` and send `initialize` and then `tools/list`; it should list 14 tools.
 
-The server exposes 13 tools:
+The server exposes 14 tools:
 
 | Group | Tools |
 |---|---|
@@ -78,6 +80,7 @@ The server exposes 13 tools:
 | Speech and sound | `speech`, `mix` |
 | Batch edits | `cue` |
 | Checking and output | `verify`, `monitor`, `render` |
+| Extensions | `extension` |
 | Help | `guide` |
 
 Agents should start with `guide(topic="overview")`. Edit results come back as short text (`Changed:` / `Undo:` / warnings). `monitor` and `composition.preview` return images inline.
@@ -88,6 +91,7 @@ Agents that support skills can load [`skills/cuthol/SKILL.md`](skills/cuthol/SKI
 - speech and mix;
 - compositions;
 - verification and monitoring;
+- extensions;
 - MCP usage.
 
 ## Use it from the command line

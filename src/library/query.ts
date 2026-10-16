@@ -455,6 +455,7 @@ export function queryLibraryAnalysis(options: {
   workspaceDir: string;
   handle: string;
   kind?: QueryableMediaKind;
+  format?: "default" | "compact";
   range?: string;
   text?: string;
   limit?: number;
@@ -464,11 +465,14 @@ export function queryLibraryAnalysis(options: {
   const { paths, sequence } = loadSequence(options.workspaceDir);
   const kind: QueryableMediaKind =
     options.kind ?? (options.handle === "ln_captions" ? "captions" : "transcript");
+  const isCompactTranscript = kind === "transcript" && options.format === "compact";
   const rangeWin = parseRangeWindowMs(options.range);
   const textQuery = options.text ? normTurkish(options.text) : null;
+  const defaultLimit = isCompactTranscript ? 600 : 40;
+  const maxAllowedLimit = isCompactTranscript ? 2000 : 200;
   const rawLimit =
-    options.limit !== undefined && Number.isFinite(options.limit) ? options.limit : 40;
-  const limit = Math.max(1, Math.min(200, Math.floor(rawLimit)));
+    options.limit !== undefined && Number.isFinite(options.limit) ? options.limit : defaultLimit;
+  const limit = Math.max(1, Math.min(maxAllowedLimit, Math.floor(rawLimit)));
 
   let offset = 0;
   if (options.cursor !== undefined && options.cursor.trim() !== "") {
@@ -554,7 +558,7 @@ export function queryLibraryAnalysis(options: {
           }
         }
 
-        matchedItems = words
+        const filteredWords = words
           .map((w, originalIdx) => ({
             index: originalIdx,
             word: w.punctuated_word || w.word,
@@ -574,6 +578,13 @@ export function queryLibraryAnalysis(options: {
             }
             return true;
           });
+
+        matchedItems = isCompactTranscript
+          ? filteredWords.map(
+              (item) =>
+                `${item.index}:${item.word}@${Number((item.source_start_ms / 1000).toFixed(2))}`
+            )
+          : filteredWords;
       } else if (kind === "beats") {
         const beats = ledger.getLatestBeats<BeatAnalysisResult>(asset.digest_sha256);
         if (textQuery && (textQuery.includes("onset") || textQuery.includes("transient"))) {
@@ -629,7 +640,8 @@ export function queryLibraryAnalysis(options: {
       break;
     }
     const candidate = matchedItems[nextIdx];
-    const itemTokens = Math.max(4, Math.ceil(JSON.stringify(candidate).length / 4));
+    const minItemTokens = isCompactTranscript ? 1 : 4;
+    const itemTokens = Math.max(minItemTokens, Math.ceil(JSON.stringify(candidate).length / 4));
     if (sliced.length > 0 && estTokens + itemTokens > maxTokens) {
       truncatedBy = "max_tokens";
       break;

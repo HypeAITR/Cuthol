@@ -19,6 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
+import { resolveHyperFramesWorkers, resolveVideoEncoderPreference } from "../core/env.js";
 import { extractScalarHyperFramesVariables, hashDirectoryRecursive } from "./bridge_exporter.js";
 import {
   CUTHOL_BRIDGE_SCHEMA,
@@ -1090,6 +1091,67 @@ function copyDirRecursiveSync(srcDir: string, destDir: string): void {
   }
 }
 
+let cachedNvencAvailable: boolean | null = null;
+
+/**
+ * Probes whether FFmpeg's `h264_nvenc` hardware encoder is functional on this machine.
+ * Result is memoized per process; honors `CUTHOL_DISABLE_NVENC` / `CUTHOL_VIDEO_ENCODER`.
+ */
+export function isNvencHardwareAvailable(): boolean {
+  if (cachedNvencAvailable !== null) {
+    return cachedNvencAvailable;
+  }
+  try {
+    const proc = spawnSync(
+      "ffmpeg",
+      [
+        "-hide_banner",
+        "-v",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=128x128:r=30:d=0.1",
+        "-frames:v",
+        "1",
+        "-an",
+        "-c:v",
+        "h264_nvenc",
+        "-pix_fmt",
+        "yuv420p",
+        "-f",
+        "null",
+        "-",
+      ],
+      { encoding: "utf8", timeout: 10_000 }
+    );
+    cachedNvencAvailable = proc.status === 0;
+  } catch {
+    cachedNvencAvailable = false;
+  }
+  return cachedNvencAvailable;
+}
+
+export function shouldUseNvencForRender(overrideEncoder?: string | null): {
+  useNvenc: boolean;
+  fallbackReason: string | null;
+} {
+  const pref = resolveVideoEncoderPreference(overrideEncoder);
+  if (pref === "libx264") {
+    return {
+      useNvenc: false,
+      fallbackReason: "NVENC disabled by configuration (CUTHOL_DISABLE_NVENC / CUTHOL_VIDEO_ENCODER=libx264)",
+    };
+  }
+  if (!isNvencHardwareAvailable()) {
+    return {
+      useNvenc: false,
+      fallbackReason: "h264_nvenc hardware encoder is not available on this machine",
+    };
+  }
+  return { useNvenc: true, fallbackReason: null };
+}
+
 function syncScalarVarsAndComputeCompositionHash(options: {
   absCompDir: string;
   entryHtml: string;
@@ -1102,12 +1164,17 @@ function syncScalarVarsAndComputeCompositionHash(options: {
   transparent: boolean;
   mode: "overlay_alpha" | "scene_host";
   backdropVideoPath?: string;
+  opaqueBackdropColor?: string;
+  backdropImagePath?: string;
 }): {
   hash: string;
+  nativeHash: string;
   scalarVars: Record<string, string | number | boolean>;
   isSceneHost: boolean;
   nativeWidth: number;
   nativeHeight: number;
+  targetWidth: number;
+  targetHeight: number;
 } {
   // Synchronize `assets/cuthol-vars.json` BEFORE `hashDirectoryRecursive`
   // so `recursiveDirHash` is never computed against stale variables on disk.
@@ -1127,12 +1194,12 @@ function syncScalarVarsAndComputeCompositionHash(options: {
     fs.writeFileSync(varsFile, nextVarsJson, "utf8");
   }
 
-  // Extract composition's declared native canvas dimensions (`data-width`/`data-height`) so `draft_480p`
-  // and `master_1080p` share the exact same HyperFrames render/snapshot cache key.
   const wMatch = /\bdata-width\s*=\s*(["'])(\d+)\1/i.exec(options.htmlSource);
   const hMatch = /\bdata-height\s*=\s*(["'])(\d+)\1/i.exec(options.htmlSource);
   const nativeWidth = wMatch ? Math.max(16, Number(wMatch[2])) : options.width;
   const nativeHeight = hMatch ? Math.max(16, Number(hMatch[2])) : options.height;
+  const targetWidth = Math.max(16, Math.round(options.width / 2) * 2);
+  const targetHeight = Math.max(16, Math.round(options.height / 2) * 2);
 
   const isSceneHost =
     options.mode === "scene_host" &&
@@ -1147,10 +1214,38 @@ function syncScalarVarsAndComputeCompositionHash(options: {
     } catch {
       backdropDigest = "none";
     }
+  } else if (!options.transparent && options.backdropImagePath) {
+    try {
+      const st = fs.statSync(options.backdropImagePath);
+      backdropDigest = `still:${path.basename(options.backdropImagePath)}:${st.size}`;
+    } catch {
+      backdropDigest = "still:none";
+    }
+  } else if (!options.transparent && options.opaqueBackdropColor) {
+    backdropDigest = `color:${options.opaqueBackdropColor.trim().toLowerCase()}`;
   }
 
-  // Single canonical hash shared 100% between `renderHyperFramesCompositionToMp4` and `renderHyperFramesSingleFramePng`.
+  // Resolution-specific cache key so `draft_480p` and `master_1080p` never overwrite each other's blobs.
   const hash = crypto
+    .createHash("sha256")
+    .update(recursiveDirHash)
+    .update(
+      JSON.stringify({
+        entry: options.entryHtml,
+        w: targetWidth,
+        h: targetHeight,
+        fps: options.fps,
+        dur: options.durationMs,
+        props: options.props,
+        transparent: options.transparent,
+        mode: options.mode,
+        backdropDigest,
+      })
+    )
+    .digest("hex")
+    .slice(0, 16);
+
+  const nativeHash = crypto
     .createHash("sha256")
     .update(recursiveDirHash)
     .update(
@@ -1169,63 +1264,121 @@ function syncScalarVarsAndComputeCompositionHash(options: {
     .digest("hex")
     .slice(0, 16);
 
-  return { hash, scalarVars, isSceneHost, nativeWidth, nativeHeight };
+  return {
+    hash,
+    nativeHash,
+    scalarVars,
+    isSceneHost,
+    nativeWidth,
+    nativeHeight,
+    targetWidth,
+    targetHeight,
+  };
 }
 
-function stageSceneHostCompositionDir(options: {
+function stageCompositionRenderDir(options: {
   absCompDir: string;
   entryHtml: string;
   blobsDir: string;
   hash: string;
   durationSec: number;
-  backdropVideoPath: string;
+  nativeWidth: number;
+  nativeHeight: number;
+  targetWidth: number;
+  targetHeight: number;
+  isSceneHost: boolean;
+  backdropVideoPath?: string;
+  transparent: boolean;
+  opaqueBackdropColor?: string;
+  backdropImagePath?: string;
 }): string {
-  const tempSceneHostDir = path.join(
+  const tempStageDir = path.join(
     options.blobsDir,
-    `hf_scene_host_${options.hash}_${process.pid}_${Date.now()}`
+    `hf_stage_${options.hash}_${process.pid}_${Date.now()}`
   );
-  fs.rmSync(tempSceneHostDir, { recursive: true, force: true });
-  copyDirRecursiveSync(options.absCompDir, tempSceneHostDir);
-  const bgDest = path.join(tempSceneHostDir, "assets/cuthol_scene_host_bg.mp4");
-  fs.mkdirSync(path.dirname(bgDest), { recursive: true });
-  fs.copyFileSync(options.backdropVideoPath, bgDest);
+  fs.rmSync(tempStageDir, { recursive: true, force: true });
+  copyDirRecursiveSync(options.absCompDir, tempStageDir);
 
-  const stagedHtmlPath = path.join(tempSceneHostDir, options.entryHtml);
+  const stagedHtmlPath = path.join(tempStageDir, options.entryHtml);
   let stagedHtml = fs.readFileSync(stagedHtmlPath, "utf8");
-  // Clear opaque backgrounds on body/#root (with or without trailing semicolon, background or background-color)
-  // and ensure non-backdrop `.clip` layers sit above `#cuthol-scene-host-bg` (z-index: 0).
-  stagedHtml = stagedHtml.replace(
-    /((?:html|body|#root)\s*\{[^}]*?)\bbackground(?:-color)?\s*:\s*[^;}]+/gi,
-    "$1background: transparent"
-  );
-  const zIndexHelperStyle = `<style id="cuthol-scene-host-style">html, body, #root { background: transparent !important; } .clip:not(#cuthol-scene-host-bg) { z-index: 1; }</style>`;
-  if (/<\/head>/i.test(stagedHtml)) {
-    stagedHtml = stagedHtml.replace(/<\/head>/i, `${zIndexHelperStyle}\n</head>`);
-  } else {
-    stagedHtml = `${zIndexHelperStyle}\n${stagedHtml}`;
+
+  if (options.isSceneHost && options.backdropVideoPath) {
+    const bgDest = path.join(tempStageDir, "assets/cuthol_scene_host_bg.mp4");
+    fs.mkdirSync(path.dirname(bgDest), { recursive: true });
+    fs.copyFileSync(options.backdropVideoPath, bgDest);
+
+    stagedHtml = stagedHtml.replace(
+      /((?:html|body|#root)\s*\{[^}]*?)\bbackground(?:-color)?\s*:\s*[^;}]+/gi,
+      "$1background: transparent"
+    );
+    const zIndexHelperStyle = `<style id="cuthol-scene-host-style">html, body, #root { background: transparent !important; } .clip:not(#cuthol-scene-host-bg) { z-index: 1; }</style>`;
+    if (/<\/head>/i.test(stagedHtml)) {
+      stagedHtml = stagedHtml.replace(/<\/head>/i, `${zIndexHelperStyle}\n</head>`);
+    } else {
+      stagedHtml = `${zIndexHelperStyle}\n${stagedHtml}`;
+    }
+
+    const videoTag = `\n      <video id="cuthol-scene-host-bg" class="clip" src="assets/cuthol_scene_host_bg.mp4" data-start="0" data-duration="${options.durationSec}" data-track-index="0" muted playsinline style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:0"></video>`;
+    if (/(<[a-zA-Z0-9_-]+\b[^>]*\bdata-composition-id=(["'])[^"']+\2[^>]*>)/i.test(stagedHtml)) {
+      stagedHtml = stagedHtml.replace(
+        /(<[a-zA-Z0-9_-]+\b[^>]*\bdata-composition-id=(["'])[^"']+\2[^>]*>)/i,
+        `$1${videoTag}`
+      );
+    } else {
+      stagedHtml = stagedHtml.replace(
+        /(<div\b[^>]*\bid=(["'])root\2[^>]*>)/i,
+        `$1${videoTag}`
+      );
+    }
+  } else if (!options.transparent && (options.opaqueBackdropColor || options.backdropImagePath)) {
+    const bgColor = options.opaqueBackdropColor || "#000000";
+    let bgRule = `background-color: ${bgColor} !important;`;
+    if (options.backdropImagePath && fs.existsSync(options.backdropImagePath)) {
+      const extImg = path.extname(options.backdropImagePath) || ".png";
+      const bgImgDest = path.join(tempStageDir, `assets/cuthol_stage_backdrop${extImg}`);
+      fs.mkdirSync(path.dirname(bgImgDest), { recursive: true });
+      fs.copyFileSync(options.backdropImagePath, bgImgDest);
+      bgRule = `background: ${bgColor} url("assets/cuthol_stage_backdrop${extImg}") center / cover no-repeat !important;`;
+    }
+    stagedHtml = stagedHtml.replace(
+      /((?:html\s*,\s*body|html)\s*\{[^}]*?\bbackground(?:-color)?\s*:\s*transparent)\s*!important/gi,
+      "$1"
+    );
+    const opaqueBgStyle = `<style id="cuthol-opaque-backdrop-style">html { ${bgRule} }</style>`;
+    if (/<\/head>/i.test(stagedHtml)) {
+      stagedHtml = stagedHtml.replace(/<\/head>/i, `${opaqueBgStyle}\n</head>`);
+    } else {
+      stagedHtml = `${opaqueBgStyle}\n${stagedHtml}`;
+    }
   }
 
-  const videoTag = `\n      <video id="cuthol-scene-host-bg" class="clip" src="assets/cuthol_scene_host_bg.mp4" data-start="0" data-duration="${options.durationSec}" data-track-index="0" muted playsinline style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:0"></video>`;
-  if (/(<[a-zA-Z0-9_-]+\b[^>]*\bdata-composition-id=(["'])[^"']+\2[^>]*>)/i.test(stagedHtml)) {
-    stagedHtml = stagedHtml.replace(
-      /(<[a-zA-Z0-9_-]+\b[^>]*\bdata-composition-id=(["'])[^"']+\2[^>]*>)/i,
-      `$1${videoTag}`
-    );
-  } else {
-    stagedHtml = stagedHtml.replace(
-      /(<div\b[^>]*\bid=(["'])root\2[^>]*>)/i,
-      `$1${videoTag}`
-    );
+  if (options.targetWidth !== options.nativeWidth || options.targetHeight !== options.nativeHeight) {
+    const scaleX = Number((options.targetWidth / options.nativeWidth).toFixed(6));
+    const scaleY = Number((options.targetHeight / options.nativeHeight).toFixed(6));
+    stagedHtml = stagedHtml
+      .replace(/(\bdata-width\s*=\s*["'])\d+(["'])/i, `$1${options.targetWidth}$2`)
+      .replace(/(\bdata-height\s*=\s*["'])\d+(["'])/i, `$1${options.targetHeight}$2`)
+      .replace(
+        /(<meta[^>]*name=["']viewport["'][^>]*content=["']width=)\d+(,\s*height=)\d+/i,
+        `$1${options.targetWidth}$2${options.targetHeight}`
+      );
+    const scaleStyle = `<style id="cuthol-stage-scale-style">html, body { width: ${options.targetWidth}px !important; height: ${options.targetHeight}px !important; overflow: hidden !important; } body > [data-composition-id], #root[data-composition-id] { width: ${options.nativeWidth}px !important; height: ${options.nativeHeight}px !important; transform: scale(${scaleX}, ${scaleY}) !important; transform-origin: 0 0 !important; }</style>`;
+    if (/<\/head>/i.test(stagedHtml)) {
+      stagedHtml = stagedHtml.replace(/<\/head>/i, `${scaleStyle}\n</head>`);
+    } else {
+      stagedHtml = `${scaleStyle}\n${stagedHtml}`;
+    }
   }
+
   fs.writeFileSync(stagedHtmlPath, stagedHtml, "utf8");
-  return tempSceneHostDir;
+  return tempStageDir;
 }
 
 /**
  * Renders a HyperFrames composition into a cached video blob in `blobsDir`:
  * - Mode A (`overlay_alpha`, `transparent: true`): ProRes 4444 `.mov` (`yuva444p10le`, BT.709 straight alpha, zero chromakey).
  * - Mode B (`scene_host`): Mounts `backdropVideoPath` as `<video class="clip">` inside the composition and renders `.mp4` (`--video-frame-format png`).
- * - Opaque standalone (`transparent: false`): H.264 `.mp4`.
+ * - Opaque standalone (`transparent: false`): H.264 `.mp4` (with optional stage backdrop colour/still image baked in when no moving footage sits underneath).
  */
 export function renderHyperFramesCompositionToMp4(options: {
   compositionDir: string;
@@ -1239,6 +1392,11 @@ export function renderHyperFramesCompositionToMp4(options: {
   transparent: boolean;
   mode?: "overlay_alpha" | "scene_host";
   backdropVideoPath?: string;
+  opaqueBackdropColor?: string;
+  backdropImagePath?: string;
+  workers?: number;
+  useGpu?: boolean;
+  crf?: number;
 }): string {
   const absCompDir = path.resolve(options.compositionDir);
   const entryPath = path.join(absCompDir, options.entryHtml);
@@ -1252,8 +1410,11 @@ export function renderHyperFramesCompositionToMp4(options: {
   const useTrueAlphaMov = options.transparent && !isSceneHostCandidate;
 
   let htmlSource = fs.readFileSync(entryPath, "utf8");
-  // Upgrade any legacy #00FF00 background on body/#root to true CSS `transparent` when rendering with alpha
-  if (useTrueAlphaMov && /(?:body|#root)\s*\{[^}]*?background\s*:\s*#00ff00\b/i.test(htmlSource)) {
+  // Upgrade any legacy #00FF00 background on body/#root to true CSS `transparent` when rendering with alpha or stage backdrop
+  if (
+    (useTrueAlphaMov || options.opaqueBackdropColor || options.backdropImagePath) &&
+    /(?:body|#root)\s*\{[^}]*?background\s*:\s*#00ff00\b/i.test(htmlSource)
+  ) {
     htmlSource = htmlSource.replace(
       /((?:body|#root)\s*\{[^}]*?)background\s*:\s*#00ff00\b/gi,
       "$1background: transparent"
@@ -1261,7 +1422,7 @@ export function renderHyperFramesCompositionToMp4(options: {
     fs.writeFileSync(entryPath, htmlSource, "utf8");
   }
 
-  const { hash, scalarVars, isSceneHost } =
+  const { hash, scalarVars, isSceneHost, nativeWidth, nativeHeight, targetWidth, targetHeight } =
     syncScalarVarsAndComputeCompositionHash({
       absCompDir,
       entryHtml: options.entryHtml,
@@ -1274,6 +1435,8 @@ export function renderHyperFramesCompositionToMp4(options: {
       transparent: options.transparent,
       mode,
       backdropVideoPath: options.backdropVideoPath,
+      opaqueBackdropColor: options.opaqueBackdropColor,
+      backdropImagePath: options.backdropImagePath,
     });
 
   fs.mkdirSync(options.blobsDir, { recursive: true });
@@ -1309,40 +1472,74 @@ export function renderHyperFramesCompositionToMp4(options: {
     `hf_comp_${hash}.${process.pid}.${Date.now()}.tmp.${ext}`
   );
   const durationSec = Math.max(0.1, Number((options.durationMs / 1000).toFixed(3)));
+  const workers = resolveHyperFramesWorkers(options.workers);
+
+  const needsStage =
+    (isSceneHost && Boolean(options.backdropVideoPath)) ||
+    (!useTrueAlphaMov && Boolean(options.opaqueBackdropColor || options.backdropImagePath)) ||
+    targetWidth !== nativeWidth ||
+    targetHeight !== nativeHeight;
 
   let targetRenderDir = absCompDir;
   let tempSceneHostDir: string | null = null;
   try {
-    if (isSceneHost && options.backdropVideoPath) {
-      tempSceneHostDir = stageSceneHostCompositionDir({
+    if (needsStage) {
+      tempSceneHostDir = stageCompositionRenderDir({
         absCompDir,
         entryHtml: options.entryHtml,
         blobsDir: options.blobsDir,
         hash,
         durationSec,
+        nativeWidth,
+        nativeHeight,
+        targetWidth,
+        targetHeight,
+        isSceneHost,
         backdropVideoPath: options.backdropVideoPath,
+        transparent: useTrueAlphaMov,
+        opaqueBackdropColor: options.opaqueBackdropColor,
+        backdropImagePath: options.backdropImagePath,
       });
       targetRenderDir = tempSceneHostDir;
     }
 
-    const renderArgs = [
-      hfBin,
-      "render",
-      targetRenderDir,
-      "--format",
-      useTrueAlphaMov ? "mov" : "mp4",
-      "--quality",
-      isSceneHost ? "looks" : "draft",
-      "--output",
-      tmpBlob,
-    ];
-    if (isSceneHost) {
-      renderArgs.push("--video-frame-format", "png");
-    }
-    const activeVarsFile = path.join(targetRenderDir, "assets/cuthol-vars.json");
-    if (Object.keys(scalarVars).length > 0 && fs.existsSync(activeVarsFile)) {
-      renderArgs.push("--variables-file", activeVarsFile);
-    }
+    // HyperFrames' own GPU encode gives no measurable speed-up here (frame capture dominates) and its rate
+    // control is not configurable from outside, so it is only used when asked for explicitly.
+    const wantGpu = !useTrueAlphaMov && options.useGpu === true;
+    const isDraftScale = targetWidth <= 854 && targetHeight <= 854 && (targetWidth < nativeWidth || targetHeight < nativeHeight);
+    const effectiveCrf = options.crf ?? (isDraftScale ? 24 : wantGpu ? 22 : 19);
+
+    const buildRenderArgs = (withGpu: boolean): string[] => {
+      const args = [
+        hfBin,
+        "render",
+        targetRenderDir,
+        "--format",
+        useTrueAlphaMov ? "mov" : "mp4",
+        "--quality",
+        isSceneHost || (!useTrueAlphaMov && !isDraftScale) ? "looks" : "draft",
+        "--workers",
+        String(workers),
+        "--output",
+        tmpBlob,
+      ];
+      if (!useTrueAlphaMov) {
+        args.push("--crf", String(effectiveCrf));
+        if (withGpu) {
+          args.push("--gpu");
+        }
+      }
+      if (isSceneHost) {
+        args.push("--video-frame-format", "png");
+      }
+      const activeVarsFile = path.join(targetRenderDir, "assets/cuthol-vars.json");
+      if (Object.keys(scalarVars).length > 0 && fs.existsSync(activeVarsFile)) {
+        args.push("--variables-file", activeVarsFile);
+      }
+      return args;
+    };
+
+    const renderArgs = buildRenderArgs(wantGpu);
 
     // No wall-clock limit: render time grows with composition length (long videos take hours).
     // A large output buffer keeps progress logging of long renders from killing the process (ENOBUFS).
@@ -1350,25 +1547,64 @@ export function renderHyperFramesCompositionToMp4(options: {
       encoding: "utf8",
       maxBuffer: 512 * 1024 * 1024,
     });
+    let finalHfProc = hfProc;
+    let usedGpu = wantGpu;
+    let gpuFallbackReason: string | null = null;
 
-    if (hfProc.status === 0 && fs.existsSync(tmpBlob) && fs.statSync(tmpBlob).size > 1000) {
-      fs.renameSync(tmpBlob, outBlob);
-      if (useTrueAlphaMov) {
-        recordCompositionAlphaBboxSidecar(absCompDir, outBlob, durationSec * 0.5);
+    if (
+      wantGpu &&
+      (finalHfProc.status !== 0 || !fs.existsSync(tmpBlob) || fs.statSync(tmpBlob).size <= 1000)
+    ) {
+      usedGpu = false;
+      gpuFallbackReason = "HyperFrames GPU encode failed; retried with libx264";
+      if (fs.existsSync(tmpBlob)) {
+        try {
+          fs.unlinkSync(tmpBlob);
+        } catch {
+          // ignore
+        }
       }
-      return outBlob;
+      finalHfProc = spawnSync(process.execPath, buildRenderArgs(false), {
+        encoding: "utf8",
+        maxBuffer: 512 * 1024 * 1024,
+      });
+    }
+
+    if (hfProc.status === 0 || finalHfProc.status === 0) {
+      if (fs.existsSync(tmpBlob) && fs.statSync(tmpBlob).size > 1000) {
+        fs.renameSync(tmpBlob, outBlob);
+        try {
+          fs.writeFileSync(
+            `${outBlob}.meta.json`,
+            JSON.stringify({
+              encoder: useTrueAlphaMov ? "prores_ks" : usedGpu ? "h264_nvenc" : "libx264",
+              gpu_fallback_reason: gpuFallbackReason,
+              workers,
+              width: targetWidth,
+              height: targetHeight,
+            }),
+            "utf8"
+          );
+        } catch {
+          // non-blocking metadata write
+        }
+        if (useTrueAlphaMov) {
+          recordCompositionAlphaBboxSidecar(absCompDir, outBlob, durationSec * 0.5);
+        }
+        return outBlob;
+      }
     }
 
     // Keep the lines that explain the failure; HyperFrames also logs [INFO] progress traces.
-    const logLines = `${hfProc.stderr || ""}\n${hfProc.stdout || ""}`
+    const logLines = `${finalHfProc.stderr || ""}\n${finalHfProc.stdout || ""}`
       .split(/\r?\n/)
       .map((l) => l.trim())
       .filter((l) => l && !l.startsWith("[INFO]"));
     const errorLines = logLines.filter((l) => /error|fail|exception|timeout|cannot|not found/i.test(l));
-    const detail = hfProc.error
-      ? hfProc.error.message
+    const detail = finalHfProc.error
+      ? finalHfProc.error.message
       : (errorLines.length > 0 ? errorLines : logLines).slice(-3).join(" | ").slice(-400) ||
-        `exit=${hfProc.status ?? hfProc.signal}`;
+        `exit=${finalHfProc.status ?? finalHfProc.signal}`;
     throw new CutholError(DIAGNOSTICS.HYPERFRAMES_RENDER_FAILED(options.compositionDir, detail));
   } finally {
     if (fs.existsSync(tmpBlob)) {
@@ -1392,10 +1628,16 @@ function extractFrameFromVideoBlob(
   videoPath: string,
   frameIdx: number,
   fps: number,
-  outPng: string
+  outPng: string,
+  scaleToWidth?: number,
+  scaleToHeight?: number
 ): boolean {
   const tmpPng = `${outPng}.${process.pid}.tmp.png`;
   const seekSec = (frameIdx / fps).toFixed(6);
+  const vfBase =
+    scaleToWidth && scaleToHeight
+      ? `scale=${scaleToWidth}:${scaleToHeight},format=rgba`
+      : "format=rgba";
   const seekProc = spawnSync(
     "ffmpeg",
     [
@@ -1407,7 +1649,7 @@ function extractFrameFromVideoBlob(
       "-i",
       videoPath,
       "-vf",
-      "format=rgba",
+      vfBase,
       "-frames:v",
       "1",
       tmpPng,
@@ -1427,7 +1669,7 @@ function extractFrameFromVideoBlob(
       "-i",
       videoPath,
       "-vf",
-      `select='eq(n\\,${frameIdx})',format=rgba`,
+      `select='eq(n\\,${frameIdx})',${vfBase}`,
       "-frames:v",
       "1",
       tmpPng,
@@ -1450,7 +1692,7 @@ function extractFrameFromVideoBlob(
       "-i",
       videoPath,
       "-vf",
-      "format=rgba",
+      vfBase,
       "-frames:v",
       "1",
       tmpPng,
@@ -1488,6 +1730,8 @@ export function renderHyperFramesSingleFramePng(options: {
   transparent: boolean;
   mode?: "overlay_alpha" | "scene_host";
   backdropVideoPath?: string;
+  opaqueBackdropColor?: string;
+  backdropImagePath?: string;
 }): { pngPath: string; snappedSec: number; frameIdx: number } {
   const absCompDir = path.resolve(options.compositionDir);
   const entryPath = path.join(absCompDir, options.entryHtml);
@@ -1513,19 +1757,22 @@ export function renderHyperFramesSingleFramePng(options: {
   );
   const snappedSec = Number((frameIdx / options.fps).toFixed(6));
 
-  const { hash, isSceneHost } = syncScalarVarsAndComputeCompositionHash({
-    absCompDir,
-    entryHtml: options.entryHtml,
-    htmlSource,
-    width: options.width,
-    height: options.height,
-    fps: options.fps,
-    durationMs: options.durationMs,
-    props: options.props,
-    transparent: options.transparent,
-    mode,
-    backdropVideoPath: options.backdropVideoPath,
-  });
+  const { hash, nativeHash, isSceneHost, nativeWidth, nativeHeight, targetWidth, targetHeight } =
+    syncScalarVarsAndComputeCompositionHash({
+      absCompDir,
+      entryHtml: options.entryHtml,
+      htmlSource,
+      width: options.width,
+      height: options.height,
+      fps: options.fps,
+      durationMs: options.durationMs,
+      props: options.props,
+      transparent: options.transparent,
+      mode,
+      backdropVideoPath: options.backdropVideoPath,
+      opaqueBackdropColor: options.opaqueBackdropColor,
+      backdropImagePath: options.backdropImagePath,
+    });
 
   fs.mkdirSync(options.blobsDir, { recursive: true });
   const outPng = path.join(options.blobsDir, `hf_frame_${hash}_f${frameIdx}.png`);
@@ -1536,7 +1783,7 @@ export function renderHyperFramesSingleFramePng(options: {
     return { pngPath: outPng, snappedSec, frameIdx };
   }
 
-  // If the full video blob (.mov or .mp4) is ALREADY cached, extract the exact frame `frameIdx` from it
+  // If the full video blob (.mov or .mp4) is ALREADY cached at target resolution, extract the exact frame `frameIdx` from it
   const cachedMov = path.join(options.blobsDir, `hf_comp_${hash}.mov`);
   const cachedMp4 = path.join(options.blobsDir, `hf_comp_${hash}.mp4`);
   const cachedVideo = fs.existsSync(cachedMov)
@@ -1547,10 +1794,38 @@ export function renderHyperFramesSingleFramePng(options: {
 
   if (cachedVideo && fs.statSync(cachedVideo).size > 1000) {
     if (extractFrameFromVideoBlob(cachedVideo, frameIdx, options.fps, outPng)) {
-      if (options.transparent && !isSceneHost) {
+      if (options.transparent && !isSceneHost && cachedVideo.endsWith(".mov")) {
         recordCompositionAlphaBboxSidecar(absCompDir, outPng);
       }
       return { pngPath: outPng, snappedSec, frameIdx };
+    }
+  }
+
+  // If a master-resolution video blob is already cached (`nativeHash`), scale from it instead of launching Chrome
+  if (nativeHash !== hash) {
+    const nativeMov = path.join(options.blobsDir, `hf_comp_${nativeHash}.mov`);
+    const nativeMp4 = path.join(options.blobsDir, `hf_comp_${nativeHash}.mp4`);
+    const nativeVideo = fs.existsSync(nativeMov)
+      ? nativeMov
+      : fs.existsSync(nativeMp4)
+        ? nativeMp4
+        : null;
+    if (nativeVideo && fs.statSync(nativeVideo).size > 1000) {
+      if (
+        extractFrameFromVideoBlob(
+          nativeVideo,
+          frameIdx,
+          options.fps,
+          outPng,
+          targetWidth,
+          targetHeight
+        )
+      ) {
+        if (options.transparent && !isSceneHost && nativeVideo.endsWith(".mov")) {
+          recordCompositionAlphaBboxSidecar(absCompDir, outPng);
+        }
+        return { pngPath: outPng, snappedSec, frameIdx };
+      }
     }
   }
 
@@ -1560,17 +1835,30 @@ export function renderHyperFramesSingleFramePng(options: {
       options.blobsDir,
       `hf_snap_tmp_${hash}_f${frameIdx}_${process.pid}_${Date.now()}`
     );
+    const needsStage =
+      (isSceneHost && Boolean(options.backdropVideoPath)) ||
+      (!options.transparent && Boolean(options.opaqueBackdropColor || options.backdropImagePath)) ||
+      targetWidth !== nativeWidth ||
+      targetHeight !== nativeHeight;
     let tempSceneHostDir: string | null = null;
     try {
       let targetSnapDir = absCompDir;
-      if (isSceneHost && options.backdropVideoPath) {
-        tempSceneHostDir = stageSceneHostCompositionDir({
+      if (needsStage) {
+        tempSceneHostDir = stageCompositionRenderDir({
           absCompDir,
           entryHtml: options.entryHtml,
           blobsDir: options.blobsDir,
           hash,
           durationSec,
+          nativeWidth,
+          nativeHeight,
+          targetWidth,
+          targetHeight,
+          isSceneHost,
           backdropVideoPath: options.backdropVideoPath,
+          transparent: options.transparent,
+          opaqueBackdropColor: options.opaqueBackdropColor,
+          backdropImagePath: options.backdropImagePath,
         });
         targetSnapDir = tempSceneHostDir;
       }
@@ -1635,6 +1923,8 @@ export function renderHyperFramesSingleFramePng(options: {
     transparent: options.transparent,
     mode,
     backdropVideoPath: options.backdropVideoPath,
+    opaqueBackdropColor: options.opaqueBackdropColor,
+    backdropImagePath: options.backdropImagePath,
   });
   extractFrameFromVideoBlob(fullBlob, frameIdx, options.fps, outPng);
   return { pngPath: outPng, snappedSec, frameIdx };
@@ -1666,6 +1956,8 @@ export function renderHyperFramesBatchFramesPng(options: {
   transparent: boolean;
   mode?: "overlay_alpha" | "scene_host";
   backdropVideoPath?: string;
+  opaqueBackdropColor?: string;
+  backdropImagePath?: string;
 }): Array<{ pngPath: string; snappedSec: number; frameIdx: number }> {
   if (options.localSecs.length === 0) {
     return [];
@@ -1694,19 +1986,22 @@ export function renderHyperFramesBatchFramesPng(options: {
   const durationSec = Math.max(0.1, Number((options.durationMs / 1000).toFixed(3)));
   const totalFrames = Math.max(1, Math.round(durationSec * options.fps));
 
-  const { hash, isSceneHost } = syncScalarVarsAndComputeCompositionHash({
-    absCompDir,
-    entryHtml: options.entryHtml,
-    htmlSource,
-    width: options.width,
-    height: options.height,
-    fps: options.fps,
-    durationMs: options.durationMs,
-    props: options.props,
-    transparent: options.transparent,
-    mode,
-    backdropVideoPath: options.backdropVideoPath,
-  });
+  const { hash, nativeHash, isSceneHost, nativeWidth, nativeHeight, targetWidth, targetHeight } =
+    syncScalarVarsAndComputeCompositionHash({
+      absCompDir,
+      entryHtml: options.entryHtml,
+      htmlSource,
+      width: options.width,
+      height: options.height,
+      fps: options.fps,
+      durationMs: options.durationMs,
+      props: options.props,
+      transparent: options.transparent,
+      mode,
+      backdropVideoPath: options.backdropVideoPath,
+      opaqueBackdropColor: options.opaqueBackdropColor,
+      backdropImagePath: options.backdropImagePath,
+    });
 
   fs.mkdirSync(options.blobsDir, { recursive: true });
 
@@ -1744,10 +2039,37 @@ export function renderHyperFramesBatchFramesPng(options: {
       ? cachedMp4
       : null;
 
+  let scaleW: number | undefined;
+  let scaleH: number | undefined;
+  let videoToExtract = cachedVideo && fs.statSync(cachedVideo).size > 1000 ? cachedVideo : null;
+  if (!videoToExtract && nativeHash !== hash) {
+    const nativeMov = path.join(options.blobsDir, `hf_comp_${nativeHash}.mov`);
+    const nativeMp4 = path.join(options.blobsDir, `hf_comp_${nativeHash}.mp4`);
+    const nativeVideo = fs.existsSync(nativeMov)
+      ? nativeMov
+      : fs.existsSync(nativeMp4)
+        ? nativeMp4
+        : null;
+    if (nativeVideo && fs.statSync(nativeVideo).size > 1000) {
+      videoToExtract = nativeVideo;
+      scaleW = targetWidth;
+      scaleH = targetHeight;
+    }
+  }
+
   const stillMissing: Array<{ pngPath: string; snappedSec: number; frameIdx: number }> = [];
-  if (cachedVideo && fs.statSync(cachedVideo).size > 1000) {
+  if (videoToExtract) {
     for (const target of missingTargets) {
-      if (!extractFrameFromVideoBlob(cachedVideo, target.frameIdx, options.fps, target.pngPath)) {
+      if (
+        !extractFrameFromVideoBlob(
+          videoToExtract,
+          target.frameIdx,
+          options.fps,
+          target.pngPath,
+          scaleW,
+          scaleH
+        )
+      ) {
         stillMissing.push(target);
       }
     }
@@ -1761,17 +2083,30 @@ export function renderHyperFramesBatchFramesPng(options: {
       options.blobsDir,
       `hf_snap_batch_${hash}_${process.pid}_${Date.now()}`
     );
+    const needsStage =
+      (isSceneHost && Boolean(options.backdropVideoPath)) ||
+      (!options.transparent && Boolean(options.opaqueBackdropColor || options.backdropImagePath)) ||
+      targetWidth !== nativeWidth ||
+      targetHeight !== nativeHeight;
     let tempSceneHostDir: string | null = null;
     try {
       let targetSnapDir = absCompDir;
-      if (isSceneHost && options.backdropVideoPath) {
-        tempSceneHostDir = stageSceneHostCompositionDir({
+      if (needsStage) {
+        tempSceneHostDir = stageCompositionRenderDir({
           absCompDir,
           entryHtml: options.entryHtml,
           blobsDir: options.blobsDir,
           hash,
           durationSec,
+          nativeWidth,
+          nativeHeight,
+          targetWidth,
+          targetHeight,
+          isSceneHost,
           backdropVideoPath: options.backdropVideoPath,
+          transparent: options.transparent,
+          opaqueBackdropColor: options.opaqueBackdropColor,
+          backdropImagePath: options.backdropImagePath,
         });
         targetSnapDir = tempSceneHostDir;
       }

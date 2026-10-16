@@ -961,6 +961,7 @@ export const ACTION_SPECS: ActionSpec[] = [
     params: [
       { name: "preset", type: "string", description: "draft_480p (quick check) or master_1080p (default).", enum: ["draft_480p", "master_1080p"] },
       p.out("Output MP4 path (default under the project folder)."),
+      { name: "workers", type: "number", description: "Parallel HyperFrames browser workers (default: hardware-calibrated, e.g. 6 on 12 cores).", flag: "--workers" },
     ],
   },
 

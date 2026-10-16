@@ -43,8 +43,89 @@ export interface SharedExtensionsConfig {
   extensionsDir: string | null;
 }
 
+export type VideoEncoderPreference = "auto" | "nvenc" | "libx264";
+
 const DISABLED_TOKENS = new Set(["0", "false", "off", "none", "no", "disable", "disabled"]);
 const ENABLED_TOKENS = new Set(["1", "true", "on", "yes", "enable", "enabled"]);
+
+/**
+ * Resolves the explicit worker count passed to `hyperframes render --workers <N>`.
+ * Never relies on HyperFrames `auto` (which can fall back to 1 worker).
+ * - Can be overridden via `overrideWorkers` option or `CUTHOL_WORKERS` / `CUTHOL_RENDER_WORKERS` / `CUTHOL_HYPERFRAMES_WORKERS`.
+ * - Defaults to a balanced hardware worker count based on logical CPU cores and total RAM (e.g. 6 on a 12-core machine).
+ */
+export function resolveHyperFramesWorkers(overrideWorkers?: number | null): number {
+  if (typeof overrideWorkers === "number" && Number.isFinite(overrideWorkers) && overrideWorkers >= 1) {
+    return Math.max(1, Math.min(32, Math.floor(overrideWorkers)));
+  }
+
+  const rawCandidates = [
+    process.env.CUTHOL_WORKERS,
+    process.env.CUTHOL_RENDER_WORKERS,
+    process.env.CUTHOL_HYPERFRAMES_WORKERS,
+  ];
+  for (const raw of rawCandidates) {
+    if (raw === undefined) continue;
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const parsed = Number(trimmed);
+    if (Number.isFinite(parsed) && parsed >= 1) {
+      return Math.max(1, Math.min(32, Math.floor(parsed)));
+    }
+  }
+
+  const cpuCount = Math.max(1, os.cpus().length);
+  const totalMemGb = os.totalmem() / 1024 ** 3;
+  const byCpu = cpuCount <= 2 ? 1 : Math.min(8, Math.floor(cpuCount / 2));
+  const byMem = Math.max(1, Math.floor(totalMemGb / 2));
+  return Math.max(1, Math.min(byCpu, byMem));
+}
+
+/**
+ * Resolves the video encoder preference for final and intermediate MP4 encoding.
+ * - Set `CUTHOL_DISABLE_NVENC=1` (or `CUTHOL_DISABLE_GPU=1` or `CUTHOL_VIDEO_ENCODER=libx264`) to force `libx264`.
+ * - Set `CUTHOL_VIDEO_ENCODER=nvenc` to explicitly prefer `h264_nvenc`.
+ */
+export function resolveVideoEncoderPreference(
+  overrideEncoder?: string | null
+): VideoEncoderPreference {
+  const candidates = [
+    overrideEncoder ?? undefined,
+    process.env.CUTHOL_VIDEO_ENCODER,
+    process.env.CUTHOL_ENCODER,
+  ];
+
+  const disableFlags = [process.env.CUTHOL_DISABLE_NVENC, process.env.CUTHOL_DISABLE_GPU];
+  for (const flag of disableFlags) {
+    if (flag && ENABLED_TOKENS.has(flag.trim().toLowerCase())) {
+      return "libx264";
+    }
+  }
+
+  for (const raw of candidates) {
+    if (raw === undefined) continue;
+    const lower = raw.trim().toLowerCase();
+    if (!lower) continue;
+    if (
+      DISABLED_TOKENS.has(lower) ||
+      lower === "libx264" ||
+      lower === "x264" ||
+      lower === "cpu" ||
+      lower === "software" ||
+      lower === "sw"
+    ) {
+      return "libx264";
+    }
+    if (lower === "nvenc" || lower === "h264_nvenc" || lower === "gpu" || lower === "hw") {
+      return "nvenc";
+    }
+    if (lower === "auto") {
+      return "auto";
+    }
+  }
+
+  return "auto";
+}
 
 /**
  * Resolves the user-level content-addressed shared cache location.

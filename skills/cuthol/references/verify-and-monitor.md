@@ -54,12 +54,19 @@ What to check, concretely:
 | G503 | G5 ERROR | HyperFrames could not render an overlay; the render stops with `ok:false` and nothing is substituted. The message carries the HyperFrames error → open the composition with `composition.preview`, fix it, render again. Renders have no time limit: a long video simply takes longer (MCP reports progress and can be cancelled). |
 | G504 | G5 WARN | Ducking ignored clips without transcripts. |
 | G505 | G5 WARN | Overlay is (almost) fully opaque and hides moving footage playing under it. Not raised when only the stage backdrop or a still image is underneath (a full-frame graphic is then deliberate). |
+| G506 | G5 WARN | The render has an 8 px black strip on its right or bottom edge (a known ffmpeg conversion bug at widths like 1080). Check the HyperFrames/ffmpeg version and render again. |
 | SYS01–07 | — | Project not found, bad time literal, journal entry unavailable, ffmpeg/HyperFrames failure, missing API key, transcript missing, invalid colour (`workspace.backdrop`). |
 
 Every diagnostic is `[CODE] what happened | Öneri: next step`.
 
 ## Render
 
-`render(preset="draft_480p")` for checks, `render(preset="master_1080p")` for delivery (default output `output/render_r<revision>_<preset>.mp4` in the project). Overlays are rendered once and cached by their content; a 14-second edit with one overlay takes well under a minute at 1080p. After encoding, `render` automatically scans the output video for blank/backdrop-filled frames while a spine clip is active (ignoring intentional fade windows) and reports any drop-outs as `CUTHOL-G502` warnings with exact timestamps. In a graphics-only project (empty spine) it scans the frames where no visual cue is on screen (event `clip_id` is empty); frames drawn by compositions are not judged by brightness, because a composition that fails to render already stops the render (G503).
+`render(preset="draft_480p")` for checks, `render(preset="master_1080p")` for delivery (default output `output/render_r<revision>_<preset>.mp4` in the project). Overlays are rendered once and cached by their content and target resolution (`draft_480p` captures overlays at 480p under a separate cache key without overwriting `master_1080p` blobs).
+
+- **Workers:** HyperFrames worker count is set from hardware cores/memory by default (e.g. 6 on a 12-core machine); override with `workers` (`--workers <N>`) or `CUTHOL_WORKERS`.
+- **Single-stage & opaque fast path:** When a full-frame composition has no moving footage underneath (only stage backdrop or a static still image), Cuthol renders it directly as an opaque MP4 with the backdrop baked in instead of a ProRes 4444 alpha `.mov`, and skips a second video encode (`single_stage: true`) when no upper visual layers exist.
+- **Hardware encoding:** Cuthol's own composite encode (projects with footage under overlays) uses `h264_nvenc` when available; if unavailable, disabled (`CUTHOL_DISABLE_NVENC=1` / `CUTHOL_VIDEO_ENCODER=libx264`), or failing at runtime, it falls back to `libx264`. HyperFrames encodes overlays on the CPU. The result reports the `encoder` that produced the video, any `encoder_fallback`, and stage `timings_ms`. Frame capture in the browser is most of the render time, so a heavy composition (blur/shadow filters, large SVGs, many moving elements) renders slower.
+
+After encoding, `render` automatically scans the output video for blank/backdrop-filled frames while a spine clip is active (ignoring intentional fade windows) and reports any drop-outs as `CUTHOL-G502` warnings with exact timestamps. In a graphics-only project (empty spine) it scans the frames where no visual cue is on screen (event `clip_id` is empty); frames drawn by compositions are not judged by brightness, because a composition that fails to render already stops the render (G503).
 
 After rendering, sample frames of the **output file** (CLI: `ffmpeg -ss 4.2 -i out.mp4 -frames:v 1 f.png`; MCP: `monitor.frame` shows the same pipeline). Deliver only after verify shows 0 errors, the warnings are understood, and you have looked at the frames.

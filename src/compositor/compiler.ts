@@ -35,6 +35,7 @@ export interface CompiledRenderPlan {
   assFilePath: string | null;
   assFilePaths: string[];
   hyperframesBlobs: string[];
+  directVideoBlobPath?: string | null;
 }
 
 function buildAtempoChain(rate: number): string[] {
@@ -140,6 +141,8 @@ export interface CompileSequenceOptions {
   activeWindowMs?: [number, number];
   singleFrameAtMs?: number;
   minDurationMs?: number;
+  workers?: number;
+  useGpu?: boolean;
 }
 
 export interface CompileAudioOptions {
@@ -558,6 +561,80 @@ function extractSceneHostBackdropSlice(
   return undefined;
 }
 
+function extractStaticBackdropPngSlice(
+  seq: CutholSequence,
+  paths: WorkspacePaths,
+  cueStartMs: number,
+  renderWidth: number,
+  renderHeight: number,
+  fps: number,
+  underneathGraph: {
+    inputArgs: string[];
+    filterChains: string[];
+    videoPad: string;
+  }
+): string | undefined {
+  if (underneathGraph.inputArgs.length === 0) return undefined;
+  const cueStartSec = Number((cueStartMs / 1000).toFixed(3));
+  const graphFilter = [
+    "sws_flags=accurate_rnd+full_chroma_int",
+    ...underneathGraph.filterChains,
+    `${underneathGraph.videoPad}trim=start=${cueStartSec},setpts=PTS-STARTPTS,fps=${fps}:eof_action=pass,scale=${renderWidth}:${renderHeight},format=rgb24[v_still_out]`,
+  ].join(";");
+
+  const sliceHash = crypto
+    .createHash("sha256")
+    .update(
+      JSON.stringify({
+        libDigests: seq.library.map((x) => `${x.handle}:${x.digest_sha256}`),
+        inputArgs: underneathGraph.inputArgs,
+        graphFilter,
+        cueStartSec,
+        w: renderWidth,
+        h: renderHeight,
+      })
+    )
+    .digest("hex")
+    .slice(0, 14);
+
+  fs.mkdirSync(paths.blobsDir, { recursive: true });
+  const outPng = path.join(paths.blobsDir, `sh_still_${sliceHash}.png`);
+  if (fs.existsSync(outPng) && fs.statSync(outPng).size > 200) {
+    return outPng;
+  }
+
+  const tmpPng = `${outPng}.${process.pid}.${Date.now()}.tmp.png`;
+  const proc = spawnSync(
+    "ffmpeg",
+    [
+      "-y",
+      "-v",
+      "error",
+      ...underneathGraph.inputArgs,
+      "-filter_complex",
+      graphFilter,
+      "-map",
+      "[v_still_out]",
+      "-frames:v",
+      "1",
+      tmpPng,
+    ],
+    { cwd: paths.rootDir, encoding: "utf8" }
+  );
+  if (proc.status === 0 && fs.existsSync(tmpPng) && fs.statSync(tmpPng).size > 200) {
+    fs.renameSync(tmpPng, outPng);
+    return outPng;
+  }
+  if (fs.existsSync(tmpPng)) {
+    try {
+      fs.unlinkSync(tmpPng);
+    } catch {
+      // ignore
+    }
+  }
+  return undefined;
+}
+
 export function compileSequenceRenderPlan(
   seq: CutholSequence,
   paths: WorkspacePaths,
@@ -577,6 +654,16 @@ export function compileSequenceRenderPlan(
   const filterChains: string[] = [];
   const hyperframesBlobs: string[] = [];
   const assFilePaths: string[] = [];
+
+  interface DrawnVisualLayer {
+    id: string;
+    startMs: number;
+    endMs: number;
+    kind: "still_graphic" | "moving" | "opaque_comp";
+    blobPath?: string;
+    bakedUnderneathIds?: string[];
+  }
+  const drawnVisualLayers: DrawnVisualLayer[] = [];
 
   let nextInputIdx = 0;
   const addInput = (args: string[]): number => {
@@ -639,6 +726,32 @@ export function compileSequenceRenderPlan(
         let hfIdx: number;
         const frameDurMs = 1000 / Math.max(1, fps);
 
+        const isFullFrameUnscaled =
+          Math.abs(cue.placement.scale_x - 1) < 1e-3 &&
+          Math.abs(cue.placement.scale_y - 1) < 1e-3 &&
+          Math.abs(cue.placement.x_pct) < 1e-3 &&
+          Math.abs(cue.placement.y_pct) < 1e-3 &&
+          Math.abs(cue.placement.rotation_deg) < 1e-3 &&
+          cue.placement.opacity >= 0.999 &&
+          !cue.placement.crop &&
+          !cue.placement.mirror_x &&
+          !cue.placement.mirror_y &&
+          !cue.envelopes.some((e) => e.parameter.startsWith("placement."));
+
+        const overlappingUnder = drawnVisualLayers.filter(
+          (l) => l.startMs < cueEndMs && l.endMs > cueStartMs
+        );
+        const hasMovingUnderneath = overlappingUnder.some((l) => l.kind !== "still_graphic");
+        const hasOnlyStaticStillUnderneath =
+          overlappingUnder.length > 0 &&
+          !hasMovingUnderneath &&
+          overlappingUnder.every((l) => l.startMs <= cueStartMs && l.endMs >= cueEndMs);
+
+        let effectiveTransparent = cue.composition.transparent;
+        let opaqueBackdropColor: string | undefined;
+        let backdropImagePath: string | undefined;
+        let bakedUnderneathIds: string[] = [];
+
         if (
           compileOptions?.singleFrameAtMs !== undefined &&
           compMode !== "scene_host" &&
@@ -691,6 +804,33 @@ export function compileSequenceRenderPlan(
                 )
               : undefined;
 
+          if (compMode !== "scene_host" && isFullFrameUnscaled && !hasMovingUnderneath) {
+            if (overlappingUnder.length === 0) {
+              effectiveTransparent = false;
+              opaqueBackdropColor = seq.stage.backdrop.color;
+            } else if (hasOnlyStaticStillUnderneath) {
+              const stillPng = extractStaticBackdropPngSlice(
+                seq,
+                paths,
+                cueStartMs,
+                renderWidth,
+                renderHeight,
+                fps,
+                {
+                  inputArgs: [...inputArgs],
+                  filterChains: [...filterChains],
+                  videoPad: currentVideoPad,
+                }
+              );
+              if (stillPng) {
+                effectiveTransparent = false;
+                opaqueBackdropColor = seq.stage.backdrop.color;
+                backdropImagePath = stillPng;
+                bakedUnderneathIds = overlappingUnder.map((l) => l.id);
+              }
+            }
+          }
+
           const hfBlob = renderHyperFramesCompositionToMp4({
             compositionDir: compDir,
             entryHtml: cue.composition.entry_html,
@@ -700,12 +840,25 @@ export function compileSequenceRenderPlan(
             fps,
             durationMs: cue.duration_ms,
             props: cue.composition.props,
-            transparent: cue.composition.transparent,
+            transparent: effectiveTransparent,
             mode: compMode,
             backdropVideoPath,
+            opaqueBackdropColor,
+            backdropImagePath,
+            workers: compileOptions?.workers,
+            useGpu: compileOptions?.useGpu,
           });
           hyperframesBlobs.push(hfBlob);
           hfIdx = addInput(["-i", hfBlob]);
+
+          drawnVisualLayers.push({
+            id: cue.id,
+            startMs: cueStartMs,
+            endMs: cueEndMs,
+            kind: !effectiveTransparent && isFullFrameUnscaled && hfBlob.endsWith(".mp4") ? "opaque_comp" : "moving",
+            blobPath: hfBlob,
+            bakedUnderneathIds,
+          });
         }
 
         const targetW = Math.max(8, Math.round((renderWidth * Math.abs(cue.placement.scale_x)) / 2) * 2);
@@ -800,15 +953,23 @@ export function compileSequenceRenderPlan(
             ? `(H-h)/2+${Math.round((cue.placement.y_pct / 100) * renderHeight)}`
             : String(Math.round(baseCenterY + (cue.placement.y_pct / 100) * renderHeight)));
 
-        const base10Pad = `[vc_b10_${++vStepCounter}]`;
-        const ov10Pad = `[vc_o10_${vStepCounter}]`;
-        const nextPad = `[vc_${vStepCounter}]`;
-        filterChains.push(
-          `${currentVideoPad}format=yuv444p10le${base10Pad}`,
-          `${hfPad}format=yuva444p10le${ov10Pad}`,
-          `${base10Pad}${ov10Pad}overlay=x='${xExpr}':y='${yExpr}':format=yuv444p10:alpha=straight:eval=frame:enable='between(t,${cueStartSec},${cueEndSec})':eof_action=pass:repeatlast=0,format=yuv420p${nextPad}`
-        );
-        currentVideoPad = nextPad;
+        if (!effectiveTransparent && isFullFrameUnscaled && compileOptions?.singleFrameAtMs === undefined) {
+          const nextPad = `[vc_${++vStepCounter}]`;
+          filterChains.push(
+            `${currentVideoPad}${hfPad}overlay=x='${xExpr}':y='${yExpr}':eval=frame:enable='between(t,${cueStartSec},${cueEndSec})':eof_action=pass:repeatlast=0,format=yuv420p${nextPad}`
+          );
+          currentVideoPad = nextPad;
+        } else {
+          const base10Pad = `[vc_b10_${++vStepCounter}]`;
+          const ov10Pad = `[vc_o10_${vStepCounter}]`;
+          const nextPad = `[vc_${vStepCounter}]`;
+          filterChains.push(
+            `${currentVideoPad}format=yuv444p10le${base10Pad}`,
+            `${hfPad}format=yuva444p10le${ov10Pad}`,
+            `${base10Pad}${ov10Pad}overlay=x='${xExpr}':y='${yExpr}':format=yuv444p10:alpha=straight:eval=frame:enable='between(t,${cueStartSec},${cueEndSec})':eof_action=pass:repeatlast=0,format=yuv420p${nextPad}`
+          );
+          currentVideoPad = nextPad;
+        }
         continue;
       }
 
@@ -994,6 +1155,18 @@ export function compileSequenceRenderPlan(
             `${currentVideoPad}${cuePad}overlay=x='${xExpr}':y='${yExpr}':eval=frame:enable='between(t,${cueStartSec},${cueEndSec})':eof_action=pass${nextPad}`
           );
           currentVideoPad = nextPad;
+          drawnVisualLayers.push({
+            id: cue.id,
+            startMs: cueStartMs,
+            endMs: cueEndMs,
+            kind:
+              isStill &&
+              cue.envelopes.length === 0 &&
+              Math.abs(cue.placement.rotation_deg) < 1e-3 &&
+              cue.placement.opacity >= 0.999
+                ? "still_graphic"
+                : "moving",
+          });
         }
       }
     }
@@ -1018,6 +1191,17 @@ export function compileSequenceRenderPlan(
         const nextPad = `[vc_${++vStepCounter}]`;
         filterChains.push(`${currentVideoPad}ass=filename=${escapedAssPath}${nextPad}`);
         currentVideoPad = nextPad;
+        for (const tc of orderedCues) {
+          if (tc.typography && tc.typography.text.trim()) {
+            const st = resolveCueStartMs(seq, tc);
+            drawnVisualLayers.push({
+              id: tc.id,
+              startMs: st,
+              endMs: st + tc.duration_ms,
+              kind: "moving",
+            });
+          }
+        }
       }
     }
   };
@@ -1297,12 +1481,49 @@ export function compileSequenceRenderPlan(
         `${currentVideoPad}${clipPad}overlay=x='${xExpr}':y='${yExpr}':eval=frame:enable='between(t,${tlInSec},${tlOutSec})':eof_action=pass${nextPad}`
       );
       currentVideoPad = nextPad;
+      const isStaticStillClip =
+        isStillGraphic(asset) &&
+        clip.envelopes.length === 0 &&
+        (!clip.transition_out || clip.transition_out.duration_ms <= 0) &&
+        (!incomingTransition || incomingTransition.duration_ms <= 0);
+      drawnVisualLayers.push({
+        id: clip.id,
+        startMs: clip.timeline_in_ms,
+        endMs: clip.timeline_in_ms + clip.duration_ms + holdTailMs,
+        kind: isStaticStillClip ? "still_graphic" : "moving",
+      });
     }
   }
 
   // --- 2. Compile Over-Spine Parallel Lanes Sorted by z_index (`z_index >= 0`) ---
   for (const lane of overSpineLanes) {
     compileLane(lane);
+  }
+
+  // Determine if the entire sequence visual output is satisfied by a single full-frame opaque HyperFrames MP4 blob
+  let directVideoBlobPath: string | null = null;
+  if (
+    compileOptions?.singleFrameAtMs === undefined &&
+    !compileOptions?.activeWindowMs &&
+    assFilePaths.length === 0
+  ) {
+    const opaqueComps = drawnVisualLayers.filter((l) => l.kind === "opaque_comp" && l.blobPath);
+    if (opaqueComps.length === 1) {
+      const compLayer = opaqueComps[0];
+      const bakedSet = new Set(compLayer.bakedUnderneathIds ?? []);
+      const otherLayers = drawnVisualLayers.filter(
+        (l) => l.id !== compLayer.id && !bakedSet.has(l.id)
+      );
+      const frameToleranceMs = Math.ceil(1000 / Math.max(1, fps)) + 1;
+      if (
+        otherLayers.length === 0 &&
+        compLayer.startMs === 0 &&
+        Math.abs(compLayer.endMs - totalDurationMs) <= frameToleranceMs &&
+        compLayer.blobPath
+      ) {
+        directVideoBlobPath = compLayer.blobPath;
+      }
+    }
   }
 
   // Finalize Video Output Pad (preserve AVTB so FFmpeg -t duration trim does not round down to 1/fps)
@@ -1329,5 +1550,6 @@ export function compileSequenceRenderPlan(
     assFilePath: assFilePaths[0] ?? null,
     assFilePaths,
     hyperframesBlobs,
+    directVideoBlobPath,
   };
 }

@@ -254,6 +254,8 @@ const KNOWN_CLI_FLAGS = new Set([
   "input",
   "params",
   "topic",
+  "workers",
+  "encoder",
 ]);
 
 function levenshtein(a: string, b: string): number {
@@ -1463,10 +1465,14 @@ async function main(): Promise<void> {
         (strFlag(flags, "preset", isActionPreset ? (action as RenderPreset) : "master_1080p") as RenderPreset) ??
         "master_1080p";
       const outPath = strFlag(flags, "out") ?? (isActionPreset ? rest[0] : action ?? rest[0]);
+      const workers = numFlag(flags, "workers");
+      const encoderRaw = strFlag(flags, "encoder") as "auto" | "nvenc" | "libx264" | undefined;
       const res = renderSequenceToMp4({
         workspaceDir,
         preset,
         outputPath: outPath,
+        workers,
+        encoder: encoderRaw,
       });
       emitEnvelopeJson(workspaceDir, "render", { ...res });
       return;

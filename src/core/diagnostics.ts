@@ -354,6 +354,15 @@ export const DIAGNOSTICS = {
       `'cuthol monitor frame --at ${timestampMs}ms' ile kareyi kontrol edin; kasıtlı kararma (fade) değilse kaynak aralığını düzeltin.`
     ),
 
+  RENDER_EDGE_STRIP: (edges: string[], width: number, height: number) =>
+    createDiagnostic(
+      "CUTHOL-G506",
+      "G5_SIGNAL",
+      "WARN",
+      `Render çıktısının ${edges.join(" ve ")} kenarında 8 piksellik siyah bir şerit var (${width}x${height}); içerik kenara kadar uzanmıyor.`,
+      `Bu genellikle bir ffmpeg sürümünün 16'nın katı olmayan genişliklerde (ör. 1080) planar RGB'den yuv420p'ye dönüşümde son sütunları sıfırlamasından kaynaklanır. ffmpeg/HyperFrames sürümünü kontrol edin ve render'ı tekrar alın; sorun sürerse sahne genişliğini 16'nın katına ayarlayın.`
+    ),
+
   RENDER_BLANK_FRAMES_DETECTED: (
     events: Array<{ start_s: number; start_ms: number; frame_count: number; clip_id?: string }>
   ) => {

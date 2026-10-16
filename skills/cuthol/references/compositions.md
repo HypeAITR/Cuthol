@@ -15,7 +15,7 @@ edit's words, beats, audio energy and cuts **in the composition's own seconds** 
 4. `composition.preview(cue="cue_05", at=["0.3","1.2","3.0"])` → contact sheet image: checkerboard (true alpha) | over the real footage | alpha mask, plus WCAG contrast findings on the real background.
 5. `monitor.frame(at=<timeline time>)` to see it in context with captions/titles, then render.
 
-After any later edit (trim, cleanup, new music…), Cuthol rewrites `assets/cuthol-data.js` automatically if the data inside this composition's window changed. Your HTML does not change, so word-locked and beat-locked animation stays in sync.
+After any later edit (trim, cleanup, new music…), Cuthol rewrites `assets/cuthol-data.js` automatically if the data inside this composition's window changed. Your HTML does not change, so word-locked and beat-locked animation stays in sync. During sync, Cuthol only touches the exact `<script src="assets/cuthol-data.js"></script>` and `<script src="assets/cuthol-runtime.js"></script>` tags and never modifies any other `<script>` tags in your HTML.
 
 ## Template (tested)
 
@@ -96,6 +96,8 @@ All times are seconds relative to the composition start (`0 … C.duration`).
 | `C.drive(tl, fn, {start, end})` | Calls `fn(t)` for every rendered frame between `start` and `end` (default whole composition). |
 | `C.value(tl, {from, to, at, duration, ease}, fn)` | Tweens a number and calls `fn(value)` each frame. |
 | `C.duration`, `C.fps`, `C.width`, `C.height`, `C.bpm` | Composition facts. |
+| `C.cueStart`, `C.cueEnd`, `C.sequenceDuration`, `C.toGlobal(t)`, `C.toLocal(t)` | Cue position on the sequence timeline (`globalTime = localTime + C.cueStart`). |
+| `C.global` | Full-sequence timeline intelligence in **absolute sequence seconds** (`0 … C.global.duration`): `C.global.word(query, opts)` (finds words anywhere in the edit, returning `{found, start, end, duration, text, clipped, localStart, localEnd, inWindow}`), `C.global.audio(band, t, smoothSec?)` or `C.global.audio(t, smoothSec?)` (3-band energy normalized **once across the whole sequence**, so segments share identical thresholds), `C.global.words`, `C.global.pauses`, `C.global.sentences`, `C.global.beats(opts)`, `C.global.cuts()`, `C.global.drive(tl, fn, opts)`, `C.global.value(tl, spec, fn)`. |
 | `C.safe` | `{x, y, w, h, cx, cy, norm}` title-safe area in px. |
 | `C.props` | Props passed with `lane.add_composition(props={...})`. |
 | `C.warnings` | Lookups that failed (e.g. word not found). Check during development. |

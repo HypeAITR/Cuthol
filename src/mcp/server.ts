@@ -179,7 +179,7 @@ function readPackageVersion(): string {
   }
 }
 
-function readRevision(dir: string): number | null {
+export function readWorkspaceRevision(dir: string): number | null {
   try {
     const seq = JSON.parse(fs.readFileSync(path.join(dir, "cuthol.sequence.json"), "utf8")) as { meta?: { revision?: number } };
     return typeof seq.meta?.revision === "number" ? seq.meta.revision : null;
@@ -187,6 +187,8 @@ function readRevision(dir: string): number | null {
     return null;
   }
 }
+
+const readRevision = readWorkspaceRevision;
 
 function tryParseJson(text: string): Record<string, unknown> | null {
   const trimmed = text.trim();
@@ -598,6 +600,196 @@ function compactPayload(
     text = `${text.slice(0, MAX_PAYLOAD_CHARS)}… [truncated ${text.length - MAX_PAYLOAD_CHARS} chars; use library.query or a narrower window]`;
   }
   return text;
+}
+
+export function resolveActionSpecForCommand(
+  commandOrTool: string,
+  explicitAction?: string | null,
+  subAction?: string | null
+): ActionSpec {
+  const raw = (commandOrTool || "").trim();
+  if (raw.startsWith("workspace.journal.")) {
+    const sub = raw.split(".")[2] ?? "list";
+    const act = sub === "list" ? "journal" : sub;
+    const found = findActionSpec("workspace", act);
+    if (found) return found;
+  }
+  const parts = raw.split(".");
+  const tool = parts[0] || "cli";
+  const rawAct =
+    parts.length > 1
+      ? parts.slice(1).join("_")
+      : explicitAction
+        ? explicitAction
+        : null;
+  let act = rawAct ? rawAct.replace(/-/g, "_") : null;
+  if (tool === "workspace" && act === "journal") {
+    act = subAction && subAction !== "list" ? subAction : "journal";
+  }
+  if (tool === "render" && (act === "draft_480p" || act === "master_1080p")) {
+    act = null;
+  }
+  if (tool === "brief" && act) {
+    act = null;
+  }
+  const found = findActionSpec(tool, act);
+  if (found) return found;
+  const single = findActionSpec(tool, null);
+  if (single && !act) return single;
+  return {
+    tool,
+    action: act,
+    argv: [],
+    summary: "",
+    params: [],
+    mutates: false,
+  };
+}
+
+export interface FormatEnvelopeCompactOptions {
+  envelope: Record<string, unknown>;
+  spec?: ActionSpec | null;
+  command?: string;
+  dir?: string;
+  values?: Record<string, unknown>;
+  revisionBefore?: number | null;
+  exitCode?: number | null;
+}
+
+/**
+ * Shared compact text formatter used by both the MCP server (`CutholMcpServer`)
+ * and the CLI (`--compact` / `--format text`).
+ */
+export function formatEnvelopeCompact(options: FormatEnvelopeCompactOptions): {
+  text: string;
+  isError: boolean;
+} {
+  const env = options.envelope;
+  const spec =
+    options.spec ??
+    resolveActionSpecForCommand(String(options.command ?? env.command ?? "cli"));
+  const dir = options.dir ?? process.cwd();
+  const values = options.values ?? {};
+  const revisionBefore = options.revisionBefore ?? null;
+  const exitCode = options.exitCode ?? 0;
+
+  const label = spec.action ? `${spec.tool}.${spec.action}` : spec.tool;
+  const ok = env.ok !== false && exitCode === 0;
+  const dryRun = env.dry_run === true || values.dry_run === true;
+  const isJournalPreview =
+    spec.tool === "workspace" && (spec.action === "undo" || spec.action === "redo");
+  const lines: string[] = [];
+  const state = env.state as Record<string, unknown> | undefined;
+  if (dryRun && ok) {
+    const nowRev = readRevision(dir);
+    const stateSuffix = state?.state_digest
+      ? isJournalPreview
+        ? ` · would become: ${String(state.state_digest)}`
+        : ` · current: ${String(state.state_digest)}`
+      : "";
+    lines.push(`DRY-RUN ${label} · nothing changed (still r${nowRev ?? "?"})${stateSuffix}`);
+  } else {
+    lines.push(`${ok ? "OK" : "FAILED"} ${label}${state?.state_digest ? ` · ${String(state.state_digest)}` : ""}`);
+  }
+
+  if (!ok) {
+    const diag = env.diagnostic as DiagnosticLike | undefined;
+    const err = env.error as { code?: string; message?: string; suggestion?: string } | string | undefined;
+    if (diag) {
+      lines.push(`[${diag.code}] ${diag.what}${diag.suggestion ? ` | Öneri: ${translateCliHint(diag.suggestion)}` : ""}`);
+    } else if (typeof err === "string") {
+      lines.push(translateCliHint(err));
+    } else if (err) {
+      lines.push(`[${err.code ?? "ERROR"}] ${err.message ?? ""}${err.suggestion ? ` | Öneri: ${translateCliHint(err.suggestion)}` : ""}`);
+    } else if (Array.isArray(env.contract_findings) && env.contract_findings.length > 0) {
+      for (const cf of (env.contract_findings as string[]).slice(0, 6)) {
+        lines.push(`[CUTHOL-G105] ${cf}`);
+      }
+    }
+  }
+
+  // The CLI envelope always carries the journal head; only report it when this call advanced it
+  // (or when `workspace.undo`/`redo` explicitly synthesized a dry-run preview delta).
+  const revisionNow = typeof state?.revision === "number" ? (state.revision as number) : null;
+  const advanced = revisionBefore === null || revisionNow === null || revisionNow !== revisionBefore;
+  if (spec.mutates && ok && !dryRun && !advanced) {
+    lines.push(`No change to the edit (still r${revisionNow}).`);
+  }
+  const delta = env.delta as { summary?: string } | undefined;
+  if (dryRun && ok) {
+    if (isJournalPreview && delta?.summary && delta.summary !== env.command) {
+      lines.push(`Would change: ${delta.summary}`);
+    } else if (spec.tool === "speech" && spec.action === "cleanup") {
+      const cutsCount = typeof env.cuts_count === "number" ? env.cuts_count : 0;
+      const savedSeq = typeof env.saved_sequence_ms === "number" ? env.saved_sequence_ms : 0;
+      const savedSrc = typeof env.saved_source_ms === "number" ? env.saved_source_ms : 0;
+      const targetClip = String(env.clip_id ?? values.clip ?? "sp_01");
+      lines.push(
+        `Would change: excise ${cutsCount} span(s) on ${targetClip} (save ${savedSeq}ms timeline / ${savedSrc}ms source)`
+      );
+    } else if (spec.tool === "spine" && spec.action === "reframe" && Array.isArray(env.clips)) {
+      const plans = env.clips as Array<Record<string, unknown>>;
+      const preview = plans
+        .slice(0, 6)
+        .map((p) => {
+          const s = summarizeReframeClipPlan(p);
+          const [minX, maxX] = s.pan_x_pct_range as [number, number];
+          return `${String(s.clip_id)}(pan=${minX}%..${maxX}%, plateaus=${String(s.plateaus)}, conf=${String(s.mean_confidence)})`;
+        })
+        .join(", ");
+      const more = plans.length > 6 ? ` (+${plans.length - 6} more)` : "";
+      lines.push(`Would change: reframe ${preview}${more}`);
+    }
+  } else if (spec.mutates && advanced && delta?.summary && delta.summary !== env.command) {
+    lines.push(`Changed: ${delta.summary}`);
+  }
+  const history = env.history as { undo_preview?: { revision?: number; inverse_summary?: string } | null } | undefined;
+  if (spec.mutates && ok && !dryRun && advanced && history?.undo_preview?.inverse_summary) {
+    lines.push(`Undo (expect_rev ${history.undo_preview.revision}): ${history.undo_preview.inverse_summary}`);
+  }
+
+  if (spec.tool === "mix" && spec.action === "normalize" && typeof env.achieved_lufs === "number") {
+    const reached = env.target_reached === true;
+    const beforeLufs =
+      typeof env.measured_mix_before_lufs === "number" ? `${env.measured_mix_before_lufs} → ` : "";
+    const masterGain =
+      typeof env.master_gain_db === "number"
+        ? ` · master_gain ${env.master_gain_db >= 0 ? "+" : ""}${env.master_gain_db} dB`
+        : "";
+    lines.push(
+      `Loudness: ${beforeLufs}${env.achieved_lufs} LUFS (target ${env.target_lufs} LUFS, true_peak ${env.achieved_true_peak_dbtp ?? "?"} / ${env.true_peak_dbtp ?? -1} dBTP${masterGain}) · target_reached=${reached}`
+    );
+    if (!reached && typeof env.warning === "string") {
+      lines.push(`WARN [TARGET_NOT_REACHED] ${translateCliHint(env.warning)}`);
+    }
+  }
+  if (spec.tool === "mix" && spec.action === "beat_align" && typeof env.duration_warning === "string") {
+    lines.push(`WARN [DURATION_CHANGED] ${translateCliHint(env.duration_warning)}`);
+  }
+
+  const verification = env.verification as { ok?: boolean; error_count?: number; warning_count?: number } | undefined;
+  if (verification && typeof verification.error_count === "number") {
+    lines.push(`Verify: ${verification.error_count} error(s), ${verification.warning_count ?? 0} warning(s)`);
+  }
+  const diags = collectDiagnostics(env);
+  for (const d of diags.slice(0, 12)) {
+    lines.push(`${d.severity === "ERROR" ? "ERROR" : "WARN"} [${d.code}] ${d.what}${d.suggestion ? ` | Öneri: ${translateCliHint(d.suggestion)}` : ""}`);
+  }
+  if (diags.length > 12) lines.push(`… ${diags.length - 12} more diagnostic(s); run verify.`);
+
+  if (spec.tool === "speech" && spec.action === "cleanup") {
+    const table = formatCleanupCandidatesTable(env, values);
+    if (table) lines.push(table);
+  }
+  if (spec.tool === "spine" && spec.action === "reframe") {
+    const reframeTable = formatReframeSummaryTable(env);
+    if (reframeTable) lines.push(reframeTable);
+  }
+
+  const payload = compactPayload(env, spec, dryRun || values.verbose === true, values);
+  if (payload) lines.push(`Result: ${payload}`);
+
+  return { text: lines.join("\n"), isError: !ok };
 }
 
 export class CutholMcpServer {
@@ -1016,122 +1208,16 @@ export class CutholMcpServer {
       return this.textResult(`FAILED ${label} (exit ${run.code}): ${raw || "no output"}`, true);
     }
 
-    const ok = env.ok !== false && run.code === 0;
-    const dryRun = env.dry_run === true || values.dry_run === true;
-    const isJournalPreview =
-      spec.tool === "workspace" && (spec.action === "undo" || spec.action === "redo");
-    const lines: string[] = [];
-    const state = env.state as Record<string, unknown> | undefined;
-    if (dryRun && ok) {
-      const nowRev = readRevision(dir);
-      const stateSuffix = state?.state_digest
-        ? isJournalPreview
-          ? ` · would become: ${String(state.state_digest)}`
-          : ` · current: ${String(state.state_digest)}`
-        : "";
-      lines.push(`DRY-RUN ${label} · nothing changed (still r${nowRev ?? "?"})${stateSuffix}`);
-    } else {
-      lines.push(`${ok ? "OK" : "FAILED"} ${label}${state?.state_digest ? ` · ${String(state.state_digest)}` : ""}`);
-    }
+    const { text, isError } = formatEnvelopeCompact({
+      envelope: env,
+      spec,
+      dir,
+      values,
+      revisionBefore,
+      exitCode: run.code,
+    });
 
-    if (!ok) {
-      const diag = env.diagnostic as DiagnosticLike | undefined;
-      const err = env.error as { code?: string; message?: string; suggestion?: string } | string | undefined;
-      if (diag) {
-        lines.push(`[${diag.code}] ${diag.what}${diag.suggestion ? ` | Öneri: ${translateCliHint(diag.suggestion)}` : ""}`);
-      } else if (typeof err === "string") {
-        lines.push(translateCliHint(err));
-      } else if (err) {
-        lines.push(`[${err.code ?? "ERROR"}] ${err.message ?? ""}${err.suggestion ? ` | Öneri: ${translateCliHint(err.suggestion)}` : ""}`);
-      } else if (Array.isArray(env.contract_findings) && env.contract_findings.length > 0) {
-        for (const cf of (env.contract_findings as string[]).slice(0, 6)) {
-          lines.push(`[CUTHOL-G105] ${cf}`);
-        }
-      }
-    }
-
-    // The CLI envelope always carries the journal head; only report it when this call advanced it
-    // (or when `workspace.undo`/`redo` explicitly synthesized a dry-run preview delta).
-    const revisionNow = typeof state?.revision === "number" ? (state.revision as number) : null;
-    const advanced = revisionBefore === null || revisionNow === null || revisionNow !== revisionBefore;
-    if (spec.mutates && ok && !dryRun && !advanced) {
-      lines.push(`No change to the edit (still r${revisionNow}).`);
-    }
-    const delta = env.delta as { summary?: string } | undefined;
-    if (dryRun && ok) {
-      if (isJournalPreview && delta?.summary && delta.summary !== env.command) {
-        lines.push(`Would change: ${delta.summary}`);
-      } else if (spec.tool === "speech" && spec.action === "cleanup") {
-        const cutsCount = typeof env.cuts_count === "number" ? env.cuts_count : 0;
-        const savedSeq = typeof env.saved_sequence_ms === "number" ? env.saved_sequence_ms : 0;
-        const savedSrc = typeof env.saved_source_ms === "number" ? env.saved_source_ms : 0;
-        const targetClip = String(env.clip_id ?? values.clip ?? "sp_01");
-        lines.push(
-          `Would change: excise ${cutsCount} span(s) on ${targetClip} (save ${savedSeq}ms timeline / ${savedSrc}ms source)`
-        );
-      } else if (spec.tool === "spine" && spec.action === "reframe" && Array.isArray(env.clips)) {
-        const plans = env.clips as Array<Record<string, unknown>>;
-        const preview = plans
-          .slice(0, 6)
-          .map((p) => {
-            const s = summarizeReframeClipPlan(p);
-            const [minX, maxX] = s.pan_x_pct_range as [number, number];
-            return `${String(s.clip_id)}(pan=${minX}%..${maxX}%, plateaus=${String(s.plateaus)}, conf=${String(s.mean_confidence)})`;
-          })
-          .join(", ");
-        const more = plans.length > 6 ? ` (+${plans.length - 6} more)` : "";
-        lines.push(`Would change: reframe ${preview}${more}`);
-      }
-    } else if (spec.mutates && advanced && delta?.summary && delta.summary !== env.command) {
-      lines.push(`Changed: ${delta.summary}`);
-    }
-    const history = env.history as { undo_preview?: { revision?: number; inverse_summary?: string } | null } | undefined;
-    if (spec.mutates && ok && !dryRun && advanced && history?.undo_preview?.inverse_summary) {
-      lines.push(`Undo (expect_rev ${history.undo_preview.revision}): ${history.undo_preview.inverse_summary}`);
-    }
-
-    if (spec.tool === "mix" && spec.action === "normalize" && typeof env.achieved_lufs === "number") {
-      const reached = env.target_reached === true;
-      const beforeLufs =
-        typeof env.measured_mix_before_lufs === "number" ? `${env.measured_mix_before_lufs} → ` : "";
-      const masterGain =
-        typeof env.master_gain_db === "number"
-          ? ` · master_gain ${env.master_gain_db >= 0 ? "+" : ""}${env.master_gain_db} dB`
-          : "";
-      lines.push(
-        `Loudness: ${beforeLufs}${env.achieved_lufs} LUFS (target ${env.target_lufs} LUFS, true_peak ${env.achieved_true_peak_dbtp ?? "?"} / ${env.true_peak_dbtp ?? -1} dBTP${masterGain}) · target_reached=${reached}`
-      );
-      if (!reached && typeof env.warning === "string") {
-        lines.push(`WARN [TARGET_NOT_REACHED] ${translateCliHint(env.warning)}`);
-      }
-    }
-    if (spec.tool === "mix" && spec.action === "beat_align" && typeof env.duration_warning === "string") {
-      lines.push(`WARN [DURATION_CHANGED] ${translateCliHint(env.duration_warning)}`);
-    }
-
-    const verification = env.verification as { ok?: boolean; error_count?: number; warning_count?: number } | undefined;
-    if (verification && typeof verification.error_count === "number") {
-      lines.push(`Verify: ${verification.error_count} error(s), ${verification.warning_count ?? 0} warning(s)`);
-    }
-    const diags = collectDiagnostics(env);
-    for (const d of diags.slice(0, 12)) {
-      lines.push(`${d.severity === "ERROR" ? "ERROR" : "WARN"} [${d.code}] ${d.what}${d.suggestion ? ` | Öneri: ${translateCliHint(d.suggestion)}` : ""}`);
-    }
-    if (diags.length > 12) lines.push(`… ${diags.length - 12} more diagnostic(s); run verify.`);
-
-    if (spec.tool === "speech" && spec.action === "cleanup") {
-      const table = formatCleanupCandidatesTable(env, values);
-      if (table) lines.push(table);
-    }
-    if (spec.tool === "spine" && spec.action === "reframe") {
-      const reframeTable = formatReframeSummaryTable(env);
-      if (reframeTable) lines.push(reframeTable);
-    }
-
-    const payload = compactPayload(env, spec, dryRun || values.verbose === true, values);
-    if (payload) lines.push(`Result: ${payload}`);
-
-    const content: McpContent[] = [{ type: "text", text: lines.join("\n") }];
+    const content: McpContent[] = [{ type: "text", text }];
     if (spec.imageKeys?.length) {
       for (const key of spec.imageKeys) {
         for (const p of findValuesByKey(env, key)) {
@@ -1141,7 +1227,7 @@ export class CutholMcpServer {
         }
       }
     }
-    return { content, isError: !ok, envelope: env };
+    return { content, isError, envelope: env };
   }
 
   /** Downscales a PNG to a JPEG preview (keeps tokens bounded) and returns it as MCP image content. */

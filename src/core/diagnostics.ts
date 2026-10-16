@@ -327,13 +327,13 @@ export const DIAGNOSTICS = {
     );
   },
 
-  HYPERFRAMES_RENDER_FALLBACK: (compositionDir: string, reason: string) =>
+  HYPERFRAMES_RENDER_FAILED: (compositionDir: string, reason: string) =>
     createDiagnostic(
       "CUTHOL-G503",
       "G5_SIGNAL",
-      "WARN",
-      `'${compositionDir}' HyperFrames kompozisyonu tarayıcıda render edilemediği için yedek kutu (drawbox fallback) çizicisine düştü: ${reason}`,
-      `HyperFrames HTML/GSAP kodunu 'npx hyperframes check' ile kontrol edin veya tarayıcı (Chrome/Edge) erişimini doğrulayın.`,
+      "ERROR",
+      `'${compositionDir}' HyperFrames kompozisyonu render edilemedi; render durduruldu (yerine hiçbir yedek görüntü konmaz): ${reason}`,
+      `Kompozisyonu 'composition preview' ile açıp hatayı görün, HTML/GSAP kodunu 'npx hyperframes check' ile kontrol edin; tarayıcı (Chrome/Edge) erişimini 'npx hyperframes doctor' ile doğrulayın.`,
       compositionDir
     ),
 

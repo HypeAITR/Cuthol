@@ -1019,7 +1019,7 @@ export function renderHyperFramesCompositionToMp4(options: {
     fs.writeFileSync(entryPath, htmlSource, "utf8");
   }
 
-  const { hash, scalarVars, isSceneHost, nativeWidth, nativeHeight } =
+  const { hash, scalarVars, isSceneHost } =
     syncScalarVarsAndComputeCompositionHash({
       absCompDir,
       entryHtml: options.entryHtml,
@@ -1037,165 +1037,98 @@ export function renderHyperFramesCompositionToMp4(options: {
   fs.mkdirSync(options.blobsDir, { recursive: true });
   const ext = useTrueAlphaMov ? "mov" : "mp4";
   const outBlob = path.join(options.blobsDir, `hf_comp_${hash}.${ext}`);
+  // Blobs written by older versions as a placeholder box carry a `.fallback.json` sidecar; never reuse them.
+  const legacyFallbackSidecar = `${outBlob}.fallback.json`;
+  if (fs.existsSync(legacyFallbackSidecar)) {
+    for (const stale of [outBlob, legacyFallbackSidecar]) {
+      try {
+        fs.unlinkSync(stale);
+      } catch {
+        // ignore
+      }
+    }
+  }
   if (fs.existsSync(outBlob) && fs.statSync(outBlob).size > 1000) {
     return outBlob;
+  }
+
+  const hfBin = findLocalHyperFramesCliMjs();
+  if (!fs.existsSync(hfBin)) {
+    throw new CutholError(
+      DIAGNOSTICS.HYPERFRAMES_RENDER_FAILED(
+        options.compositionDir,
+        "hyperframes CLI bulunamadı (npm install ile kurulmalı)"
+      )
+    );
   }
 
   const tmpBlob = path.join(
     options.blobsDir,
     `hf_comp_${hash}.${process.pid}.${Date.now()}.tmp.${ext}`
   );
-
-  const fallbackSidecar = `${outBlob}.fallback.json`;
-  const hfBin = findLocalHyperFramesCliMjs();
-  let hfErrorDetail = "hyperframes CLI binary not found";
   const durationSec = Math.max(0.1, Number((options.durationMs / 1000).toFixed(3)));
 
-  if (fs.existsSync(hfBin)) {
-    let targetRenderDir = absCompDir;
-    let tempSceneHostDir: string | null = null;
-
-    try {
-      if (isSceneHost && options.backdropVideoPath) {
-        tempSceneHostDir = stageSceneHostCompositionDir({
-          absCompDir,
-          entryHtml: options.entryHtml,
-          blobsDir: options.blobsDir,
-          hash,
-          durationSec,
-          backdropVideoPath: options.backdropVideoPath,
-        });
-        targetRenderDir = tempSceneHostDir;
-      }
-
-      const renderArgs = [
-        hfBin,
-        "render",
-        targetRenderDir,
-        "--format",
-        useTrueAlphaMov ? "mov" : "mp4",
-        "--quality",
-        isSceneHost ? "looks" : "draft",
-        "--output",
-        tmpBlob,
-      ];
-      if (isSceneHost) {
-        renderArgs.push("--video-frame-format", "png");
-      }
-      const activeVarsFile = path.join(targetRenderDir, "assets/cuthol-vars.json");
-      if (Object.keys(scalarVars).length > 0 && fs.existsSync(activeVarsFile)) {
-        renderArgs.push("--variables-file", activeVarsFile);
-      }
-
-      const hfProc = spawnSync(process.execPath, renderArgs, {
-        encoding: "utf8",
-        timeout: 90_000,
+  let targetRenderDir = absCompDir;
+  let tempSceneHostDir: string | null = null;
+  try {
+    if (isSceneHost && options.backdropVideoPath) {
+      tempSceneHostDir = stageSceneHostCompositionDir({
+        absCompDir,
+        entryHtml: options.entryHtml,
+        blobsDir: options.blobsDir,
+        hash,
+        durationSec,
+        backdropVideoPath: options.backdropVideoPath,
       });
-
-      if (hfProc.status === 0 && fs.existsSync(tmpBlob) && fs.statSync(tmpBlob).size > 1000) {
-        fs.renameSync(tmpBlob, outBlob);
-        if (useTrueAlphaMov) {
-          recordCompositionAlphaBboxSidecar(absCompDir, outBlob, durationSec * 0.5);
-        }
-        if (fs.existsSync(fallbackSidecar)) {
-          try {
-            fs.unlinkSync(fallbackSidecar);
-          } catch {
-            // ignore
-          }
-        }
-        return outBlob;
-      }
-      hfErrorDetail = (hfProc.stderr || hfProc.stdout || `exit=${hfProc.status}`).trim().slice(-240);
-      if (fs.existsSync(tmpBlob)) {
-        try {
-          fs.unlinkSync(tmpBlob);
-        } catch {
-          // ignore cleanup error
-        }
-      }
-    } finally {
-      if (tempSceneHostDir && fs.existsSync(tempSceneHostDir)) {
-        try {
-          fs.rmSync(tempSceneHostDir, { recursive: true, force: true });
-        } catch {
-          // ignore
-        }
-      }
+      targetRenderDir = tempSceneHostDir;
     }
-  }
 
-  // Fallback deterministic frame-by-frame motion graphic synthesis via FFmpeg (zero chromakey: true straight alpha ProRes 4444 when transparent)
-  const rawAccent = String(options.props?.accent ?? "#38BDF8");
-  const accentHexClean = /^#[0-9a-fA-F]{6}$/.test(rawAccent) ? rawAccent.slice(1).toUpperCase() : "38BDF8";
-  const accentColor = `0x${accentHexClean}`;
+    const renderArgs = [
+      hfBin,
+      "render",
+      targetRenderDir,
+      "--format",
+      useTrueAlphaMov ? "mov" : "mp4",
+      "--quality",
+      isSceneHost ? "looks" : "draft",
+      "--output",
+      tmpBlob,
+    ];
+    if (isSceneHost) {
+      renderArgs.push("--video-frame-format", "png");
+    }
+    const activeVarsFile = path.join(targetRenderDir, "assets/cuthol-vars.json");
+    if (Object.keys(scalarVars).length > 0 && fs.existsSync(activeVarsFile)) {
+      renderArgs.push("--variables-file", activeVarsFile);
+    }
 
-  let boxW = Math.round(nativeWidth * 0.82);
-  let boxH = Math.round(nativeHeight * 0.10);
-  let boxX = Math.round((nativeWidth - boxW) / 2);
-  let boxY = Math.round(nativeHeight * 0.58);
+    // No wall-clock limit: render time grows with composition length (long videos take hours).
+    // A large output buffer keeps progress logging of long renders from killing the process (ENOBUFS).
+    const hfProc = spawnSync(process.execPath, renderArgs, {
+      encoding: "utf8",
+      maxBuffer: 512 * 1024 * 1024,
+    });
 
-  if (htmlSource.includes("class=\"stat-card\"") || htmlSource.includes("class=\"title-banner\"")) {
-    boxW = Math.round(nativeWidth * 0.76);
-    boxH = Math.round(nativeHeight * 0.22);
-    boxX = Math.round((nativeWidth - boxW) / 2);
-    boxY = Math.round((nativeHeight - boxH) / 2);
-  } else if (htmlSource.includes("class=\"badge-overlay-box\"")) {
-    boxW = Math.round(nativeWidth * 0.36);
-    boxH = Math.round(nativeHeight * 0.06);
-    boxX = Math.max(8, nativeWidth - boxW - Math.round(nativeWidth * 0.06));
-    boxY = Math.round(nativeHeight * 0.05);
-  }
+    if (hfProc.status === 0 && fs.existsSync(tmpBlob) && fs.statSync(tmpBlob).size > 1000) {
+      fs.renameSync(tmpBlob, outBlob);
+      if (useTrueAlphaMov) {
+        recordCompositionAlphaBboxSidecar(absCompDir, outBlob, durationSec * 0.5);
+      }
+      return outBlob;
+    }
 
-  const drawboxChain = `drawbox=x=${boxX}:y=${boxY}:w=${boxW}:h=${boxH}:color=0x0F172A@0.92:t=fill,drawbox=x=${boxX}:y=${boxY}:w=14:h=${boxH}:color=${accentColor}@1.0:t=fill,drawbox=x=${boxX}:y=${boxY}:w=${boxW}:h=${boxH}:color=${accentColor}@1.0:t=4`;
-
-  const ffArgs = useTrueAlphaMov
-    ? [
-        "-y",
-        "-v",
-        "error",
-        "-f",
-        "lavfi",
-        "-i",
-        `color=c=black@0.0:s=${nativeWidth}x${nativeHeight}:r=${options.fps}:d=${durationSec},format=rgba`,
-        "-vf",
-        `${drawboxChain},format=yuva444p10le`,
-        "-c:v",
-        "prores_ks",
-        "-profile:v",
-        "4444",
-        "-pix_fmt",
-        "yuva444p10le",
-        "-colorspace",
-        "bt709",
-        "-color_primaries",
-        "bt709",
-        "-color_trc",
-        "bt709",
-        "-color_range",
-        "tv",
-        tmpBlob,
-      ]
-    : [
-        "-y",
-        "-v",
-        "error",
-        "-f",
-        "lavfi",
-        "-i",
-        `color=c=0x0F172A:s=${nativeWidth}x${nativeHeight}:r=${options.fps}:d=${durationSec}`,
-        "-vf",
-        drawboxChain,
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        tmpBlob,
-      ];
-
-  const ffProc = spawnSync("ffmpeg", ffArgs, { encoding: "utf8", timeout: 45_000 });
-
-  if (ffProc.status !== 0 || !fs.existsSync(tmpBlob)) {
+    // Keep the lines that explain the failure; HyperFrames also logs [INFO] progress traces.
+    const logLines = `${hfProc.stderr || ""}\n${hfProc.stdout || ""}`
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith("[INFO]"));
+    const errorLines = logLines.filter((l) => /error|fail|exception|timeout|cannot|not found/i.test(l));
+    const detail = hfProc.error
+      ? hfProc.error.message
+      : (errorLines.length > 0 ? errorLines : logLines).slice(-3).join(" | ").slice(-400) ||
+        `exit=${hfProc.status ?? hfProc.signal}`;
+    throw new CutholError(DIAGNOSTICS.HYPERFRAMES_RENDER_FAILED(options.compositionDir, detail));
+  } finally {
     if (fs.existsSync(tmpBlob)) {
       try {
         fs.unlinkSync(tmpBlob);
@@ -1203,22 +1136,14 @@ export function renderHyperFramesCompositionToMp4(options: {
         // ignore cleanup error
       }
     }
-    throw new CutholError(
-      DIAGNOSTICS.EXTERNAL_TOOL_FAILED("hyperframes/ffmpeg", (ffProc.stderr || "render failed").slice(-400))
-    );
+    if (tempSceneHostDir && fs.existsSync(tempSceneHostDir)) {
+      try {
+        fs.rmSync(tempSceneHostDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    }
   }
-
-  fs.renameSync(tmpBlob, outBlob);
-  fs.writeFileSync(
-    fallbackSidecar,
-    JSON.stringify({
-      composition_dir: options.compositionDir,
-      reason: hfErrorDetail,
-      timestamp: new Date().toISOString(),
-    }),
-    "utf8"
-  );
-  return outBlob;
 }
 
 /**
@@ -1302,7 +1227,7 @@ export function renderHyperFramesSingleFramePng(options: {
         "1",
         tmpPng,
       ],
-      { encoding: "utf8", timeout: 20_000 }
+      { encoding: "utf8" }
     );
     if (extProc.status === 0 && fs.existsSync(tmpPng) && fs.statSync(tmpPng).size > 200) {
       fs.renameSync(tmpPng, outPng);
@@ -1325,7 +1250,7 @@ export function renderHyperFramesSingleFramePng(options: {
         "1",
         tmpPng,
       ],
-      { encoding: "utf8", timeout: 20_000 }
+      { encoding: "utf8" }
     );
     if (eofProc.status === 0 && fs.existsSync(tmpPng) && fs.statSync(tmpPng).size > 200) {
       fs.renameSync(tmpPng, outPng);
@@ -1525,20 +1450,5 @@ export function recordCompositionAlphaBboxSidecar(
     return bbox;
   } catch {
     return null;
-  }
-}
-
-export function getHyperFramesFallbackInfo(
-  mp4Path: string
-): { composition_dir: string; reason: string } | null {
-  const sidecar = `${mp4Path}.fallback.json`;
-  if (!fs.existsSync(sidecar)) return null;
-  try {
-    return JSON.parse(fs.readFileSync(sidecar, "utf8")) as {
-      composition_dir: string;
-      reason: string;
-    };
-  } catch {
-    return { composition_dir: mp4Path, reason: "fallback sidecar present" };
   }
 }

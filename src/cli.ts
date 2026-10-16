@@ -54,7 +54,13 @@ import {
 import { analyzeAssetScenes } from "./library/scenes.js";
 import { analyzeAssetSubjectTrack, formatSubjectTrackDigest } from "./library/subject.js";
 import { analyzeAssetWaveform } from "./library/waveform.js";
-import { CUTHOL_MCP_TOOLS, startMcpStdioServer } from "./mcp/server.js";
+import {
+  CUTHOL_MCP_TOOLS,
+  formatEnvelopeCompact,
+  readWorkspaceRevision,
+  resolveActionSpecForCommand,
+  startMcpStdioServer,
+} from "./mcp/server.js";
 import {
   alignClipsToBeats,
   duckMusicUnderDialogue,
@@ -100,6 +106,7 @@ interface ParsedArgs {
 const BOOLEAN_FLAGS = new Set([
   "help",
   "json",
+  "compact",
   "verbose",
   "full-bins",
   "sequence-time",
@@ -123,6 +130,7 @@ const BOOLEAN_FLAGS = new Set([
 
 const KNOWN_CLI_FLAGS = new Set([
   ...BOOLEAN_FLAGS,
+  "format",
   "dir",
   "project",
   "aspect",
@@ -262,6 +270,34 @@ function suggestFlagFix(unknownFlag: string, group: string, action?: string): st
   return `cuthol ${group}${action ? ` ${action}` : ""} --${best ?? "help"}`;
 }
 
+let activeCliCompactMode = false;
+let activeCliWorkspaceDir = process.cwd();
+let activeCliRevisionBefore: number | null = null;
+let activeCliValues: Record<string, unknown> = {};
+let activeCliGroup = "";
+let activeCliAction: string | undefined;
+let activeCliSub: string | undefined;
+
+function emitEnvelopeObject(
+  workspaceDir: string,
+  command: string,
+  envObj: Record<string, unknown>
+): void {
+  if (activeCliCompactMode) {
+    const { text } = formatEnvelopeCompact({
+      envelope: envObj,
+      command,
+      dir: workspaceDir,
+      values: activeCliValues,
+      revisionBefore: activeCliRevisionBefore,
+      exitCode: envObj.ok === false ? 1 : 0,
+    });
+    console.log(text);
+    return;
+  }
+  console.log(JSON.stringify(envObj, null, 2));
+}
+
 function emitEnvelopeJson(
   workspaceDir: string,
   command: string,
@@ -273,18 +309,12 @@ function emitEnvelopeJson(
   } catch {
     // workspace might not exist yet
   }
-  console.log(
-    JSON.stringify(
-      {
-        ok: true,
-        command,
-        ...header,
-        ...payload,
-      },
-      null,
-      2
-    )
-  );
+  emitEnvelopeObject(workspaceDir, command, {
+    ok: true,
+    command,
+    ...header,
+    ...payload,
+  });
 }
 
 function parsePropsJsonFlag(raw: string, commandName: string): Record<string, unknown> {
@@ -387,6 +417,14 @@ function boolFlag(flags: Record<string, string | boolean>, name: string, fallbac
 async function main(): Promise<void> {
   const { positionals, flags } = parseArgv(process.argv.slice(2));
   const [group, action, ...rest] = positionals;
+  activeCliGroup = group ?? "";
+  activeCliAction = action;
+  activeCliSub = rest[0];
+
+  const formatFlag = typeof flags["format"] === "string" ? flags["format"].trim().toLowerCase() : "";
+  activeCliCompactMode =
+    !flags["json"] &&
+    (boolFlag(flags, "compact", false) === true || formatFlag === "text" || formatFlag === "compact");
 
   const invokedBin = path.basename(process.argv[1] ?? "").toLowerCase();
   if (group === "mcp" || invokedBin.startsWith("cuthol-mcp")) {
@@ -402,8 +440,26 @@ async function main(): Promise<void> {
       );
     }
   }
+  if (formatFlag && formatFlag !== "json" && formatFlag !== "text" && formatFlag !== "compact") {
+    throw new CutholError(
+      DIAGNOSTICS.UNKNOWN_FLAG(
+        `--format ${String(flags["format"])}`,
+        `${group ?? "cuthol"}${action ? `.${action}` : ""}`,
+        `cuthol ${group ?? ""}${action ? ` ${action}` : ""} --format text`
+      )
+    );
+  }
 
   const workspaceDir = strFlag(flags, "dir") ?? strFlag(flags, "project") ?? process.cwd();
+  activeCliWorkspaceDir = workspaceDir;
+  activeCliRevisionBefore = readWorkspaceRevision(workspaceDir);
+  activeCliValues = {
+    dry_run: boolFlag(flags, "dry-run", false),
+    verbose: boolFlag(flags, "verbose", false),
+    clip: strFlag(flags, "clip"),
+    cursor: strFlag(flags, "cursor"),
+    limit: numFlag(flags, "limit"),
+  };
   loadDotEnvIfNeeded(workspaceDir);
 
   if (!group || group === "help" || flags["help"]) {
@@ -474,30 +530,24 @@ async function main(): Promise<void> {
             dryRun: boolFlag(flags, "dry-run", false),
             allowProtected,
           });
-          console.log(
-            JSON.stringify(
-              {
-                ok: true,
-                command: `workspace.journal.${sub}`,
-                action: `journal.${sub}`,
-                schema_version: "cuthol.envelope/1",
-                dry_run: res.dry_run,
-                previous_revision: res.previous_revision,
-                revision: res.revision,
-                operation: res.operation,
-                reverted_entries: res.reverted_entries,
-                state: res.state,
-                delta: {
-                  summary:
-                    res.reverted_entries.map((e) => e.inverse_summary).join("; ") || res.operation,
-                  affected_ids: [...new Set(res.reverted_entries.flatMap((e) => e.affected_ids))],
-                },
-                history: res.history,
-              },
-              null,
-              2
-            )
-          );
+          emitEnvelopeObject(workspaceDir, `workspace.journal.${sub}`, {
+            ok: true,
+            command: `workspace.journal.${sub}`,
+            action: `journal.${sub}`,
+            schema_version: "cuthol.envelope/1",
+            dry_run: res.dry_run,
+            previous_revision: res.previous_revision,
+            revision: res.revision,
+            operation: res.operation,
+            reverted_entries: res.reverted_entries,
+            state: res.state,
+            delta: {
+              summary:
+                res.reverted_entries.map((e) => e.inverse_summary).join("; ") || res.operation,
+              affected_ids: [...new Set(res.reverted_entries.flatMap((e) => e.affected_ids))],
+            },
+            history: res.history,
+          });
           return;
         }
         if (sub === "tag") {
@@ -1411,35 +1461,39 @@ function printHelp(): void {
       "  cuthol render [--preset draft_480p|master_1080p] [--out <render.mp4>] [--dir <dir>]",
       "  cuthol brief [--lens overview|flow|canvas|detail] [--id <id1,id2>] [--window 0s..10s] [--json] [--dir <dir>]",
       "  cuthol mcp",
+      "",
+      "Global output flags: [--compact | --format text|json]",
     ].join("\n")
   );
 }
 
 main().catch((err: unknown) => {
-  if (err instanceof CutholError) {
-    console.error(
-      JSON.stringify(
-        {
+  const errEnvelope: Record<string, unknown> =
+    err instanceof CutholError
+      ? {
           ok: false,
           schema_version: "cuthol.envelope/1",
           diagnostic: err.diagnostic,
-        },
-        null,
-        2
-      )
-    );
-  } else {
-    console.error(
-      JSON.stringify(
-        {
+        }
+      : {
           ok: false,
           schema_version: "cuthol.envelope/1",
           error: err instanceof Error ? err.message : String(err),
-        },
-        null,
-        2
-      )
-    );
+        };
+
+  if (activeCliCompactMode) {
+    const spec = resolveActionSpecForCommand(activeCliGroup, activeCliAction, activeCliSub);
+    const { text } = formatEnvelopeCompact({
+      envelope: errEnvelope,
+      spec,
+      dir: activeCliWorkspaceDir,
+      values: activeCliValues,
+      revisionBefore: activeCliRevisionBefore,
+      exitCode: 1,
+    });
+    console.error(text);
+  } else {
+    console.error(JSON.stringify(errEnvelope, null, 2));
   }
   process.exitCode = 1;
 });

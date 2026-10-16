@@ -15,7 +15,7 @@ An agent edits through a CLI (`cuthol`) or an MCP server (`cuthol mcp`). It read
   - Word-highlighted captions and voiceover synthesis.
 - **Mix.** Loudness normalization to a target (ITU-R BS.1770, e.g. −14 LUFS / −1 dBTP), voice polish, music ducking under speech, and cut alignment to a regular beat grid.
 - **Reframe.** Single-subject tracking when placing 16:9 footage on a 9:16 stage, with manual correction.
-- **Motion graphics.** HyperFrames compositions composited with true alpha. Each composition gets a runtime (`window.__cuthol`) exposing word times, beats, the beat grid and cut points.
+- **Motion graphics.** HyperFrames compositions composited with true alpha. Each composition gets a runtime (`window.__cuthol`) exposing word times, beats, the beat grid and cut points, both for its own window and for the whole edit (`C.global`). A video can be made entirely of motion graphics over a still background.
 - **Seeing the edit.**
   - A fast frame preview that matches the render.
   - Contact sheets and a timeline diagram.
@@ -67,6 +67,8 @@ Register the stdio server in your MCP client:
 }
 ```
 
+Most clients read MCP servers only when a session starts. After adding or changing the configuration (for example a project `.mcp.json`), start a new session and approve the `cuthol` server when asked. To check the server on its own, run `node dist/cli.js mcp` and send `initialize` and then `tools/list`; it should list 13 tools.
+
 The server exposes 13 tools:
 
 | Group | Tools |
@@ -104,6 +106,10 @@ node dist/cli.js verify --dir ./my-video
 node dist/cli.js render --preset master_1080p --dir ./my-video
 ```
 
+By default each command prints a full JSON result. Add `--compact` to get the same short text an agent sees over MCP (`OK … · rN`, `Changed:`, `Undo:`, warnings).
+
+On the CLI, relative file paths resolve against the current directory; over MCP they resolve against the project folder.
+
 To see the commands:
 - `node dist/cli.js help` lists every command.
 - `node dist/cli.js help --json` prints the machine-readable schemas.
@@ -122,6 +128,7 @@ A Cuthol project is a folder:
 ## Notes
 
 - Diagnostics have the form `[CUTHOL-Gxxx] what | Öneri: fix`. They and some guidance text are currently in Turkish. `Öneri` means "suggestion".
+- Renders have no time limit; long videos simply take longer. If an overlay cannot be rendered, the render fails with an error instead of substituting anything.
 - Rendering presets:
   - `draft_480p`: a fast proxy for checking.
   - `master_1080p`: the deliverable.

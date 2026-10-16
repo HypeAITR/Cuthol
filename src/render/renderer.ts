@@ -12,7 +12,6 @@ import path from "node:path";
 import { computeSequenceDurationMs } from "../brief/inspector.js";
 import { hashDirectoryRecursive, syncCompositionBridgeFiles } from "../compositor/bridge_exporter.js";
 import { compileSequenceRenderPlan, RenderPreset } from "../compositor/compiler.js";
-import { getHyperFramesFallbackInfo } from "../compositor/hyperframes_bridge.js";
 import { CutholDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { CutholSequence } from "../core/schema.js";
 import { loadSequence, WorkspacePaths } from "../core/workspace.js";
@@ -101,7 +100,8 @@ function isIntentionalFadeOrTransparentAtMs(
  */
 export function scanRenderedMp4ForBlankFrames(
   mp4Path: string,
-  seq: CutholSequence
+  seq: CutholSequence,
+  options?: { chunkFrames?: number }
 ): PostRenderBlankScanResult {
   const t0 = Date.now();
   const fps = Math.max(1, seq.stage.fps);
@@ -109,49 +109,13 @@ export function scanRenderedMp4ForBlankFrames(
   const scanW = 64;
   const scanH = 64;
 
-  const proc = spawnSync(
-    "ffmpeg",
-    [
-      "-v",
-      "error",
-      "-threads",
-      "0",
-      "-i",
-      mp4Path,
-      "-an",
-      "-vf",
-      `scale=${scanW}:${scanH}:flags=neighbor`,
-      "-f",
-      "rawvideo",
-      "-pix_fmt",
-      "rgb24",
-      "pipe:1",
-    ],
-    {
-      maxBuffer: 128 * 1024 * 1024,
-      timeout: 60_000,
-    }
-  );
-
-  if (proc.status !== 0 || !proc.stdout) {
-    return {
-      fps,
-      total_frames: 0,
-      scan_duration_ms: Date.now() - t0,
-      events: [],
-      blank_frames_count: 0,
-      blank_at_s: [],
-      diagnostics: [],
-    };
-  }
-
-  const buf = proc.stdout as Buffer;
+  // Read the render in fixed-size chunks so memory stays bounded for long videos (hours of footage);
+  // a single pipe of the whole file would exceed any fixed buffer.
   const frameBytes = scanW * scanH * 3;
-  const totalFrames = Math.floor(buf.length / frameBytes);
+  const chunkFrames = Math.max(1, options?.chunkFrames ?? 6000);
   const events: BlankFrameEvent[] = [];
   let blankFramesCount = 0;
-
-  for (let f = 0; f < totalFrames; f++) {
+  const processFrame = (f: number, frameBuf: Buffer): void => {
     const tMs = (f * 1000) / fps;
     let activeClipIdx = -1;
     for (let i = 0; i < seq.spine.clips.length; i++) {
@@ -161,17 +125,16 @@ export function scanRenderedMp4ForBlankFrames(
         break;
       }
     }
-    if (activeClipIdx < 0) continue;
-    if (isIntentionalFadeOrTransparentAtMs(seq, activeClipIdx, tMs, frameDurMs)) continue;
+    if (activeClipIdx < 0) return;
+    if (isIntentionalFadeOrTransparentAtMs(seq, activeClipIdx, tMs, frameDurMs)) return;
 
-    const frameBuf = buf.subarray(f * frameBytes, (f + 1) * frameBytes);
     const ev = evaluateRgb24FrameBlankness(
       frameBuf,
       scanW,
       scanH,
       seq.stage.backdrop?.color
     );
-    if (!ev.is_blank_frame) continue;
+    if (!ev.is_blank_frame) return;
 
     blankFramesCount += 1;
     const activeClip = seq.spine.clips[activeClipIdx];
@@ -195,7 +158,57 @@ export function scanRenderedMp4ForBlankFrames(
         backdrop_flat_ratio: ev.backdrop_flat_ratio,
       });
     }
+  };
+
+  let totalFrames = 0;
+  for (let startFrame = 0; ; startFrame += chunkFrames) {
+    const proc = spawnSync(
+      "ffmpeg",
+      [
+        "-v",
+        "error",
+        "-threads",
+        "0",
+        "-ss",
+        (startFrame / fps).toFixed(6),
+        "-i",
+        mp4Path,
+        "-an",
+        "-frames:v",
+        String(chunkFrames),
+        "-vf",
+        `scale=${scanW}:${scanH}:flags=neighbor`,
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "pipe:1",
+      ],
+      { maxBuffer: chunkFrames * frameBytes + 4 * 1024 * 1024 }
+    );
+    if (proc.status !== 0 || !proc.stdout) {
+      if (startFrame === 0) {
+        return {
+          fps,
+          total_frames: 0,
+          scan_duration_ms: Date.now() - t0,
+          events: [],
+          blank_frames_count: 0,
+          blank_at_s: [],
+          diagnostics: [],
+        };
+      }
+      break;
+    }
+    const chunkBuf = proc.stdout as Buffer;
+    const got = Math.floor(chunkBuf.length / frameBytes);
+    for (let i = 0; i < got; i++) {
+      processFrame(startFrame + i, chunkBuf.subarray(i * frameBytes, (i + 1) * frameBytes));
+    }
+    totalFrames += got;
+    if (got < chunkFrames) break;
   }
+
 
   const diagnostics: CutholDiagnostic[] =
     events.length > 0 ? [DIAGNOSTICS.RENDER_BLANK_FRAMES_DETECTED(events)] : [];
@@ -224,18 +237,8 @@ export function renderSequenceToMp4(options: {
   }
 
   const preset: RenderPreset = options.preset ?? "master_1080p";
+  // A composition that cannot be rendered throws CUTHOL-G503 from the compiler; nothing is substituted.
   const plan = compileSequenceRenderPlan(sequence, paths, preset);
-
-  // Report CUTHOL-G503 warning if any HyperFrames composition fell back to drawbox
-  for (const blobPath of plan.hyperframesBlobs) {
-    const fb = getHyperFramesFallbackInfo(blobPath);
-    if (fb) {
-      verification.diagnostics.push(
-        DIAGNOSTICS.HYPERFRAMES_RENDER_FALLBACK(fb.composition_dir, fb.reason)
-      );
-      verification.warning_count += 1;
-    }
-  }
 
   const defaultOut = path.join(paths.rootDir, "output", `render_r${sequence.meta.revision}_${preset}.mp4`);
   const resolvedOut = options.outputPath
@@ -280,8 +283,8 @@ export function renderSequenceToMp4(options: {
   const proc = spawnSync("ffmpeg", ffArgs, {
     cwd: paths.rootDir,
     encoding: "utf8",
-    maxBuffer: 32 * 1024 * 1024,
-    timeout: 120_000,
+    // No wall-clock limit: a full render scales with sequence length (long videos take hours).
+    maxBuffer: 256 * 1024 * 1024,
   });
 
   if (proc.status !== 0 || !fs.existsSync(tmpOut)) {
@@ -429,8 +432,8 @@ export function ensurePreviewCompositeMp4(
   const proc = spawnSync("ffmpeg", ffArgs, {
     cwd: paths.rootDir,
     encoding: "utf8",
-    maxBuffer: 32 * 1024 * 1024,
-    timeout: 120_000,
+    // No wall-clock limit: a full render scales with sequence length (long videos take hours).
+    maxBuffer: 256 * 1024 * 1024,
   });
 
   if (proc.status !== 0 || !fs.existsSync(tmpMp4)) {
@@ -523,8 +526,8 @@ export function renderSingleCompositeFrameRgb24(
     ],
     {
       cwd: paths.rootDir,
+      // Decoding the graph up to the requested time scales with its position; no wall-clock limit.
       maxBuffer: pixelCount * 4 + 2 * 1024 * 1024,
-      timeout: 60_000,
     }
   );
 

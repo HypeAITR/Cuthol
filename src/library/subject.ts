@@ -220,6 +220,9 @@ export function analyzeAssetSubjectTrack(options: {
     item.probe.width > 0 && item.probe.height > 0 ? item.probe.width / item.probe.height : 16 / 9;
   const H = Math.max(40, Math.min(280, Math.round(W / rawAr / 2) * 2));
 
+  // The whole clip is sampled at `sampleFps`; size the buffer from its duration (long recordings run for
+  // hours) instead of a fixed cap, and do not impose a wall-clock limit.
+  const expectedFrames = Math.ceil((durMs / 1000) * sampleFps) + 8;
   const proc = spawnSync(
     "ffmpeg",
     [
@@ -235,7 +238,7 @@ export function analyzeAssetSubjectTrack(options: {
       "rgb24",
       "pipe:1",
     ],
-    { maxBuffer: 96 * 1024 * 1024, timeout: 60_000 }
+    { maxBuffer: expectedFrames * W * H * 3 + 16 * 1024 * 1024 }
   );
 
   if (proc.status !== 0) {

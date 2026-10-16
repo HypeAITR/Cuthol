@@ -7,7 +7,7 @@ import { resolveCueStartMs } from "../brief/inspector.js";
 import { compileSequenceAudioPlan } from "../compositor/compiler.js";
 import { DecisionTrace, DecisionTraceItem } from "../core/decision_trace.js";
 import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
-import { createDefaultAudioChain, CutholSequence, ParameterEnvelopePoint } from "../core/schema.js";
+import { createDefaultAudioChain, CutholSequence, maxSourceDurationMs, ParameterEnvelopePoint } from "../core/schema.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
 import { loadSequence, WorkspacePaths } from "../core/workspace.js";
 import { analyzeAssetBeats } from "../library/beats.js";
@@ -93,8 +93,8 @@ function measureSequenceMixLoudness(
     {
       cwd: paths.rootDir,
       encoding: "utf8",
-      maxBuffer: 16 * 1024 * 1024,
-      timeout: 45_000,
+      // ebur128 logs ~10 lines per second of audio and runs over the whole mix: no wall-clock limit.
+      maxBuffer: 256 * 1024 * 1024,
     }
   );
 
@@ -1036,7 +1036,7 @@ export function alignClipsToBeats(options: {
         }
 
         const asset = libMap.get(clip.asset_handle);
-        const maxSourceOut = asset ? asset.probe.duration_ms : clip.source_out_ms;
+        const maxSourceOut = asset ? maxSourceDurationMs(asset) : clip.source_out_ms;
         const maxSourceSpan = Math.max(1, maxSourceOut - clip.source_in_ms);
         const extendedRamp =
           clip.playback.speed_ramp && clip.playback.speed_ramp.length > 0 && maxSourceSpan > oldSourceSpan
@@ -1152,7 +1152,7 @@ export function alignClipsToBeats(options: {
         const lastClip = seq.spine.clips[seq.spine.clips.length - 1];
         const prevClip = seq.spine.clips.length > 1 ? seq.spine.clips[seq.spine.clips.length - 2] : null;
         const asset = libMap.get(lastClip.asset_handle);
-        const maxSourceOut = asset ? asset.probe.duration_ms : lastClip.source_out_ms;
+        const maxSourceOut = asset ? maxSourceDurationMs(asset) : lastClip.source_out_ms;
         const maxSourceSpan = Math.max(1, maxSourceOut - lastClip.source_in_ms);
         const tempMaxClip = { ...lastClip, source_out_ms: lastClip.source_in_ms + maxSourceSpan };
         const maxTimelineDur = Math.max(

@@ -10,7 +10,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { computeSequenceDurationMs, resolveCueStartMs } from "../brief/inspector.js";
-import { CutholSequence, ParameterEnvelope, TransitionSpec } from "../core/schema.js";
+import { CutholSequence, isStillGraphic, maxSourceDurationMs, ParameterEnvelope, TransitionSpec } from "../core/schema.js";
 import { WorkspacePaths } from "../core/workspace.js";
 import { resolveLibraryItemPath } from "../library/probe.js";
 import { sequenceMsToSourceMs } from "../sequence/spine.js";
@@ -293,7 +293,7 @@ export function compileSequenceAudioPlan(
       const srcInMs = cue.source_in_ms ?? 0;
       const maxOutByDuration = srcInMs + cue.duration_ms;
       const requestedOut = cue.source_out_ms ?? maxOutByDuration;
-      const srcOutMs = Math.min(asset.probe.duration_ms, requestedOut, maxOutByDuration);
+      const srcOutMs = Math.min(maxSourceDurationMs(asset), requestedOut, maxOutByDuration);
       const srcInSec = (srcInMs / 1000).toFixed(3);
       const srcOutSec = (srcOutMs / 1000).toFixed(3);
 
@@ -452,7 +452,7 @@ function extractSceneHostBackdropSlice(
         "tv",
         tmpMp4,
       ],
-      { cwd: paths.rootDir, encoding: "utf8", timeout: 45_000 }
+      { cwd: paths.rootDir, encoding: "utf8" }
     );
     if (proc.status === 0 && fs.existsSync(tmpMp4) && fs.statSync(tmpMp4).size > 500) {
       fs.renameSync(tmpMp4, outMp4);
@@ -531,7 +531,7 @@ function extractSceneHostBackdropSlice(
       "tv",
       tmpMp4,
     ],
-    { encoding: "utf8", timeout: 30_000 }
+    { encoding: "utf8" }
   );
   if (proc.status === 0 && fs.existsSync(tmpMp4) && fs.statSync(tmpMp4).size > 500) {
     fs.renameSync(tmpMp4, outMp4);
@@ -805,7 +805,7 @@ export function compileSequenceRenderPlan(
         // Always bound srcOutMs by both asset.probe.duration_ms and srcInMs + cue.duration_ms
         const maxOutByDuration = srcInMs + cue.duration_ms;
         const requestedOut = cue.source_out_ms ?? maxOutByDuration;
-        const srcOutMs = Math.min(asset.probe.duration_ms, requestedOut, maxOutByDuration);
+        const srcOutMs = Math.min(maxSourceDurationMs(asset), requestedOut, maxOutByDuration);
         const srcInSec = (srcInMs / 1000).toFixed(3);
         const srcOutSec = (srcOutMs / 1000).toFixed(3);
 
@@ -817,7 +817,7 @@ export function compileSequenceRenderPlan(
           asset.probe.has_video &&
           (cue.kind === "broll" || asset.kind === "graphic" || asset.kind === "footage")
         ) {
-          const isStill = asset.kind === "graphic" && asset.probe.fps === 0;
+          const isStill = isStillGraphic(asset);
           const inIdx = isStill
             ? addInput([
                 "-loop",
@@ -1014,7 +1014,19 @@ export function compileSequenceRenderPlan(
     if (!asset || !asset.probe.has_video) continue;
 
     const absAssetPath = resolveLibraryItemPath(paths.rootDir, asset);
-    const inIdx = addInput(["-i", absAssetPath]);
+    // A still image is a single frame: loop it so it covers the whole source range of the clip.
+    const inIdx = isStillGraphic(asset)
+      ? addInput([
+          "-loop",
+          "1",
+          "-framerate",
+          String(fps),
+          "-t",
+          (clip.source_out_ms / 1000 + 2 / fps).toFixed(3),
+          "-i",
+          absAssetPath,
+        ])
+      : addInput(["-i", absAssetPath]);
 
     const srcInSec = (clip.source_in_ms / 1000).toFixed(3);
     const srcOutSec = (clip.source_out_ms / 1000).toFixed(3);

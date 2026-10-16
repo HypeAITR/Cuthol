@@ -19,7 +19,7 @@ import {
   DIAGNOSTICS,
   VerificationGateId,
 } from "../core/diagnostics.js";
-import { CutholSequence, LaneCue } from "../core/schema.js";
+import { CutholSequence, isStillGraphic, LaneCue } from "../core/schema.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
 import { minClipDurationMs } from "../core/time.js";
 import { commitSequenceMutation, loadSequence, WorkspacePaths } from "../core/workspace.js";
@@ -336,7 +336,7 @@ export function verifySequence(
     for (const clip of seq.spine.clips) {
       const asset = libMap.get(clip.asset_handle);
       if (asset) {
-        const isStaticGraphic = asset.kind === "graphic" && asset.probe.duration_ms === 0;
+        const isStaticGraphic = isStillGraphic(asset);
         if (clip.source_in_ms < 0) {
           diagnostics.push(
             DIAGNOSTICS.SOURCE_RANGE_EXCEEDED(clip.id, clip.source_in_ms, asset.probe.duration_ms)
@@ -358,7 +358,7 @@ export function verifySequence(
         if (cue.asset_handle) {
           const asset = libMap.get(cue.asset_handle);
           if (asset) {
-            const isStaticGraphic = asset.kind === "graphic" && asset.probe.duration_ms === 0;
+            const isStaticGraphic = isStillGraphic(asset);
             const effectiveInMs = cue.source_in_ms ?? 0;
             const effectiveOutMs = cue.source_out_ms ?? effectiveInMs + cue.duration_ms;
 

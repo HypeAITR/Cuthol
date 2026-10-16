@@ -48,9 +48,9 @@ What to check, concretely:
 | G406 | G4 WARN | Overlay uses backdrop-filter / blend modes in overlay mode → `mode="scene_host"`. |
 | G501 | G5 WARN | True peak above −1 dBTP → lower gain or `mix.normalize`. |
 | G502 | G5 WARN | Blank or backdrop-filled frame (even with a caption/small overlay on top); also emitted after `render` with event timestamps if a spine clip drops to backdrop outside intentional fades. |
-| G503 | G5 WARN | An overlay could not be rendered by HyperFrames and a plain placeholder box was used → fix the HTML, re-render. |
+| G503 | G5 ERROR | HyperFrames could not render an overlay; the render stops with `ok:false` and nothing is substituted. The message carries the HyperFrames error → open the composition with `composition.preview`, fix it, render again. Renders have no time limit: a long video simply takes longer (MCP reports progress and can be cancelled). |
 | G504 | G5 WARN | Ducking ignored clips without transcripts. |
-| G505 | G5 WARN | Overlay is (almost) fully opaque and hides the video. |
+| G505 | G5 WARN | Overlay is (almost) fully opaque and hides moving footage playing under it. Not raised when only the stage backdrop or a still image is underneath (a full-frame graphic is then deliberate). |
 | SYS01–06 | — | Project not found, bad time literal, journal entry unavailable, ffmpeg/HyperFrames failure, missing API key, transcript missing. |
 
 Every diagnostic is `[CODE] what happened | Öneri: next step`.

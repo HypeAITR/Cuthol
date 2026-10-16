@@ -37,7 +37,9 @@ export function probeLocalMediaFile(filePath: string, ledger: MediaLedger): {
 } {
   const absPath = path.resolve(filePath);
   if (!fs.existsSync(absPath)) {
-    throw new CutholError(DIAGNOSTICS.MISSING_FILE_ON_DISK("ingest", absPath));
+    const shownUri =
+      filePath !== absPath ? `${filePath} (denenen mutlak yol: ${absPath})` : absPath;
+    throw new CutholError(DIAGNOSTICS.MISSING_FILE_ON_DISK("ingest", shownUri));
   }
 
   const { sha256, sizeBytes } = ledger.resolveFileSha256(absPath);
@@ -148,7 +150,19 @@ export function ingestAssetsIntoWorkspace(options: {
       const added: LibraryItem[] = [];
 
       for (let i = 0; i < options.filePaths.length; i++) {
-        const absFile = path.resolve(options.filePaths[i]);
+        const rawFile = options.filePaths[i];
+        const absFile = path.resolve(rawFile);
+        if (!fs.existsSync(absFile)) {
+          const shownUri =
+            rawFile !== absFile ? `${rawFile} (denenen mutlak yol: ${absFile})` : absFile;
+          const diag = DIAGNOSTICS.MISSING_FILE_ON_DISK("ingest", shownUri);
+          const candidateInWorkspace = path.resolve(paths.rootDir, rawFile);
+          if (!path.isAbsolute(rawFile) && candidateInWorkspace !== absFile) {
+            diag.suggestion = `CLI göreli yolları çalışma dizinine (${process.cwd()}) göre çözer; proje klasörüne göre değil. Dosya yolunu düzeltin (ör. '${candidateInWorkspace}') veya 'cuthol library ingest' ile doğru yolu verin.`;
+            diag.formatted = `[${diag.code}] ${diag.what} | Öneri: ${diag.suggestion}`;
+          }
+          throw new CutholError(diag);
+        }
         const { sha256, probe, kind: detectedKind } = probeLocalMediaFile(absFile, ledger);
         const kind = options.explicitKind ?? detectedKind;
 

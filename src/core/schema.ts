@@ -465,6 +465,22 @@ export function syncSequenceHandleCounters(
  * handle allocation is monotonic per prefix via `seq.meta.handle_counters` so previously deleted
  * handles are never re-issued in the same project (and remain consistent across undo/redo).
  */
+/**
+ * A still image (PNG/JPEG/WebP/…) has no intrinsic length: it can be held on the timeline for any duration.
+ * `probe.duration_ms` of a still is only the default length used when no out point is given.
+ */
+export function isStillGraphic(asset: Pick<LibraryItem, "kind" | "probe">): boolean {
+  return asset.kind === "graphic" && (asset.probe.fps === 0 || asset.probe.duration_ms === 0);
+}
+
+/** Practical upper bound for holding a still image (24 h); finite so it can be stored in the sequence. */
+export const STILL_GRAPHIC_MAX_SOURCE_MS = 24 * 60 * 60 * 1000;
+
+/** Longest source range an asset can supply (a still can be held for up to 24 h). */
+export function maxSourceDurationMs(asset: Pick<LibraryItem, "kind" | "probe">): number {
+  return isStillGraphic(asset) ? STILL_GRAPHIC_MAX_SOURCE_MS : asset.probe.duration_ms;
+}
+
 export function allocateNextHandle(
   existingHandles: Iterable<string> | CutholSequence,
   prefix: string,

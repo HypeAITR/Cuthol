@@ -6,11 +6,12 @@ Notation: `tool.action(args)` is an MCP call; the CLI form is `cuthol <tool> <ac
 
 - `workspace.init(dir, aspect, fps, title)` creates `cuthol.sequence.json` plus a `.cuthol/` cache folder. Aspect `9:16` (1080x1920), `16:9` (1920x1080), `1:1`, `4:5`. Default 9:16 @ 30 fps — set it explicitly.
 - `workspace.open(dir)` selects an existing project for the MCP session.
-- Relative paths in arguments (`files`, `comp_dir`, `out`, `file`) resolve against the project folder.
+- Relative paths in MCP arguments (`files`, `comp_dir`, `out`, `file`) resolve against the project folder. On the CLI, relative file paths (e.g. `library ingest <files...>`) resolve against the current working directory.
 
 ## Library
 
 - `library.ingest(files=[...], handle?)` probes and hashes files. Handles: `vid_XX`, `aud_XX`, `img_XX`. Re-ingesting the same file is cached.
+- Still images (`img_XX`) have no length of their own: hold one on the spine or a lane for any duration (`spine.append(asset="img_01", in="0s", out="34s")`). Without an out point it defaults to 5 s. A still makes a plain background for a video that is all motion graphics.
 - `library.detach_audio(handle="vid_01")` turns a video's audio into a separate `aud_XX` asset (for example to use a recording as music).
 - Analyzers are cached by file content: `loudness`, `waveform` (silences, 3-band spectrum, optional PNG), `beats` (regular tempo/phase `grid` + spectral-flux `onsets`), `scenes` (cut points), `subject` (horizontal/vertical subject trajectory and confidence). They return digests; read slices with `library.query(handle, kind, range="2s..6s" | text="word", limit, cursor)`.
 

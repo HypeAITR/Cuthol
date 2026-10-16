@@ -26,7 +26,7 @@ Client configuration (JSON used by most MCP clients):
 }
 ```
 
-Requirements on the machine: Node.js ≥ 22.5, `ffmpeg`/`ffprobe` on PATH, and a Chrome that HyperFrames can launch (for overlays). API keys are only needed for transcription and voiceover; they can also live in a `.env` file inside the project folder.
+Requirements on the machine: Node.js ≥ 22.5, `ffmpeg`/`ffprobe` on PATH, and a Chrome that HyperFrames can launch (for overlays). API keys are only needed for transcription and voiceover; they can also live in a `.env` file inside the project folder. After adding or editing `.mcp.json`, restart the MCP client session and approve the server; to verify the server directly over stdio, send `initialize` followed by `tools/list` to `node dist/cli.js mcp` and confirm 13 tools are returned.
 
 Environment switches:
 - **MCP server**: `CUTHOL_WORKSPACE` (default project), `CUTHOL_MCP_PROGRESSIVE=1` (start with core tools only; unlock with `discover_capabilities`), `CUTHOL_MCP_STRUCTURED=1` (also send the full JSON as `structuredContent`), `CUTHOL_MCP_TIMEOUT_MS`.
@@ -41,7 +41,8 @@ Environment switches:
 
 ## Conventions
 
-- **Project selection**: `workspace.init(dir=…)` or `workspace.open(dir=…)` sets the session project; afterwards `dir` can be omitted. Passing `dir` to any call switches to that folder for that call.
+- **Project selection & relative paths**: `workspace.init(dir=…)` or `workspace.open(dir=…)` sets the session project; afterwards `dir` can be omitted. Passing `dir` to any call switches to that folder for that call. Over MCP, relative paths (`files`, `comp_dir`, `out`, `file`) resolve against the project folder (`dir`); on the CLI, relative file paths (such as `cuthol library ingest <files...>`) follow standard CLI convention and resolve against the current working directory (`cwd`), while `G201` reports the exact absolute path tried.
+- **CLI compact mode**: Pass `--compact` (or `--format text`) to any CLI command to print the exact same compact text format used by the MCP server (default CLI output remains JSON).
 - **Result format** (text, real example):
   ```
   OK spine.transition · r15 · 14.00s · 2 sp · 11 cue (1 comp, 8 cap)

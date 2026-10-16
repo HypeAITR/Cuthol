@@ -9,7 +9,8 @@
  *      the REAL video pixels instead of returning `0/0 text checks` on a transparent canvas.
  * 2. Transparent Build (Source of Truth):
  *    - Captures frame-snapped 32-bit RGBA PNG snapshots (`omitBackground: true`).
- *    - Runs `alpha_gate` (verifying corner alpha = 0 and opaque ratio <= 98%, emitting `CUTHOL-G505` on leak).
+ *    - Runs `alpha_gate` (verifying corner alpha = 0 and opaque ratio <= 98%, emitting `CUTHOL-G505` on leak)
+ *      only when moving footage plays under the cue; a full-frame opaque graphic over nothing is allowed.
  *    - Checks for `backdrop-filter` / `mix-blend-mode` in `overlay_alpha` mode (`CUTHOL-G406`).
  *    - Generates a 3-column visual contact sheet (`Checkerboard | Footage Composite | Alpha Mask`).
  */
@@ -21,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { resolveCueStartMs } from "../brief/inspector.js";
 import { CutholDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { PngCanvas } from "../core/png_canvas.js";
-import { CutholSequence } from "../core/schema.js";
+import { CutholSequence, isStillGraphic } from "../core/schema.js";
 import { loadSequence } from "../core/workspace.js";
 import { syncCompositionBridgeFiles } from "./bridge_exporter.js";
 import { compileSequenceRenderPlan } from "./compiler.js";
@@ -55,6 +56,8 @@ export interface CompositionPreviewResult {
   hyperframes_check_findings: string[];
   alpha_gate: {
     passed: boolean;
+    /** False when only the stage backdrop or still images sit under the cue; opacity is then not a leak. */
+    covers_footage: boolean;
     frames: AlphaGateFrameMetrics[];
   };
   contact_sheet_path: string;
@@ -249,6 +252,31 @@ export function previewAndCheckComposition(options: {
       })
   );
 
+  // An opaque overlay only hides something when real footage (a moving video, not a still image or the stage
+  // backdrop) plays underneath it. A full-frame opaque graphic over nothing is a deliberate design, not a leak.
+  const libByHandle = new Map(sequence.library.map((a) => [a.handle, a]));
+  const isMovingFootage = (handle: string | undefined): boolean => {
+    const asset = handle ? libByHandle.get(handle) : undefined;
+    return Boolean(asset && asset.probe.has_video && !isStillGraphic(asset));
+  };
+  const coversFootage =
+    sequence.spine.clips.some(
+      (c) =>
+        c.timeline_in_ms < cueEndMs &&
+        c.timeline_in_ms + c.duration_ms > cueStartMs &&
+        isMovingFootage(c.asset_handle)
+    ) ||
+    sequence.lanes.some(
+      (l) =>
+        l.z_index < targetLaneZ &&
+        !l.muted &&
+        l.cues.some((c) => {
+          if (c.id === targetCue?.id || !isMovingFootage(c.asset_handle)) return false;
+          const st = resolveCueStartMs(sequence, c);
+          return st < cueEndMs && st + c.duration_ms > cueStartMs;
+        })
+    );
+
   if (hasOverlappingSpineClip || hasOverlappingUnderCue) {
     const underneathSeq: CutholSequence = {
       ...sequence,
@@ -298,7 +326,7 @@ export function previewAndCheckComposition(options: {
         "1",
         candidateBg,
       ],
-      { cwd: paths.rootDir, encoding: "utf8", timeout: 45_000 }
+      { cwd: paths.rootDir, encoding: "utf8" }
     );
     if (bgProc.status === 0 && fs.existsSync(candidateBg) && fs.statSync(candidateBg).size > 500) {
       backdropMp4Path = candidateBg;
@@ -593,6 +621,7 @@ export function previewAndCheckComposition(options: {
       fgDecoded.ok &&
       (!expectTransparent ||
         mode === "scene_host" ||
+        !coversFootage ||
         (cornerAlphaMax <= 16 && opaqueRatio <= 0.98));
 
     if (!alphaOk) {
@@ -665,6 +694,7 @@ export function previewAndCheckComposition(options: {
     hyperframes_check_findings: hfCheckFindings,
     alpha_gate: {
       passed: allAlphaPassed,
+      covers_footage: coversFootage,
       frames: alphaFrames,
     },
     contact_sheet_path: resolvedOut,

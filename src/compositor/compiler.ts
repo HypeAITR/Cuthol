@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { computeSequenceDurationMs, resolveCueStartMs } from "../brief/inspector.js";
+import { computeRenderDurationMs, resolveCueStartMs } from "../core/timeline.js";
 import { CutholSequence, isStillGraphic, maxSourceDurationMs, ParameterEnvelope, TransitionSpec } from "../core/schema.js";
 import { WorkspacePaths } from "../core/workspace.js";
 import { resolveLibraryItemPath } from "../library/probe.js";
@@ -243,11 +243,7 @@ export function compileSequenceAudioPlan(
   overrideMasterAudio?: CutholSequence["stage"]["master_audio"],
   options?: CompileAudioOptions
 ): CompiledAudioPlan {
-  const totalDurationMs = Math.max(
-    500,
-    options?.minDurationMs ?? 0,
-    computeSequenceDurationMs(seq)
-  );
+  const totalDurationMs = computeRenderDurationMs(seq, options?.minDurationMs ?? 0);
   const totalDurationSec = Number((totalDurationMs / 1000).toFixed(3));
   const libMap = new Map(seq.library.map((item) => [item.handle, item]));
 
@@ -546,11 +542,7 @@ export function compileSequenceRenderPlan(
   preset: RenderPreset = "master_1080p",
   compileOptions?: CompileSequenceOptions
 ): CompiledRenderPlan {
-  const totalDurationMs = Math.max(
-    500,
-    compileOptions?.minDurationMs ?? 0,
-    computeSequenceDurationMs(seq)
-  );
+  const totalDurationMs = computeRenderDurationMs(seq, compileOptions?.minDurationMs ?? 0);
   const totalDurationSec = Number((totalDurationMs / 1000).toFixed(3));
 
   const scaleFactor = preset === "draft_480p" ? 480 / Math.min(seq.stage.width, seq.stage.height) : 1.0;

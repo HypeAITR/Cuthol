@@ -19,7 +19,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveCueStartMs } from "../brief/inspector.js";
+import { isVisualCue, resolveCueStartMs } from "../core/timeline.js";
 import { CutholDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { PngCanvas } from "../core/png_canvas.js";
 import { CutholSequence, isStillGraphic } from "../core/schema.js";
@@ -241,12 +241,15 @@ export function previewAndCheckComposition(options: {
   );
   const targetLaneZ =
     sequence.lanes.find((l) => l.cues.some((c) => c.id === targetCue?.id))?.z_index ?? 20;
+  // Only cues that put a picture on screen count as "underneath"; a voiceover or sound effect below the
+  // composition leaves nothing but the stage backdrop to preview against.
   const hasOverlappingUnderCue = sequence.lanes.some(
     (l) =>
       l.z_index < targetLaneZ &&
       !l.muted &&
       l.cues.some((c) => {
         if (c.id === targetCue?.id || c.kind === "composition" || Boolean(c.typography)) return false;
+        if (!isVisualCue(sequence, c)) return false;
         const st = resolveCueStartMs(sequence, c);
         return st < cueEndMs && st + c.duration_ms > cueStartMs;
       })
@@ -453,7 +456,11 @@ export function previewAndCheckComposition(options: {
     2
   );
 
-  const colTitles = ["1. CHECKERBOARD (ALPHA)", "2. REAL FOOTAGE COMPOSITE", "3. ALPHA MASK (0..255)"];
+  const colTitles = [
+    "1. CHECKERBOARD (ALPHA)",
+    backdropMp4Path ? "2. REAL FOOTAGE COMPOSITE" : "2. OVER STAGE BACKDROP (NO FOOTAGE)",
+    "3. ALPHA MASK (0..255)",
+  ];
   for (let c = 0; c < 3; c++) {
     const cx = pad + c * (cellW + pad);
     sheet.drawText(colTitles[c], cx + 8, headerH + 6, [148, 163, 184, 255], 1);
@@ -535,11 +542,13 @@ export function previewAndCheckComposition(options: {
         bgRgba = decodePngToRgbaBuffer(bgFramePng, cellW, cellH).buffer;
       }
     } else {
-      // Dark slate fallback background
+      // Nothing visual plays underneath: the render shows the stage backdrop colour there, so preview on it.
+      const hex = /^#?([0-9a-f]{6})$/i.exec(sequence.stage.backdrop?.color ?? "")?.[1] ?? "182234";
+      const [bgR, bgG, bgB] = [0, 2, 4].map((o) => parseInt(hex.slice(o, o + 2), 16));
       for (let i = 0; i < cellW * cellH; i++) {
-        bgRgba[i * 4] = 24;
-        bgRgba[i * 4 + 1] = 34;
-        bgRgba[i * 4 + 2] = 52;
+        bgRgba[i * 4] = bgR;
+        bgRgba[i * 4 + 1] = bgG;
+        bgRgba[i * 4 + 2] = bgB;
         bgRgba[i * 4 + 3] = 255;
       }
     }

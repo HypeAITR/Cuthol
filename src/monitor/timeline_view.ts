@@ -11,7 +11,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { computeSequenceDurationMs, resolveCueStartMs } from "../brief/inspector.js";
+import { computeSequenceDurationMs, computeSpineEndMs, findBackdropOnlySpans, resolveCueStartMs } from "../core/timeline.js";
 import { PngCanvas, RgbaColor } from "../core/png_canvas.js";
 import { LaneCue } from "../core/schema.js";
 import { formatTimecode } from "../core/time.js";
@@ -58,7 +58,9 @@ export function captureMonitorTimeline(options: {
   outputPath?: string;
 }): MonitorTimelineResult {
   const { paths, sequence } = loadSequence(options.workspaceDir);
-  const totalDurationMs = Math.max(1000, computeSequenceDurationMs(sequence));
+  const sequenceDurationMs = computeSequenceDurationMs(sequence);
+  // The drawing scale needs a non-zero span; the reported duration stays the real one.
+  const totalDurationMs = Math.max(1000, sequenceDurationMs);
 
   const sortedLanesDesc = [...sequence.lanes]
     .filter((l) => options.includeEmptyLanes || l.cues.length > 0 || l.locked)
@@ -94,7 +96,7 @@ export function captureMonitorTimeline(options: {
   canvas.fillRect(0, 0, canvasW, headerH, [19, 26, 38, 255]);
   const totalCues = sequence.lanes.reduce((acc, l) => acc + l.cues.length, 0);
   canvas.drawText(
-    `CUTHOL TIMELINE | ${sequence.meta.project_id} R${sequence.meta.revision} | DUR ${formatTimecode(totalDurationMs)} (${totalDurationMs}MS) | SPINE ${sequence.spine.clips.length} | CUES ${totalCues}`,
+    `CUTHOL TIMELINE | ${sequence.meta.project_id} R${sequence.meta.revision} | DUR ${formatTimecode(sequenceDurationMs)} (${sequenceDurationMs}MS) | SPINE ${sequence.spine.clips.length} | CUES ${totalCues}`,
     16,
     14,
     [241, 245, 249, 255],
@@ -116,10 +118,7 @@ export function captureMonitorTimeline(options: {
   }
 
   // Also draw red dashed warning line if any lane cue extends past spine end
-  const spineEndMs = sequence.spine.clips.reduce(
-    (mx, c) => Math.max(mx, c.timeline_in_ms + c.duration_ms),
-    0
-  );
+  const spineEndMs = computeSpineEndMs(sequence);
   if (spineEndMs > 0 && spineEndMs < totalDurationMs) {
     const sx = msToX(spineEndMs);
     canvas.drawLine(sx, headerH + rulerH, sx, canvasH - bottomPad, [239, 68, 68, 220], 2);
@@ -250,6 +249,22 @@ export function captureMonitorTimeline(options: {
     canvas.fillRect(trackAreaX, curY, trackAreaW, spineRowH, [18, 28, 44, 255]);
     canvas.strokeRect(trackAreaX, curY, trackAreaW, spineRowH, 2, [56, 189, 248, 180]);
 
+    if (sequence.spine.clips.length === 0) {
+      // Graphics-only sequence: say where the length comes from and mark moments with no picture at all.
+      for (const span of findBackdropOnlySpans(sequence)) {
+        const x0 = msToX(span.start_ms);
+        const x1 = Math.max(x0 + 2, msToX(span.end_ms));
+        canvas.fillRect(x0, curY + 2, x1 - x0, spineRowH - 4, [127, 29, 29, 200]);
+      }
+      canvas.drawText(
+        sequenceDurationMs > 0 ? "EMPTY - LENGTH FROM LANES" : "EMPTY SEQUENCE",
+        trackAreaX + 8,
+        curY + 14,
+        [148, 163, 184, 255],
+        1
+      );
+    }
+
     for (const clip of sequence.spine.clips) {
       const startMs = clip.timeline_in_ms;
       const endMs = startMs + clip.duration_ms;
@@ -346,7 +361,7 @@ export function captureMonitorTimeline(options: {
     png_path: resolvedOut,
     width: canvasW,
     height: canvasH,
-    duration_ms: totalDurationMs,
+    duration_ms: sequenceDurationMs,
     spine_clips_count: sequence.spine.clips.length,
     lanes_count: totalRowsCount - 1,
     cues_count: totalCues,

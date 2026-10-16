@@ -3,7 +3,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { resolveCueStartMs } from "../brief/inspector.js";
+import { resolveCueStartMs } from "../core/timeline.js";
 import { compileSequenceAudioPlan } from "../compositor/compiler.js";
 import { DecisionTrace, DecisionTraceItem } from "../core/decision_trace.js";
 import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";

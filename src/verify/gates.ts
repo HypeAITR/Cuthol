@@ -12,7 +12,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { resolveCueStartMs } from "../brief/inspector.js";
+import { describeSequenceExtent, findBackdropOnlySpans, resolveCueStartMs } from "../core/timeline.js";
 import {
   CutholDiagnostic,
   CutholError,
@@ -490,6 +490,16 @@ export function verifySequence(
           }
         }
       }
+    }
+
+    // Without spine clips the lanes alone carry the edit (a graphics-only video). That is a supported
+    // shape, so the only things worth reporting are a sequence with nothing on it at all, and stretches
+    // where no visual cue is on screen and the viewer would see only the stage backdrop.
+    if (describeSequenceExtent(seq).source === "empty") {
+      diagnostics.push(DIAGNOSTICS.EMPTY_SEQUENCE("WARN"));
+    }
+    for (const span of findBackdropOnlySpans(seq)) {
+      diagnostics.push(DIAGNOSTICS.BACKDROP_ONLY_SPAN(span.start_ms, span.end_ms));
     }
   }
 

@@ -6,12 +6,13 @@ Notation: `tool.action(args)` is an MCP call; the CLI form is `cuthol <tool> <ac
 
 - `workspace.init(dir, aspect, fps, title)` creates `cuthol.sequence.json` plus a `.cuthol/` cache folder. Aspect `9:16` (1080x1920), `16:9` (1920x1080), `1:1`, `4:5`. Default 9:16 @ 30 fps — set it explicitly.
 - `workspace.open(dir)` selects an existing project for the MCP session.
+- `workspace.backdrop(color="#RRGGBB")` (CLI `workspace backdrop --color "#RRGGBB"`) sets the stage backdrop colour (default `#0D0F12`): the base of every frame wherever no clip or cue covers it. Journaled; `Changed:` shows `stage.backdrop.color=<new> (was <old>)` and undo restores the old colour. A value that is not 6 hex digits is refused (SYS07).
 - Relative paths in MCP arguments (`files`, `comp_dir`, `out`, `file`) resolve against the project folder. On the CLI, relative file paths (e.g. `library ingest <files...>`) resolve against the current working directory.
 
 ## Library
 
 - `library.ingest(files=[...], handle?)` probes and hashes files. Handles: `vid_XX`, `aud_XX`, `img_XX`. Re-ingesting the same file is cached.
-- Still images (`img_XX`) have no length of their own: hold one on the spine or a lane for any duration (`spine.append(asset="img_01", in="0s", out="34s")`). Without an out point it defaults to 5 s. A still makes a plain background for a video that is all motion graphics.
+- Still images (`img_XX`) have no length of their own: hold one on the spine or a lane for any duration (`spine.append(asset="img_01", in="0s", out="34s")`). Without an out point it defaults to 5 s. For a video that is all motion graphics you do not need a background clip at all: leave the spine empty (see *Graphics-only projects*).
 - `library.detach_audio(handle="vid_01")` turns a video's audio into a separate `aud_XX` asset (for example to use a recording as music).
 - Analyzers are cached by file content: `loudness`, `waveform` (silences, 3-band spectrum, optional PNG), `beats` (regular tempo/phase `grid` + spectral-flux `onsets`), `scenes` (cut points), `subject` (horizontal/vertical subject trajectory and confidence). They return digests; read slices with `library.query(handle, kind, range="2s..6s" | text="word", limit, cursor)`.
 
@@ -80,6 +81,15 @@ Default lanes (z order: higher is on top; negative = audio-only lanes under the 
 - `lane.update_cue(cue, at, duration, x, y, scale, opacity, text, size, max_width, gain_db)` — placement accepts `+=`/`-=`.
 - `lane.remove_cue(cues=[...])`, `lane.lock(lane)`, `lane.unlock(lane)`.
 - If lanes run longer than the spine you get G306 (the picture is just the backdrop there): extend the spine or shorten the cues.
+
+## Graphics-only projects (empty spine)
+
+The spine is optional. With no spine clips:
+- The sequence length is the end of the latest cue on an unmuted lane. `brief(lens="overview")` shows `Length from: lane cues (spine empty, graphics-only)`; `monitor.timeline` labels the spine row `EMPTY - LENGTH FROM LANES`.
+- Use `at` times; there is no clip to anchor to.
+- Render starts from the stage backdrop and stacks the lanes on top; audio runs for the same length. Set the base colour with `workspace.backdrop(color="#RRGGBB")` first: wherever a composition is transparent the backdrop shows through, and the dark default can hide dark text. Monitor, `composition.preview` and the blank-frame check all use that colour.
+- Cover the whole length with visual cues (compositions, titles, b-roll, stills on `ln_broll`). A stretch with only audio shows the bare backdrop and is reported as G308, also in `brief(lens="flow")` as `Backdrop only`.
+- An entirely empty project (no spine clips, no cues) is reported as G307 by `verify`; `render` refuses it.
 
 ## Reading the edit
 

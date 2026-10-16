@@ -70,6 +70,15 @@ export const DIAGNOSTICS = {
       `Açık birimli ('1250ms', '1.25s', '0.5min') veya 'MM:SS.mmm' biçiminde zaman değeri verin.`
     ),
 
+  INVALID_COLOR: (raw: string) =>
+    createDiagnostic(
+      "CUTHOL-SYS07",
+      "SYS",
+      "ERROR",
+      `'${raw}' geçerli bir renk değil.`,
+      `Rengi 6 haneli onaltılık '#RRGGBB' biçiminde verin (ör. '#F7C531').`
+    ),
+
   JOURNAL_REVISION_UNAVAILABLE: (direction: "undo" | "redo") =>
     createDiagnostic(
       "CUTHOL-SYS03",
@@ -249,6 +258,24 @@ export const DIAGNOSTICS = {
       cueId
     ),
 
+  EMPTY_SEQUENCE: (severity: DiagnosticSeverity) =>
+    createDiagnostic(
+      "CUTHOL-G307",
+      "G3_TIMING",
+      severity,
+      `Kurgu boş: omurgada klip yok ve sessize alınmamış hiçbir şeritte cue yok (süre 0ms).`,
+      `Görüntülü kurgu için 'spine append' ile klip ekleyin; yalnız grafikten oluşan video için 'lane add-composition' ile kompozisyon (ve 'lane add-cue' ile ses) ekleyin. Omurga boşsa süre en geç biten cue'dan gelir.`
+    ),
+
+  BACKDROP_ONLY_SPAN: (startMs: number, endMs: number) =>
+    createDiagnostic(
+      "CUTHOL-G308",
+      "G3_TIMING",
+      "WARN",
+      `Omurga boş ve ${startMs}..${endMs}ms aralığında (${endMs - startMs}ms) ekranda hiçbir görsel cue yok; bu sürede yalnız sahne zemini görünür.`,
+      `Aralığı bir kompozisyon/başlık/görsel cue ile doldurun ya da bitişik cue'yu uzatın; boş zemin kasıtlıysa bu uyarı bilgi amaçlıdır.`
+    ),
+
   // --- Gate 4: Stage Geometry, Safe Zones & Legibility (G4_STAGE) ---
   SAFE_ZONE_VIOLATION: (cueId: string, edge: string, overflowPx: number) =>
     createDiagnostic(
@@ -322,8 +349,12 @@ export const DIAGNOSTICS = {
       "CUTHOL-G502",
       "G5_SIGNAL",
       "WARN",
-      `Render çıktısında aktif omurga klibi sırasında ${events.length} noktada (${totalFrames} kare) düz/zemin renginde boş kare tespit edildi: ${timeList}.`,
-      `'cuthol monitor frame --at ${firstMs}ms' ile kesim noktasını kontrol edin; kasıtlı kararma (fade) değilse kaynak klip aralığını veya geçiş sınırlarını düzeltin.`
+      events.every((e) => e.clip_id)
+        ? `Render çıktısında aktif omurga klibi sırasında ${events.length} noktada (${totalFrames} kare) düz/zemin renginde boş kare tespit edildi: ${timeList}.`
+        : `Render çıktısında görsel cue olmayan (yalnız sahne zemini görünen) ${events.length} aralıkta (${totalFrames} kare) boş kare var: ${timeList}.`,
+      events.every((e) => e.clip_id)
+        ? `'cuthol monitor frame --at ${firstMs}ms' ile kesim noktasını kontrol edin; kasıtlı kararma (fade) değilse kaynak klip aralığını veya geçiş sınırlarını düzeltin.`
+        : `'cuthol monitor frame --at ${firstMs}ms' ile kontrol edin; aralığı bir kompozisyon/görsel cue ile doldurun ya da bitişik cue'yu uzatın.`
     );
   },
 

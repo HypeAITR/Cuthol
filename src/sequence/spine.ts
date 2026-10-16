@@ -7,7 +7,7 @@
  * and deterministic keyframe envelope evaluation.
  */
 
-import { resolveCueStartMs } from "../brief/inspector.js";
+import { resolveCueStartMs } from "../core/timeline.js";
 import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import {
   allocateNextHandle,

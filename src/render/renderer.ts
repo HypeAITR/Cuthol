@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { computeSequenceDurationMs } from "../brief/inspector.js";
+import { computeRenderDurationMs, computeSequenceDurationMs, findBackdropOnlySpans } from "../core/timeline.js";
 import { hashDirectoryRecursive, syncCompositionBridgeFiles } from "../compositor/bridge_exporter.js";
 import { compileSequenceRenderPlan, RenderPreset } from "../compositor/compiler.js";
 import { CutholDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
@@ -96,7 +96,8 @@ function isIntentionalFadeOrTransparentAtMs(
 
 /**
  * Performs a fast post-render pass over `mp4Path` using downscaled nearest-neighbor RGB24 frames
- * to detect unintentional blank / backdrop-colored frames while a spine clip is active.
+ * to detect unintentional blank / backdrop-colored frames while a spine clip is active. In a spine-less
+ * (graphics-only) sequence it checks the frames where no visual cue is on screen; `clip_id` is empty there.
  */
 export function scanRenderedMp4ForBlankFrames(
   mp4Path: string,
@@ -115,6 +116,8 @@ export function scanRenderedMp4ForBlankFrames(
   const chunkFrames = Math.max(1, options?.chunkFrames ?? 6000);
   const events: BlankFrameEvent[] = [];
   let blankFramesCount = 0;
+  // Only non-empty for a spine-less sequence: the moments where no visual cue is on screen.
+  const backdropOnlySpans = findBackdropOnlySpans(seq);
   const processFrame = (f: number, frameBuf: Buffer): void => {
     const tMs = (f * 1000) / fps;
     let activeClipIdx = -1;
@@ -125,8 +128,13 @@ export function scanRenderedMp4ForBlankFrames(
         break;
       }
     }
-    if (activeClipIdx < 0) return;
-    if (isIntentionalFadeOrTransparentAtMs(seq, activeClipIdx, tMs, frameDurMs)) return;
+    if (activeClipIdx >= 0) {
+      if (isIntentionalFadeOrTransparentAtMs(seq, activeClipIdx, tMs, frameDurMs)) return;
+    } else if (!backdropOnlySpans.some((sp) => tMs >= sp.start_ms - 1e-3 && tMs < sp.end_ms - 1e-3)) {
+      // Spine-less frames drawn by a composition or graphic are not judged by brightness: designed dark
+      // frames are common there and a composition that cannot render already stops the render (G503).
+      return;
+    }
 
     const ev = evaluateRgb24FrameBlankness(
       frameBuf,
@@ -137,7 +145,7 @@ export function scanRenderedMp4ForBlankFrames(
     if (!ev.is_blank_frame) return;
 
     blankFramesCount += 1;
-    const activeClip = seq.spine.clips[activeClipIdx];
+    const clipId = activeClipIdx >= 0 ? seq.spine.clips[activeClipIdx].id : "";
     const prev = events[events.length - 1];
     if (prev && prev.end_frame === f) {
       prev.end_frame = f + 1;
@@ -153,7 +161,7 @@ export function scanRenderedMp4ForBlankFrames(
         end_s: Number(((f + 1) / fps).toFixed(3)),
         start_ms: Math.round((f * 1000) / fps),
         end_ms: Math.round(((f + 1) * 1000) / fps),
-        clip_id: activeClip.id,
+        clip_id: clipId,
         luma_mean: ev.luma_mean,
         backdrop_flat_ratio: ev.backdrop_flat_ratio,
       });
@@ -234,6 +242,10 @@ export function renderSequenceToMp4(options: {
   if (!verification.ok) {
     const firstErr = verification.diagnostics.find((d) => d.severity === "ERROR")!;
     throw new CutholError(firstErr);
+  }
+  // An empty sequence would only produce a short clip of backdrop colour; refuse instead of writing it.
+  if (computeSequenceDurationMs(sequence) <= 0) {
+    throw new CutholError(DIAGNOSTICS.EMPTY_SEQUENCE("ERROR"));
   }
 
   const preset: RenderPreset = options.preset ?? "master_1080p";
@@ -377,7 +389,7 @@ export function ensurePreviewCompositeMp4(
     .digest("hex")
     .slice(0, 14);
 
-  const totalDurationMs = Math.max(500, computeSequenceDurationMs(seq));
+  const totalDurationMs = computeRenderDurationMs(seq);
   const scaleFactor = preset === "draft_480p" ? 480 / Math.min(seq.stage.width, seq.stage.height) : 1.0;
   const renderWidth = Math.max(16, Math.round((seq.stage.width * scaleFactor) / 2) * 2);
   const renderHeight = Math.max(16, Math.round((seq.stage.height * scaleFactor) / 2) * 2);
@@ -480,7 +492,7 @@ export function renderSingleCompositeFrameRgb24(
     throw new CutholError(firstErr);
   }
 
-  const totalDurationMs = Math.max(500, computeSequenceDurationMs(seq));
+  const totalDurationMs = computeRenderDurationMs(seq);
   const fps = Math.max(1, seq.stage.fps);
   const lastFrameIdx = Math.max(0, Math.floor((totalDurationMs / 1000) * fps - 1));
   const maxSafeMs = Math.max(0, Math.floor(lastFrameIdx * (1000 / fps)));

@@ -7,7 +7,7 @@
  * it (`applyCueSheet`) while preserving existing clip/cue handles.
  */
 
-import { resolveCueStartMs } from "../brief/inspector.js";
+import { resolveCueStartMs } from "../core/timeline.js";
 import {
   AspectPreset,
   createDefaultAudioChain,

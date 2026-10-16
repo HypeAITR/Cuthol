@@ -29,7 +29,7 @@ interface you are using.
 ## The model in one minute
 
 - **Library**: imported media get typed handles — `vid_01` (video), `aud_01` (audio), `img_01` (image), `vo_01` (synthesized voice).
-- **Spine**: the main storyline. Clips `sp_01, sp_02 …` play back-to-back with no gaps. Trimming, cutting or removing a clip ripples everything after it. Handles (`sp_XX`, `cue_XX`, `mk_XX`, `vo_XX`) are never reused after deletion within the same project (tracked in `meta.handle_counters`, consistent across undo/redo).
+- **Spine**: the main storyline. Clips `sp_01, sp_02 …` play back-to-back with no gaps. It may stay empty (graphics-only video, below). Trimming, cutting or removing a clip ripples everything after it. Handles (`sp_XX`, `cue_XX`, `mk_XX`, `vo_XX`) are never reused after deletion within the same project (tracked in `meta.handle_counters`, consistent across undo/redo).
 - **Lanes**: parallel tracks for cues `cue_01 …`
   `ln_titles` (text, z 25) · `ln_captions` (z 30) · `ln_motion` (HyperFrames overlays, z 20) · `ln_broll` (z 10) · `ln_vo` voiceover · `ln_sfx` · `ln_bgm` music.
   A cue sits at an absolute time (`at`) or is **anchored** to a spine clip (`anchor="sp_02", offset="300ms"`) and then moves with that clip through edits.
@@ -47,6 +47,12 @@ interface you are using.
 6. Mix: `mix.normalize()`, `mix.duck()` (needs transcripts of the speech), `mix.beat_align()` (snaps cuts to the regular beat grid by default, or to detected onsets with `mode="onsets"`).
 7. Check: `brief(lens="flow")`, `monitor.timeline`, `monitor.sheet`, `monitor.frame(at)` — **look at the images**.
 8. `verify()` must report 0 errors. Then `render(preset="draft_480p")`, look at frames of the output, then `render(preset="master_1080p")`.
+
+## Graphics-only video (no footage)
+
+Leave the spine empty; the lanes are then the whole edit and the sequence lasts until the latest lane cue ends. Place cues with `at` (anchors need a spine clip).
+`workspace.init` → `workspace.backdrop(color="#RRGGBB")` (the base colour that shows through transparent parts of compositions) → `library.ingest` (voiceover, effects, music) → `lane.add_cue` for the audio → `composition.scaffold` + `lane.add_composition` on `ln_motion`, back to back so every moment has a picture → `verify()` → `monitor.sheet` → `mix.normalize()` → `render`.
+Where no visual cue is on screen only the stage backdrop shows (G308). A project with nothing on it gives G307, and `render` refuses it.
 
 ## Rules
 

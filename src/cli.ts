@@ -78,6 +78,7 @@ import {
   planCueSheet,
 } from "./sequence/cuesheet.js";
 import { addLaneCue, removeLaneCues, updateLaneCue } from "./sequence/lanes.js";
+import { setStageBackdropColor } from "./sequence/stage.js";
 import {
   appendSpineClip,
   exciseSpineRanges,
@@ -506,6 +507,17 @@ async function main(): Promise<void> {
           ledger_file: paths.ledgerFile,
           project_id: sequence.meta.project_id,
           stage: sequence.stage,
+        });
+        return;
+      }
+
+      if (action === "backdrop") {
+        const color = strFlag(flags, "color") ?? rest[0];
+        if (!color) throw new CutholError(DIAGNOSTICS.INVALID_COLOR("(boş / missing --color)"));
+        const res = setStageBackdropColor({ workspaceDir, color });
+        emitEnvelopeJson(workspaceDir, "workspace.backdrop", {
+          action: "workspace.backdrop",
+          ...res,
         });
         return;
       }
@@ -1440,6 +1452,7 @@ function printHelp(): void {
       "",
       "Usage:",
       "  cuthol workspace init [dir] [--aspect 9:16|16:9|1:1] [--fps 30] [--title <name>]",
+      "  cuthol workspace backdrop --color <#RRGGBB> [--dir <dir>]",
       "  cuthol workspace journal [list | undo [--steps N | --to <rev>] [--expect-rev <rev>] [--dry-run] | redo [--steps N] | tag <name>] [--dir <dir>]",
       "  cuthol library ingest <files...> [--handle <vid_01>] [--dir <dir>]",
       "  cuthol library loudness --handle <vid_01> [--target-lufs -14] [--dir <dir>]",

@@ -11,7 +11,7 @@
  */
 
 import fs from "node:fs";
-import { resolveCueStartMs } from "../brief/inspector.js";
+import { resolveCueStartMs } from "../core/timeline.js";
 import { normTurkish } from "../compositor/cuthol_runtime.js";
 import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { CutholSequence } from "../core/schema.js";

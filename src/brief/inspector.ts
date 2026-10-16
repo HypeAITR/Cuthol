@@ -9,6 +9,14 @@ import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { CutholSequence, LaneCue, SpineClip } from "../core/schema.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
 import { formatTimecode } from "../core/time.js";
+import {
+  computeSequenceDurationMs,
+  describeSequenceExtent,
+  findBackdropOnlySpans,
+  resolveCueStartMs,
+} from "../core/timeline.js";
+
+export { computeSequenceDurationMs, resolveCueStartMs };
 
 export type BriefLens = "overview" | "flow" | "canvas" | "detail";
 
@@ -19,32 +27,11 @@ export interface BriefOptions {
   windowEndMs?: number;
 }
 
-export function resolveCueStartMs(seq: CutholSequence, cue: LaneCue): number {
-  if (!cue.anchor) {
-    return cue.at_ms;
-  }
-  const anchorClip = seq.spine.clips.find((c) => c.id === cue.anchor?.ref);
-  if (!anchorClip) {
-    return cue.at_ms;
-  }
-  return anchorClip.timeline_in_ms + cue.anchor.offset_ms;
-}
-
-export function computeSequenceDurationMs(seq: CutholSequence): number {
-  let maxMs = 0;
-  for (const clip of seq.spine.clips) {
-    const end = clip.timeline_in_ms + clip.duration_ms;
-    if (end > maxMs) maxMs = end;
-  }
-  for (const lane of seq.lanes) {
-    if (lane.muted) continue;
-    for (const cue of lane.cues) {
-      const start = resolveCueStartMs(seq, cue);
-      const end = start + cue.duration_ms;
-      if (end > maxMs) maxMs = end;
-    }
-  }
-  return maxMs;
+function describeSpinelessExtent(seq: CutholSequence): string {
+  const extent = describeSequenceExtent(seq);
+  if (extent.source === "lanes") return ` | Length from: lane cues (spine empty, graphics-only)`;
+  if (extent.source === "empty") return ` | Empty: no spine clips and no lane cues`;
+  return "";
 }
 
 function isOutsideWindow(startMs: number, endMs: number, startFilter: number, endFilter: number): boolean {
@@ -92,7 +79,7 @@ function renderOverviewLens(seq: CutholSequence): string {
     `- Stage: \`${seq.stage.width}x${seq.stage.height}\` (\`${seq.stage.aspect}\`) @ \`${seq.stage.fps}fps\` | Backdrop: \`${seq.stage.backdrop.kind}(${seq.stage.backdrop.color})\``
   );
   lines.push(
-    `- Sequence Duration: \`${totalMs}ms\` (\`${formatTimecode(totalMs)}\`) | Magnetic Spine: \`${seq.spine.magnetic ? "ON" : "OFF"}\``
+    `- Sequence Duration: \`${totalMs}ms\` (\`${formatTimecode(totalMs)}\`) | Magnetic Spine: \`${seq.spine.magnetic ? "ON" : "OFF"}\`${describeSpinelessExtent(seq)}`
   );
   lines.push("");
 
@@ -148,7 +135,18 @@ function renderFlowLens(seq: CutholSequence, winStart?: number, winEnd?: number)
 
   lines.push(`## Spine Narrative & Anchored Cues`);
   if (seq.spine.clips.length === 0) {
-    lines.push(`_(no spine clips)_`);
+    const extent = describeSequenceExtent(seq);
+    if (extent.source === "empty") {
+      lines.push(`_(no spine clips and no lane cues: the sequence is empty)_`);
+    } else {
+      lines.push(
+        `_(no spine clips: graphics-only sequence, its length comes from the lane cues below and ends at ${extent.duration_ms}ms)_`
+      );
+      for (const span of findBackdropOnlySpans(seq)) {
+        if (isOutsideWindow(span.start_ms, span.end_ms, startFilter, endFilter)) continue;
+        lines.push(`- Backdrop only (no visual cue): \`${span.start_ms}..${span.end_ms}ms\``);
+      }
+    }
   } else {
     for (const clip of seq.spine.clips) {
       const clipEnd = clip.timeline_in_ms + clip.duration_ms;

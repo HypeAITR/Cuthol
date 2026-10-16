@@ -9,7 +9,7 @@
  */
 
 import crypto from "node:crypto";
-import { computeSequenceDurationMs } from "../brief/inspector.js";
+import { computeSequenceDurationMs } from "./timeline.js";
 import { CutholSequence } from "./schema.js";
 
 export type InverseOperationKind = "additive" | "modifying" | "destructive";
@@ -256,7 +256,16 @@ export function computeSequenceDelta(
     }
   }
 
-  if (JSON.stringify(prevSeq.stage) !== JSON.stringify(nextSeq.stage)) {
+  if (prevSeq.stage.backdrop.color !== nextSeq.stage.backdrop.color) {
+    modifiedItems.push(`stage.backdrop.color=${nextSeq.stage.backdrop.color} (was ${prevSeq.stage.backdrop.color})`);
+    affectedIds.add("stage");
+  }
+  // Any other stage change (size, fps, master audio) keeps its general description.
+  const nextStageWithPrevColor = {
+    ...nextSeq.stage,
+    backdrop: { ...nextSeq.stage.backdrop, color: prevSeq.stage.backdrop.color },
+  };
+  if (JSON.stringify(prevSeq.stage) !== JSON.stringify(nextStageWithPrevColor)) {
     modifiedItems.push(`stage (${nextSeq.stage.width}x${nextSeq.stage.height}@${nextSeq.stage.fps}fps)`);
     affectedIds.add("stage");
   }

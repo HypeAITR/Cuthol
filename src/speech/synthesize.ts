@@ -10,7 +10,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { resolveCueStartMs } from "../brief/inspector.js";
+import { resolveCueStartMs } from "../core/timeline.js";
 import { loadDotEnvIfNeeded } from "../core/env.js";
 import {
   allocateNextHandle,

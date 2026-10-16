@@ -15,7 +15,7 @@
 
 import { spawnSync } from "node:child_process";
 import path from "node:path";
-import { computeSequenceDurationMs, resolveCueStartMs } from "../brief/inspector.js";
+import { activeVisualCueIdsAt, computeSequenceDurationMs, resolveCueStartMs } from "../core/timeline.js";
 import { CutholDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { PngCanvas, RgbaColor } from "../core/png_canvas.js";
 import { CutholSequence, LaneCue } from "../core/schema.js";
@@ -409,7 +409,11 @@ export function annotateRgb24BufferToCanvas(
   const actualSeqDurMs = computeSequenceDurationMs(seq);
   const isPastActualSequenceTail =
     actualSeqDurMs > 0 && clampedMs >= actualSeqDurMs && activeHandles.length === 0;
-  const effectiveIsBlank = isBlank && !isPastActualSequenceTail;
+  // Without a spine, frames are drawn by compositions/graphics; only a moment with no visual cue (the
+  // backdrop alone) counts as blank. Same rule as the post-render scan.
+  const isAuthoredGraphicsFrame =
+    seq.spine.clips.length === 0 && activeVisualCueIdsAt(seq, clampedMs).length > 0;
+  const effectiveIsBlank = isBlank && !isPastActualSequenceTail && !isAuthoredGraphicsFrame;
 
   // Draw top HUD bar on the frame FIRST
   canvas.fillRect(0, 0, width, 24, [13, 17, 23, 215]);
@@ -550,7 +554,13 @@ export function captureMonitorFrame(options: {
     width,
     height,
     metrics,
-    diagnostics: diagnostic ? [diagnostic] : [],
+    // On an empty sequence every frame is backdrop; say why once instead of reporting a blank frame.
+    diagnostics:
+      computeSequenceDurationMs(sequence) <= 0
+        ? [DIAGNOSTICS.EMPTY_SEQUENCE("WARN")]
+        : diagnostic
+          ? [diagnostic]
+          : [],
   };
 }
 
@@ -658,6 +668,10 @@ export function captureMonitorSheet(options: {
     : defaultOut;
 
   sheetCanvas.saveAs(resolvedOut);
+  if (actualSeqDurMs <= 0) {
+    // On an empty sequence every cell is backdrop; one clear diagnostic replaces a blank-frame warning per cell.
+    diagnostics.splice(0, diagnostics.length, DIAGNOSTICS.EMPTY_SEQUENCE("WARN"));
+  }
 
   return {
     ok: true,

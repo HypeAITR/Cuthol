@@ -177,6 +177,14 @@ export const ACTION_SPECS: ActionSpec[] = [
   },
   {
     tool: "workspace",
+    action: "backdrop",
+    argv: ["workspace", "backdrop"],
+    summary: "Set the stage backdrop colour: the base of every frame wherever no clip or cue covers it (the background of a graphics-only video). Journaled; undo restores the previous colour.",
+    mutates: true,
+    params: [{ name: "color", type: "string", description: "Colour as '#RRGGBB' (e.g. '#F7C531').", required: true }],
+  },
+  {
+    tool: "workspace",
     action: "journal",
     argv: ["workspace", "journal", "list"],
     summary: "List journal entries (revision, operation, delta).",

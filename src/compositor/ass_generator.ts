@@ -12,7 +12,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { resolveCueStartMs } from "../brief/inspector.js";
+import { resolveCueStartMs } from "../core/timeline.js";
 import { CutholSequence, LaneCue } from "../core/schema.js";
 
 /**

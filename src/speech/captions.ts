@@ -7,7 +7,7 @@
  * Automatically skips excised words and groups active words into readable caption cues on `ln_captions`.
  */
 
-import { resolveCueStartMs } from "../brief/inspector.js";
+import { resolveCueStartMs } from "../core/timeline.js";
 import { wrapTypographyLines } from "../compositor/ass_generator.js";
 import { DecisionTrace, DecisionTraceItem } from "../core/decision_trace.js";
 import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";

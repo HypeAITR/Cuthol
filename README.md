@@ -15,7 +15,7 @@ An agent edits through a CLI (`cuthol`) or an MCP server (`cuthol mcp`). It read
   - Word-highlighted captions and voiceover synthesis.
 - **Mix.** Loudness normalization to a target (ITU-R BS.1770, e.g. −14 LUFS / −1 dBTP), voice polish, music ducking under speech, and cut alignment to a regular beat grid.
 - **Reframe.** Single-subject tracking when placing 16:9 footage on a 9:16 stage, with manual correction.
-- **Motion graphics.** HyperFrames compositions composited with true alpha. Each composition gets a runtime (`window.__cuthol`) exposing word times, beats, the beat grid and cut points, both for its own window and for the whole edit (`C.global`). A video can be made entirely of motion graphics over a still background.
+- **Motion graphics.** HyperFrames compositions composited with true alpha. Each composition gets a runtime (`window.__cuthol`) exposing word times, beats, the beat grid and cut points, both for its own window and for the whole edit (`C.global`). A video can be made entirely of motion graphics, with no footage on the main storyline; set the base colour with `workspace backdrop --color`.
 - **Seeing the edit.**
   - A fast frame preview that matches the render.
   - Contact sheets and a timeline diagram.

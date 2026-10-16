@@ -22,7 +22,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveCueStartMs } from "../brief/inspector.js";
+import { computeSequenceDurationMs, resolveCueStartMs } from "../core/timeline.js";
 import {
   AudioProcessingChain,
   CutholSequence,
@@ -847,16 +847,7 @@ export function exportBridgeDataForCue(
 
     // 5. Build full-sequence (`global`) intelligence in absolute timeline seconds [0 .. seqDurationSec]
     // with single sequence-wide 3-band audio normalization and compact resolution for long (40-50 min) edits.
-    let seqDurationMs = cueEndMs;
-    for (const clip of seq.spine.clips) {
-      seqDurationMs = Math.max(seqDurationMs, clip.timeline_in_ms + clip.duration_ms);
-    }
-    for (const lane of seq.lanes) {
-      if (lane.muted) continue;
-      for (const c of lane.cues) {
-        seqDurationMs = Math.max(seqDurationMs, resolveCueStartMs(seq, c) + c.duration_ms);
-      }
-    }
+    const seqDurationMs = Math.max(cueEndMs, computeSequenceDurationMs(seq));
     const seqDurationSec = Number((seqDurationMs / 1000).toFixed(4));
     const toGlobalSec = (seqMs: number): number => Number((seqMs / 1000).toFixed(3));
 

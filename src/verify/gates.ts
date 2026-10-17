@@ -454,6 +454,14 @@ export function verifySequence(
       }
       if (!Number.isFinite(clip.duration_ms) || clip.duration_ms < minMs) {
         diagnostics.push(DIAGNOSTICS.SUB_FRAME_DURATION(clip.id, clip.duration_ms, minMs));
+      } else if (clip.duration_ms < OPEN_STANDARDS.SIGNAL_SANITY.MIN_RECOMMENDED_SPINE_CLIP_MS) {
+        diagnostics.push(
+          DIAGNOSTICS.SHORT_SPINE_CLIP(
+            clip.id,
+            clip.duration_ms,
+            OPEN_STANDARDS.SIGNAL_SANITY.MIN_RECOMMENDED_SPINE_CLIP_MS
+          )
+        );
       }
       if (seq.spine.magnetic && clip.timeline_in_ms !== expectedTimelineIn) {
         diagnostics.push(

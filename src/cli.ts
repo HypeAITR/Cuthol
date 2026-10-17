@@ -1289,7 +1289,18 @@ async function main(): Promise<void> {
 
       if (action === "cleanup") {
         const clipId = strFlag(flags, "clip") ?? rest[0];
-        if (!clipId) throw new Error("Provide --clip <sp_XX>.");
+        const clipsRaw = strFlag(flags, "clips");
+        const clipIds = clipsRaw
+          ? clipsRaw
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : undefined;
+        const allSpine = boolFlag(
+          flags,
+          "all-spine",
+          !clipId && (!clipIds || clipIds.length === 0)
+        );
         const minPauseRaw = strFlag(flags, "min-pause");
         const padRaw = strFlag(flags, "pad");
         const cutCandRaw = strFlag(flags, "cut-candidates");
@@ -1302,11 +1313,13 @@ async function main(): Promise<void> {
         const res = cleanupClipDialogue({
           workspaceDir,
           clipId,
+          clipIds,
+          allSpine,
           minPauseMs: minPauseRaw ? parseTimeMs(minPauseRaw) : undefined,
           padMs: padRaw ? parseTimeMs(padRaw) : undefined,
           removePauses: boolFlag(flags, "remove-pauses", true),
           removeFillers: boolFlag(flags, "remove-fillers", true),
-          removeRepetitions: boolFlag(flags, "remove-repetitions", true),
+          removeRepetitions: boolFlag(flags, "remove-repetitions", false),
           cutCandidates,
           language: strFlag(flags, "lang", "tr"),
           dryRun: boolFlag(flags, "dry-run", false),
@@ -1348,6 +1361,7 @@ async function main(): Promise<void> {
           targetLufs: numFlag(flags, "target-lufs"),
           truePeakDbtp: numFlag(flags, "true-peak"),
           clipIds,
+          detailed: boolFlag(flags, "verbose", false) || boolFlag(flags, "detailed", false),
         });
         emitEnvelopeJson(workspaceDir, "mix.normalize", { action: "mix.normalize", ...res });
         return;

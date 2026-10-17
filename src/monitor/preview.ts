@@ -22,7 +22,12 @@ import {
   computeSequenceDurationMs,
   resolveCueStartMs,
 } from "../core/timeline.js";
-import { CutholDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
+import {
+  createSubprocessFailureDiagnostic,
+  CutholDiagnostic,
+  CutholError,
+  DIAGNOSTICS,
+} from "../core/diagnostics.js";
 import { PngCanvas, RgbaColor } from "../core/png_canvas.js";
 import { CutholSequence, LaneCue } from "../core/schema.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
@@ -90,32 +95,36 @@ function extractRawFrameToCanvas(
   let clampedMs = Math.max(0, Math.min(Math.round(atMs), maxSafeMs));
   const timeSec = (clampedMs / 1000).toFixed(3);
 
-  let proc = spawnSync(
-    "ffmpeg",
-    [
-      "-v",
-      "error",
-      "-ss",
-      timeSec,
-      "-i",
-      mp4Path,
-      "-frames:v",
-      "1",
-      "-f",
-      "rawvideo",
-      "-pix_fmt",
-      "rgb24",
-      "pipe:1",
-    ],
-    { maxBuffer: width * height * 4 + 1024 * 1024, timeout: 30_000 }
-  );
+  const extractArgs = [
+    "-v",
+    "error",
+    "-ss",
+    timeSec,
+    "-i",
+    mp4Path,
+    "-frames:v",
+    "1",
+    "-f",
+    "rawvideo",
+    "-pix_fmt",
+    "rgb24",
+    "pipe:1",
+  ];
+  let proc = spawnSync("ffmpeg", extractArgs, {
+    maxBuffer: width * height * 4 + 1024 * 1024,
+    timeout: 30_000,
+  });
 
-  if (proc.status !== 0) {
+  if (proc.status !== 0 || proc.error) {
     throw new CutholError(
-      DIAGNOSTICS.EXTERNAL_TOOL_FAILED(
-        "ffmpeg frame extract",
-        (proc.stderr?.toString("utf8") || "frame extract failed").slice(-400)
-      )
+      createSubprocessFailureDiagnostic({
+        tool: "ffmpeg frame extract",
+        executable: "ffmpeg",
+        args: extractArgs,
+        proc,
+        clipCount: seq.spine.clips.length,
+        fallbackDetail: "frame extract failed",
+      })
     );
   }
 

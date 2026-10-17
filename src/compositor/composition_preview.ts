@@ -299,12 +299,14 @@ export function previewAndCheckComposition(options: {
 
     const underneathPlan = compileSequenceRenderPlan(underneathSeq, paths, "draft_480p", {
       minDurationMs: cueEndMs + 500,
+      activeWindowMs: [cueStartMs, cueEndMs],
+      includeAudio: false,
     });
-    const cueStartSec = Number((cueStartMs / 1000).toFixed(3));
-    const cueEndSec = Number((cueEndMs / 1000).toFixed(3));
-    const sliceFilter = `${underneathPlan.filterComplex};${underneathPlan.videoOutPad}trim=start=${cueStartSec}:end=${cueEndSec},setpts=PTS-STARTPTS,fps=${fps},scale=${stageW}:${stageH},format=yuv420p[v_bg_preview];${underneathPlan.audioOutPad}anullsink`;
+    const sliceFilter = `${underneathPlan.filterComplex};${underneathPlan.videoOutPad}fps=${fps},scale=${stageW}:${stageH},format=yuv420p[v_bg_preview]`;
 
     const candidateBg = path.join(workRoot, "preview_backdrop.mp4");
+    const filterScriptPath = path.join(workRoot, "preview_backdrop.filter.txt");
+    fs.writeFileSync(filterScriptPath, sliceFilter, "utf8");
     const bgProc = spawnSync(
       "ffmpeg",
       [
@@ -312,8 +314,8 @@ export function previewAndCheckComposition(options: {
         "-v",
         "error",
         ...underneathPlan.inputArgs,
-        "-filter_complex",
-        sliceFilter,
+        "-/filter_complex",
+        filterScriptPath,
         "-map",
         "[v_bg_preview]",
         "-t",

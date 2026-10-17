@@ -3,16 +3,23 @@
  */
 
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { resolveCueStartMs } from "../core/timeline.js";
-import { compileSequenceAudioPlan } from "../compositor/compiler.js";
 import { DecisionTrace, DecisionTraceItem } from "../core/decision_trace.js";
-import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
+import {
+  createSubprocessFailureDiagnostic,
+  CutholError,
+  DIAGNOSTICS,
+  estimateCommandLineLength,
+} from "../core/diagnostics.js";
 import { createDefaultAudioChain, CutholSequence, maxSourceDurationMs, ParameterEnvelopePoint } from "../core/schema.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
 import { loadSequence, WorkspacePaths } from "../core/workspace.js";
 import { analyzeAssetBeats } from "../library/beats.js";
 import { analyzeAssetLoudness } from "../library/loudness.js";
 import { analyzeAssetWaveform } from "../library/waveform.js";
+import { buildOrRenderSequenceAudioForMixOrRender } from "../render/renderer.js";
 import {
   clipLocalMsToSourceMs,
   computeClipDurationMs,
@@ -35,12 +42,14 @@ export interface NormalizeAudioResult {
   master_gain_db: number;
   target_reached: boolean;
   warning?: string;
+  adjusted_clips_count: number;
   adjusted_clips: Array<{
     id: string;
     integrated_lufs: number;
     applied_gain_db: number;
     effective_mix_gain_db: number;
   }>;
+  adjusted_clips_omitted?: number;
   decision_trace: DecisionTrace;
   revision: number;
   verification: VerificationReport;
@@ -67,36 +76,80 @@ function measureSequenceMixLoudness(
   paths: WorkspacePaths,
   overrideMasterAudio: CutholSequence["stage"]["master_audio"]
 ): { hasActiveAudio: boolean; integrated_lufs: number; true_peak_dbtp: number } {
-  const plan = compileSequenceAudioPlan(seq, paths, overrideMasterAudio);
-  if (!plan.hasActiveAudio) {
+  const audioBuild = buildOrRenderSequenceAudioForMixOrRender(seq, paths, overrideMasterAudio);
+  if (!audioBuild.hasActiveAudio) {
     return { hasActiveAudio: false, integrated_lufs: -70.0, true_peak_dbtp: -70.0 };
   }
 
-  const filterWithEbur = `${plan.filterComplex};${plan.audioOutPad}ebur128=peak=true[ebur_out]`;
-  const proc = spawnSync(
-    "ffmpeg",
-    [
-      "-nostats",
-      "-v",
-      "info",
-      ...plan.inputArgs,
-      "-filter_complex",
-      filterWithEbur,
-      "-map",
-      "[ebur_out]",
-      "-t",
-      (plan.totalDurationMs / 1000).toFixed(3),
-      "-f",
-      "null",
-      "-",
-    ],
-    {
+  const inputArgs =
+    audioBuild.mode === "direct_plan"
+      ? audioBuild.directPlan!.inputArgs
+      : ["-f", "concat", "-safe", "0", "-i", audioBuild.concatListPath!];
+  const baseFilter =
+    audioBuild.mode === "direct_plan"
+      ? audioBuild.directPlan!.filterComplex
+      : audioBuild.masterFilterComplex!;
+  const filterWithEbur = `${baseFilter};${audioBuild.audioOutPad}ebur128=peak=true[ebur_out]`;
+
+  fs.mkdirSync(paths.blobsDir, { recursive: true });
+  const filterScriptPath = path.join(
+    paths.blobsDir,
+    `ebur_${process.pid}_${Date.now()}.filter.txt`
+  );
+  const useScript =
+    filterWithEbur.length > 4000 ||
+    estimateCommandLineLength("ffmpeg", inputArgs) + filterWithEbur.length > 12000;
+  if (useScript) {
+    fs.writeFileSync(filterScriptPath, filterWithEbur, "utf8");
+  }
+
+  const ffArgs = [
+    "-nostats",
+    "-v",
+    "info",
+    ...inputArgs,
+    ...(useScript
+      ? ["-/filter_complex", filterScriptPath]
+      : ["-filter_complex", filterWithEbur]),
+    "-map",
+    "[ebur_out]",
+    "-t",
+    (audioBuild.totalDurationMs / 1000).toFixed(3),
+    "-f",
+    "null",
+    "-",
+  ];
+
+  let proc;
+  try {
+    proc = spawnSync("ffmpeg", ffArgs, {
       cwd: paths.rootDir,
       encoding: "utf8",
       // ebur128 logs ~10 lines per second of audio and runs over the whole mix: no wall-clock limit.
       maxBuffer: 256 * 1024 * 1024,
+    });
+  } finally {
+    if (fs.existsSync(filterScriptPath)) {
+      try {
+        fs.unlinkSync(filterScriptPath);
+      } catch {
+        // ignore
+      }
     }
-  );
+  }
+
+  if (proc.error || proc.status !== 0) {
+    throw new CutholError(
+      createSubprocessFailureDiagnostic({
+        tool: "ffmpeg mix loudness",
+        executable: "ffmpeg",
+        args: ffArgs,
+        proc,
+        clipCount: seq.spine.clips.length,
+        fallbackDetail: "loudness measurement failed",
+      })
+    );
+  }
 
   const stderr = `${proc.stderr || ""}\n${proc.stdout || ""}`;
   const parsed = parseEbur128MixSummary(stderr);
@@ -190,6 +243,8 @@ export function normalizeSequenceAudio(options: {
   targetLufs?: number;
   truePeakDbtp?: number;
   clipIds?: string[];
+  detailed?: boolean;
+  maxListedClips?: number;
 }): NormalizeAudioResult {
   const rawTargetLufs =
     options.targetLufs !== undefined && Number.isFinite(options.targetLufs)
@@ -424,6 +479,10 @@ export function normalizeSequenceAudio(options: {
     near_misses: normDecisions.filter((d) => d.action === "clamped"),
   };
 
+  const maxListed = Math.max(1, options.maxListedClips ?? 8);
+  const returnedClips = options.detailed ? adjusted : adjusted.slice(0, maxListed);
+  const omittedCount = Math.max(0, adjusted.length - returnedClips.length);
+
   return {
     target_lufs: targetLufs,
     true_peak_dbtp: truePeakDbtp,
@@ -434,7 +493,9 @@ export function normalizeSequenceAudio(options: {
     master_gain_db: masterGainDb,
     target_reached: targetReached,
     ...(warningMsg ? { warning: warningMsg } : {}),
-    adjusted_clips: adjusted,
+    adjusted_clips_count: adjusted.length,
+    adjusted_clips: returnedClips,
+    ...(omittedCount > 0 ? { adjusted_clips_omitted: omittedCount } : {}),
     decision_trace: decisionTrace,
     revision,
     verification,

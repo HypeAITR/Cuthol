@@ -276,6 +276,16 @@ export const DIAGNOSTICS = {
       `Aralığı bir kompozisyon/başlık/görsel cue ile doldurun ya da bitişik cue'yu uzatın; boş zemin kasıtlıysa bu uyarı bilgi amaçlıdır.`
     ),
 
+  SHORT_SPINE_CLIP: (clipId: string, durationMs: number, recommendedMinMs: number) =>
+    createDiagnostic(
+      "CUTHOL-G309",
+      "G3_TIMING",
+      "WARN",
+      `'${clipId}' omurga klibinin süresi (${durationMs}ms), önerilen alt sınırın (${recommendedMinMs}ms) altında; kesimler arasında artık parça kalmış olabilir.`,
+      `Artık bir parça ise 'cuthol spine remove --clips ${clipId}' ile silin veya komşu kesimle birleştirin.`,
+      clipId
+    ),
+
   // --- Gate 4: Stage Geometry, Safe Zones & Legibility (G4_STAGE) ---
   SAFE_ZONE_VIOLATION: (cueId: string, edge: string, overflowPx: number) =>
     createDiagnostic(
@@ -507,4 +517,107 @@ export const DIAGNOSTICS = {
       `Eklenti betiğini/filtresini ve girdi parametrelerini ('cuthol extension show --name ${name}') kontrol edin.`,
       name
     ),
+
+  COMMAND_LINE_TOO_LONG: (
+    tool: string,
+    commandLength: number,
+    limitChars: number,
+    clipCount?: number,
+    errnoCode?: string
+  ) => {
+    const clipInfo =
+      typeof clipCount === "number" ? `, klip sayısı: ${clipCount}` : "";
+    const codeInfo = errnoCode ? ` (${errnoCode})` : "";
+    return createDiagnostic(
+      "CUTHOL-SYS09",
+      "SYS",
+      "ERROR",
+      `'${tool}' alt süreci başlatılamadı${codeInfo}: komut satırı çok uzun (${commandLength} karakter, işletim sistemi sınırı: ${limitChars} karakter${clipInfo}).`,
+      `Filtre grafiğini dosyadan ('-/filter_complex <dosya>') geçirin veya çok klipli sekansı zaman parçalı (segmented) derleme yoluyla işleyin.`
+    );
+  },
 } as const;
+
+export function estimateCommandLineLength(executable: string, args: readonly string[]): number {
+  let len = executable.length;
+  for (const arg of args) {
+    len += 1 + arg.length;
+    if (arg.length === 0 || /[\s"]/u.test(arg)) {
+      len += 2;
+    }
+  }
+  return len;
+}
+
+export function getPlatformCommandLineLimit(platform: NodeJS.Platform = process.platform): number {
+  return platform === "win32" ? 32_767 : 131_072;
+}
+
+export function createSubprocessFailureDiagnostic(options: {
+  tool: string;
+  executable?: string;
+  args?: readonly string[];
+  proc: {
+    status: number | null;
+    signal?: NodeJS.Signals | null;
+    error?: Error;
+    stderr?: string | Buffer | null;
+    stdout?: string | Buffer | null;
+  };
+  clipCount?: number;
+  fallbackDetail?: string;
+}): CutholDiagnostic {
+  const executable = options.executable ?? options.tool.split(/\s+/)[0] ?? "ffmpeg";
+  const args = options.args ?? [];
+  const commandLength = estimateCommandLineLength(executable, args);
+  const limitChars = getPlatformCommandLineLimit();
+  const singleArgMax = args.reduce((max, a) => (a.length > max ? a.length : max), 0);
+  const err = options.proc.error as NodeJS.ErrnoException | undefined;
+  const errCode = err?.code ?? "";
+
+  if (
+    errCode === "ENAMETOOLONG" ||
+    errCode === "E2BIG" ||
+    (err && (commandLength >= limitChars || singleArgMax >= limitChars))
+  ) {
+    return DIAGNOSTICS.COMMAND_LINE_TOO_LONG(
+      options.tool,
+      Math.max(commandLength, singleArgMax),
+      limitChars,
+      options.clipCount,
+      errCode || undefined
+    );
+  }
+
+  const stderrStr =
+    typeof options.proc.stderr === "string"
+      ? options.proc.stderr
+      : Buffer.isBuffer(options.proc.stderr)
+        ? options.proc.stderr.toString("utf8")
+        : "";
+  const stdoutStr =
+    typeof options.proc.stdout === "string"
+      ? options.proc.stdout
+      : Buffer.isBuffer(options.proc.stdout)
+        ? options.proc.stdout.toString("utf8")
+        : "";
+
+  if (err) {
+    const clipInfo =
+      typeof options.clipCount === "number" ? `, klip sayısı=${options.clipCount}` : "";
+    const detail = `Alt süreç başlatılamadı (${errCode || err.name}: ${err.message}; komut=${ executable }, komut_uzunluğu=${commandLength}/${limitChars} krk${clipInfo})${stderrStr.trim() ? ` — ${stderrStr.trim().slice(-360)}` : ""}`;
+    return DIAGNOSTICS.EXTERNAL_TOOL_FAILED(options.tool, detail);
+  }
+
+  const outTail = (stderrStr || stdoutStr || "").trim().slice(-600);
+  const statusInfo =
+    options.proc.status !== null && options.proc.status !== undefined
+      ? `çıkış kodu=${options.proc.status}`
+      : options.proc.signal
+        ? `sinyal=${options.proc.signal}`
+        : "durum=null";
+  const detail = outTail
+    ? `${outTail} (${statusInfo})`
+    : `${options.fallbackDetail ?? "alt süreç başarısız oldu"} (${statusInfo}, komut_uzunluğu=${commandLength} krk)`;
+  return DIAGNOSTICS.EXTERNAL_TOOL_FAILED(options.tool, detail);
+}

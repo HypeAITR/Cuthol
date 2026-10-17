@@ -143,11 +143,14 @@ export interface CompileSequenceOptions {
   minDurationMs?: number;
   workers?: number;
   useGpu?: boolean;
+  includeAudio?: boolean;
 }
 
 export interface CompileAudioOptions {
   inputIndexOffset?: number;
   minDurationMs?: number;
+  activeWindowMs?: [number, number];
+  applyMasterFinalize?: boolean;
 }
 
 export interface CompiledAudioPlan {
@@ -156,6 +159,45 @@ export interface CompiledAudioPlan {
   audioOutPad: string;
   totalDurationMs: number;
   hasActiveAudio: boolean;
+}
+
+function buildSeekableMediaInput(
+  absAssetPath: string,
+  srcInMs: number,
+  srcOutMs: number,
+  assetDurationMs: number,
+  allowFastInputSeek = true
+): {
+  inputArgs: string[];
+  localSrcInSec: string;
+  localSrcOutSec: string;
+  seekSec: number;
+} {
+  if (allowFastInputSeek && srcInMs >= 3000) {
+    const seekSec = Math.max(0, Math.floor((srcInMs - 2000) / 1000));
+    const readSpanSec = Math.max(1, Math.ceil(srcOutMs / 1000 - seekSec + 3));
+    return {
+      inputArgs: ["-ss", String(seekSec), "-t", String(readSpanSec), "-i", absAssetPath],
+      localSrcInSec: (srcInMs / 1000 - seekSec).toFixed(3),
+      localSrcOutSec: (srcOutMs / 1000 - seekSec).toFixed(3),
+      seekSec,
+    };
+  }
+  if (allowFastInputSeek && assetDurationMs > 60_000 && srcOutMs + 5000 < assetDurationMs) {
+    const readSpanSec = Math.max(1, Math.ceil(srcOutMs / 1000 + 3));
+    return {
+      inputArgs: ["-t", String(readSpanSec), "-i", absAssetPath],
+      localSrcInSec: (srcInMs / 1000).toFixed(3),
+      localSrcOutSec: (srcOutMs / 1000).toFixed(3),
+      seekSec: 0,
+    };
+  }
+  return {
+    inputArgs: ["-i", absAssetPath],
+    localSrcInSec: (srcInMs / 1000).toFixed(3),
+    localSrcOutSec: (srcOutMs / 1000).toFixed(3),
+    seekSec: 0,
+  };
 }
 
 function buildSingleAudioTrackFilterChain(options: {
@@ -171,6 +213,9 @@ function buildSingleAudioTrackFilterChain(options: {
   postTrimDurationMs: number;
   timelineStartMs: number;
   totalDurationSec: number;
+  envelopeTimeBaseOffsetMs?: number;
+  localSliceTrimSec?: [number, number];
+  windowClampEndSec?: number;
 }): string {
   const rateFilters =
     options.preservePitch === false && Math.abs(options.effectiveRate - 1.0) > 0.001
@@ -187,6 +232,7 @@ function buildSingleAudioTrackFilterChain(options: {
     ...rateFilters,
   ];
 
+  const envOffsetMs = options.envelopeTimeBaseOffsetMs ?? 0;
   const ac = options.audioChain;
   if (ac) {
     if (ac.denoise.enabled) {
@@ -205,7 +251,7 @@ function buildSingleAudioTrackFilterChain(options: {
     const gainEnv = options.envelopes.find((e) => e.parameter === "audio_chain.gain_db");
     const gainExpr = compileEnvelopeToFfmpegExpr({
       envelope: gainEnv,
-      timeBaseOffsetMs: 0,
+      timeBaseOffsetMs: envOffsetMs,
       mode: "db_to_linear",
       baseGainDb: ac.gain_db,
     });
@@ -215,29 +261,56 @@ function buildSingleAudioTrackFilterChain(options: {
       aFilters.push(`volume=${ac.gain_db.toFixed(2)}dB`);
     }
     if (ac.fade_in_ms > 0) {
-      aFilters.push(`afade=t=in:st=0:d=${(ac.fade_in_ms / 1000).toFixed(3)}`);
+      const fadeInStartMs = envOffsetMs;
+      if (fadeInStartMs + ac.fade_in_ms > 0) {
+        const stSec = Math.max(0, fadeInStartMs / 1000).toFixed(3);
+        const dSec = (Math.max(1, ac.fade_in_ms + Math.min(0, fadeInStartMs)) / 1000).toFixed(3);
+        aFilters.push(`afade=t=in:st=${stSec}:d=${dSec}`);
+      }
     }
     if (ac.fade_out_ms > 0) {
-      const outStart = Math.max(0, (options.postTrimDurationMs - ac.fade_out_ms) / 1000).toFixed(3);
-      aFilters.push(`afade=t=out:st=${outStart}:d=${(ac.fade_out_ms / 1000).toFixed(3)}`);
+      const outStartMs = options.postTrimDurationMs - ac.fade_out_ms + envOffsetMs;
+      if (outStartMs + ac.fade_out_ms > 0) {
+        const outStart = Math.max(0, outStartMs / 1000).toFixed(3);
+        const dSec = (ac.fade_out_ms / 1000).toFixed(3);
+        aFilters.push(`afade=t=out:st=${outStart}:d=${dSec}`);
+      }
     }
+  }
+
+  if (options.localSliceTrimSec) {
+    const [slStart, slEnd] = options.localSliceTrimSec;
+    aFilters.push(
+      `atrim=start=${slStart.toFixed(6)}:end=${slEnd.toFixed(6)}`,
+      `asetpts=PTS-STARTPTS`
+    );
   }
 
   if (options.timelineStartMs > 0) {
     aFilters.push(`adelay=${options.timelineStartMs}|${options.timelineStartMs}`);
+  }
+  if (options.windowClampEndSec !== undefined) {
+    aFilters.push(
+      `atrim=start=0:end=${options.windowClampEndSec.toFixed(6)}`,
+      `asetpts=PTS-STARTPTS`
+    );
   }
   aFilters.push(`apad=whole_dur=${options.totalDurationSec}`);
 
   return `[${options.inputIdx}:a]${aFilters.join(",")}${options.outputPad}`;
 }
 
-function buildMasterAudioFinalizeFilter(
+export function buildMasterAudioFinalizeFilter(
   audioMixPads: string[],
   finalAudioPad: string,
-  masterAudio?: CutholSequence["stage"]["master_audio"]
+  masterAudio?: CutholSequence["stage"]["master_audio"],
+  applyMasterFinalize = true
 ): string {
   if (audioMixPads.length <= 1) {
     return `${audioMixPads[0]}aformat=sample_rates=48000:channel_layouts=stereo${finalAudioPad}`;
+  }
+  if (!applyMasterFinalize) {
+    return `${audioMixPads.join("")}amix=inputs=${audioMixPads.length}:duration=first:dropout_transition=0:normalize=0,aformat=sample_rates=48000:channel_layouts=stereo${finalAudioPad}`;
   }
   const masterGainDb = masterAudio?.gain_db ?? 0;
   const gainStage = Math.abs(masterGainDb) > 0.01 ? `,volume=${masterGainDb.toFixed(2)}dB` : "";
@@ -257,8 +330,14 @@ export function compileSequenceAudioPlan(
   overrideMasterAudio?: CutholSequence["stage"]["master_audio"],
   options?: CompileAudioOptions
 ): CompiledAudioPlan {
-  const totalDurationMs = computeRenderDurationMs(seq, options?.minDurationMs ?? 0);
-  const totalDurationSec = Number((totalDurationMs / 1000).toFixed(3));
+  const fullDurationMs = computeRenderDurationMs(seq, options?.minDurationMs ?? 0);
+  const activeWin = options?.activeWindowMs;
+  const winStartMs = activeWin ? Math.max(0, activeWin[0]) : 0;
+  const winEndMs = activeWin ? Math.max(winStartMs + 1, activeWin[1]) : fullDurationMs;
+  const totalDurationMs = activeWin ? Math.round(winEndMs - winStartMs) : fullDurationMs;
+  const totalDurationSec = activeWin
+    ? Number(((winEndMs - winStartMs) / 1000).toFixed(6))
+    : Number((totalDurationMs / 1000).toFixed(3));
   const libMap = new Map(seq.library.map((item) => [item.handle, item]));
 
   const inputArgs: string[] = [];
@@ -284,6 +363,104 @@ export function compileSequenceAudioPlan(
   const underSpineLanes = sortedLanes.filter((l) => l.z_index < 0);
   const overSpineLanes = sortedLanes.filter((l) => l.z_index >= 0);
 
+  const appendAudioItemToPlan = (item: {
+    padPrefix: string;
+    absAssetPath: string;
+    assetDurationMs: number;
+    sampleRate?: number | null;
+    srcInMs: number;
+    srcOutMs: number;
+    effectiveRate: number;
+    preservePitch?: boolean;
+    audioChain: CutholSequence["spine"]["clips"][number]["audio_chain"] | undefined;
+    envelopes: ParameterEnvelope[];
+    postTrimDurationMs: number;
+    timelineStartMs: number;
+  }): void => {
+    const itemStartMs = item.timelineStartMs;
+    const itemEndMs = itemStartMs + item.postTrimDurationMs;
+    if (activeWin && (itemEndMs <= winStartMs + 1e-3 || itemStartMs >= winEndMs - 1e-3)) {
+      return;
+    }
+
+    let readSrcInMs = item.srcInMs;
+    let readSrcOutMs = item.srcOutMs;
+    let relTimelineStartMs = item.timelineStartMs;
+    let envOffsetMs = 0;
+    let localSliceTrimSec: [number, number] | undefined;
+    let windowClampEndSec: number | undefined;
+
+    if (activeWin) {
+      if (itemStartMs >= winStartMs) {
+        relTimelineStartMs = Math.max(0, Math.round(itemStartMs - winStartMs));
+        if (itemEndMs > winEndMs + 1e-3) {
+          const maxLocalPlayMs = Math.max(1, winEndMs - itemStartMs);
+          readSrcOutMs = Math.min(
+            item.srcOutMs,
+            item.srcInMs + Math.ceil((maxLocalPlayMs + 500) * item.effectiveRate)
+          );
+          windowClampEndSec = totalDurationSec;
+        }
+      } else {
+        relTimelineStartMs = 0;
+        const localWinStartMs = winStartMs - itemStartMs;
+        const localWinEndMs = Math.min(item.postTrimDurationMs, winEndMs - itemStartMs);
+        const hasStatefulFilter = Boolean(
+          item.audioChain?.denoise.enabled || item.audioChain?.voice_clarity.enabled
+        );
+        const preRollMs = hasStatefulFilter ? Math.min(localWinStartMs, 500) : 0;
+        const readLocalStartMs = Math.max(0, localWinStartMs - preRollMs);
+        readSrcInMs = Math.min(
+          item.srcOutMs,
+          item.srcInMs + Math.floor(readLocalStartMs * item.effectiveRate)
+        );
+        readSrcOutMs = Math.min(
+          item.srcOutMs,
+          item.srcInMs + Math.ceil((localWinEndMs + 500) * item.effectiveRate)
+        );
+        const actualReadLocalStartMs = (readSrcInMs - item.srcInMs) / item.effectiveRate;
+        envOffsetMs = -actualReadLocalStartMs;
+        const sliceStartSec = Math.max(0, (localWinStartMs - actualReadLocalStartMs) / 1000);
+        const sliceEndSec = Math.max(
+          sliceStartSec + 0.001,
+          (localWinEndMs - actualReadLocalStartMs) / 1000
+        );
+        localSliceTrimSec = [sliceStartSec, sliceEndSec];
+        windowClampEndSec = totalDurationSec;
+      }
+    }
+
+    const seekInfo = buildSeekableMediaInput(
+      item.absAssetPath,
+      readSrcInMs,
+      readSrcOutMs,
+      item.assetDurationMs,
+      Boolean(activeWin) || item.assetDurationMs >= 180_000
+    );
+    const inIdx = addInput(seekInfo.inputArgs);
+    const aPad = `[${item.padPrefix}_${++aStepCounter}]`;
+    filterChains.push(
+      buildSingleAudioTrackFilterChain({
+        inputIdx: inIdx,
+        outputPad: aPad,
+        srcInSec: seekInfo.localSrcInSec,
+        srcOutSec: seekInfo.localSrcOutSec,
+        effectiveRate: item.effectiveRate,
+        preservePitch: item.preservePitch,
+        sampleRate: item.sampleRate,
+        audioChain: item.audioChain,
+        envelopes: item.envelopes,
+        postTrimDurationMs: item.postTrimDurationMs,
+        timelineStartMs: relTimelineStartMs,
+        totalDurationSec,
+        envelopeTimeBaseOffsetMs: envOffsetMs,
+        localSliceTrimSec,
+        windowClampEndSec,
+      })
+    );
+    audioMixPads.push(aPad);
+  };
+
   const compileLaneAudio = (lane: CutholSequence["lanes"][number]): void => {
     if (lane.muted) return;
     for (const cue of lane.cues) {
@@ -308,31 +485,24 @@ export function compileSequenceAudioPlan(
           : srcInMs + Math.round(cue.duration_ms * cueRate);
       const requestedOut = cue.source_out_ms ?? maxOutByDuration;
       const srcOutMs = Math.min(maxSourceDurationMs(asset), requestedOut, maxOutByDuration);
-      const srcInSec = (srcInMs / 1000).toFixed(3);
-      const srcOutSec = (srcOutMs / 1000).toFixed(3);
       const effectiveRate = Math.max(0.1, Math.min(16.0, cueRate));
       const postTrimDurationMs =
         cueRate === 1.0 ? Math.max(0, srcOutMs - srcInMs) : cue.duration_ms;
 
-      const inIdx = addInput(["-i", absAssetPath]);
-      const aPad = `[a_cue_${++aStepCounter}]`;
-      filterChains.push(
-        buildSingleAudioTrackFilterChain({
-          inputIdx: inIdx,
-          outputPad: aPad,
-          srcInSec,
-          srcOutSec,
-          effectiveRate,
-          preservePitch: cue.playback?.preserve_pitch,
-          sampleRate: asset.probe.sample_rate,
-          audioChain: cue.audio_chain,
-          envelopes: cue.envelopes,
-          postTrimDurationMs,
-          timelineStartMs: cueStartMs,
-          totalDurationSec,
-        })
-      );
-      audioMixPads.push(aPad);
+      appendAudioItemToPlan({
+        padPrefix: "a_cue",
+        absAssetPath,
+        assetDurationMs: asset.probe.duration_ms,
+        sampleRate: asset.probe.sample_rate,
+        srcInMs,
+        srcOutMs,
+        effectiveRate,
+        preservePitch: cue.playback?.preserve_pitch,
+        audioChain: cue.audio_chain,
+        envelopes: cue.envelopes,
+        postTrimDurationMs,
+        timelineStartMs: cueStartMs,
+      });
     }
   };
 
@@ -346,32 +516,25 @@ export function compileSequenceAudioPlan(
     if (!asset || !asset.probe.has_audio || clip.audio_chain.muted) continue;
 
     const absAssetPath = resolveLibraryItemPath(paths.rootDir, asset);
-    const inIdx = addInput(["-i", absAssetPath]);
-    const srcInSec = (clip.source_in_ms / 1000).toFixed(3);
-    const srcOutSec = (clip.source_out_ms / 1000).toFixed(3);
     const effectiveRate = Math.max(
       0.1,
       Math.min(16.0, (clip.source_out_ms - clip.source_in_ms) / Math.max(1, clip.duration_ms))
     );
 
-    const aPad = `[a_sp_${++aStepCounter}]`;
-    filterChains.push(
-      buildSingleAudioTrackFilterChain({
-        inputIdx: inIdx,
-        outputPad: aPad,
-        srcInSec,
-        srcOutSec,
-        effectiveRate,
-        preservePitch: clip.playback.preserve_pitch,
-        sampleRate: asset.probe.sample_rate,
-        audioChain: clip.audio_chain,
-        envelopes: clip.envelopes,
-        postTrimDurationMs: clip.duration_ms,
-        timelineStartMs: clip.timeline_in_ms,
-        totalDurationSec,
-      })
-    );
-    audioMixPads.push(aPad);
+    appendAudioItemToPlan({
+      padPrefix: "a_sp",
+      absAssetPath,
+      assetDurationMs: asset.probe.duration_ms,
+      sampleRate: asset.probe.sample_rate,
+      srcInMs: clip.source_in_ms,
+      srcOutMs: clip.source_out_ms,
+      effectiveRate,
+      preservePitch: clip.playback.preserve_pitch,
+      audioChain: clip.audio_chain,
+      envelopes: clip.envelopes,
+      postTrimDurationMs: clip.duration_ms,
+      timelineStartMs: clip.timeline_in_ms,
+    });
   }
 
   for (const lane of overSpineLanes) {
@@ -380,7 +543,14 @@ export function compileSequenceAudioPlan(
 
   const finalAudioPad = "[aout]";
   const effectiveMaster = overrideMasterAudio !== undefined ? overrideMasterAudio : seq.stage.master_audio;
-  filterChains.push(buildMasterAudioFinalizeFilter(audioMixPads, finalAudioPad, effectiveMaster));
+  filterChains.push(
+    buildMasterAudioFinalizeFilter(
+      audioMixPads,
+      finalAudioPad,
+      effectiveMaster,
+      options?.applyMasterFinalize ?? true
+    )
+  );
 
   return {
     inputArgs,
@@ -672,16 +842,44 @@ export function compileSequenceRenderPlan(
   };
 
   // Input 0: Stage Backdrop Canvas (use microsecond AVTB so downstream overlays and -t trim never quantize to 1/fps)
+  const activeWin = compileOptions?.activeWindowMs;
+  const winStartMs = activeWin ? Math.max(0, activeWin[0]) : 0;
+  const winEndMs = activeWin ? Math.max(winStartMs + 1, activeWin[1]) : totalDurationMs;
+  // Align `winLeadStartSec` to a 3-frame multiple (0.1s at 30fps / 0.125s at 24fps) so `PTS + winLeadStartSec/TB`
+  // has zero 1-microsecond AVTB rounding drift relative to a 0-based timeline!
+  const winStartFrameApprox = Math.floor((winStartMs / 1000) * Math.max(1, fps) + 1e-6);
+  const leadAlignedFrame = activeWin
+    ? Math.max(0, Math.floor(Math.max(0, winStartFrameApprox - 2) / 3) * 3)
+    : 0;
+  const winLeadStartMs = activeWin ? (leadAlignedFrame * 1000) / Math.max(1, fps) : 0;
+  const winLeadStartSec = (winLeadStartMs / 1000).toFixed(6);
+  const winStartSec = (winStartMs / 1000).toFixed(6);
+  const winEndSec = (winEndMs / 1000).toFixed(6);
+  const winEndPadSec = ((winEndMs + 2000 / Math.max(1, fps)) / 1000).toFixed(6);
+  const bgDurationSec = activeWin
+    ? Number(
+        (
+          Math.max(1 / Math.max(1, fps), (winEndMs - winLeadStartMs) / 1000) +
+          3 / Math.max(1, fps)
+        ).toFixed(6)
+      )
+    : totalDurationSec;
+
   const bgHex = seq.stage.backdrop.color.replace(/^#/, "0x");
   const bgInputIdx = addInput([
     "-f",
     "lavfi",
     "-i",
-    `color=c=${bgHex}:s=${renderWidth}x${renderHeight}:r=${fps}:d=${totalDurationSec},settb=AVTB`,
+    `color=c=${bgHex}:s=${renderWidth}x${renderHeight}:r=${fps}:d=${bgDurationSec},settb=AVTB`,
   ]);
 
   let currentVideoPad = `[${bgInputIdx}:v]`;
   let vStepCounter = 0;
+  if (activeWin && winLeadStartMs > 0) {
+    const bgWinPad = `[vc_${++vStepCounter}]`;
+    filterChains.push(`${currentVideoPad}settb=AVTB,setpts=PTS+${winLeadStartSec}/TB${bgWinPad}`);
+    currentVideoPad = bgWinPad;
+  }
 
   const sortedLanes = [...seq.lanes].sort((a, b) => a.z_index - b.z_index);
   const underSpineLanes = sortedLanes.filter((l) => l.z_index < 0);
@@ -696,22 +894,35 @@ export function compileSequenceRenderPlan(
       : lane.cues;
 
     for (const cue of orderedCues) {
-      if (cue.typography && cue.typography.text.trim()) {
-        laneHasTypography = true;
-      }
-
       const cueStartMs = resolveCueStartMs(seq, cue);
       const cueEndMs = cueStartMs + cue.duration_ms;
       const cueStartSec = (cueStartMs / 1000).toFixed(3);
       const cueEndSec = (cueEndMs / 1000).toFixed(3);
+      const isCueInActiveWindow =
+        !activeWin || (cueEndMs > winStartMs - 1e-3 && cueStartMs < winEndMs + 1e-3);
+
+      if (cue.typography && cue.typography.text.trim()) {
+        drawnVisualLayers.push({
+          id: cue.id,
+          startMs: cueStartMs,
+          endMs: cueEndMs,
+          kind: "moving",
+        });
+        if (isCueInActiveWindow) {
+          laneHasTypography = true;
+        }
+      }
 
       // 2a. HyperFrames Composition Cue
       if (cue.kind === "composition" && cue.composition) {
-        if (compileOptions?.activeWindowMs) {
-          const [winStart, winEnd] = compileOptions.activeWindowMs;
-          if (cueEndMs <= winStart || cueStartMs > winEnd) {
-            continue;
-          }
+        if (!isCueInActiveWindow) {
+          drawnVisualLayers.push({
+            id: cue.id,
+            startMs: cueStartMs,
+            endMs: cueEndMs,
+            kind: "moving",
+          });
+          continue;
         }
         try {
           syncCompositionBridgeFiles(seq, cue, paths);
@@ -796,11 +1007,13 @@ export function compileSequenceRenderPlan(
                   renderWidth,
                   renderHeight,
                   fps,
-                  {
-                    inputArgs: [...inputArgs],
-                    filterChains: [...filterChains],
-                    videoPad: currentVideoPad,
-                  }
+                  inputArgs.length <= 48
+                    ? {
+                        inputArgs: [...inputArgs],
+                        filterChains: [...filterChains],
+                        videoPad: currentVideoPad,
+                      }
+                    : undefined
                 )
               : undefined;
 
@@ -911,6 +1124,13 @@ export function compileSequenceRenderPlan(
           `settb=AVTB`,
           `setpts=PTS-STARTPTS+${cueStartSec}/TB`
         );
+        if (
+          activeWin &&
+          compileOptions?.singleFrameAtMs === undefined &&
+          (cueStartMs < winLeadStartMs - 1e-3 || cueEndMs > winEndMs + 1e-3)
+        ) {
+          hfFilters.push(`trim=start=${winLeadStartSec}:end=${winEndPadSec}`);
+        }
 
         const hfPad = `[v_hf_${cue.id}]`;
         filterChains.push(`[${hfIdx}:v]${hfFilters.join(",")}${hfPad}`);
@@ -988,8 +1208,6 @@ export function compileSequenceRenderPlan(
             : srcInMs + Math.round(cue.duration_ms * cueRate);
         const requestedOut = cue.source_out_ms ?? maxOutByDuration;
         const srcOutMs = Math.min(maxSourceDurationMs(asset), requestedOut, maxOutByDuration);
-        const srcInSec = (srcInMs / 1000).toFixed(3);
-        const srcOutSec = (srcOutMs / 1000).toFixed(3);
 
         const isAudioOnlyKind =
           cue.kind === "music" || cue.kind === "sfx" || cue.kind === "voiceover";
@@ -1000,6 +1218,38 @@ export function compileSequenceRenderPlan(
           (cue.kind === "broll" || asset.kind === "graphic" || asset.kind === "footage")
         ) {
           const isStill = isStillGraphic(asset);
+          const layerKind: DrawnVisualLayer["kind"] =
+            isStill &&
+            cue.envelopes.length === 0 &&
+            Math.abs(cue.placement.rotation_deg) < 1e-3 &&
+            cue.placement.opacity >= 0.999
+              ? "still_graphic"
+              : "moving";
+          drawnVisualLayers.push({
+            id: cue.id,
+            startMs: cueStartMs,
+            endMs: cueEndMs,
+            kind: layerKind,
+          });
+          if (!isCueInActiveWindow) {
+            continue;
+          }
+
+          const allowCueSeek =
+            compileOptions?.singleFrameAtMs !== undefined ||
+            asset.probe.duration_ms >= 180_000 ||
+            seq.spine.clips.length > 24;
+          const cueSeek = isStill
+            ? null
+            : buildSeekableMediaInput(
+                absAssetPath,
+                srcInMs,
+                srcOutMs,
+                asset.probe.duration_ms,
+                allowCueSeek
+              );
+          const srcInSec = cueSeek ? cueSeek.localSrcInSec : (srcInMs / 1000).toFixed(3);
+          const srcOutSec = cueSeek ? cueSeek.localSrcOutSec : (srcOutMs / 1000).toFixed(3);
           const inIdx = isStill
             ? addInput([
                 "-loop",
@@ -1011,7 +1261,7 @@ export function compileSequenceRenderPlan(
                 "-i",
                 absAssetPath,
               ])
-            : addInput(["-i", absAssetPath]);
+            : addInput(cueSeek!.inputArgs);
 
           const cropWRatio = cue.placement.crop
             ? Math.max(0.05, 1 - (cue.placement.crop.left_pct + cue.placement.crop.right_pct) / 100)
@@ -1037,10 +1287,15 @@ export function compileSequenceRenderPlan(
             0.1,
             Math.max(0, cueDurSec - cueRawSrcSpanSec) + 3 / (cueSrcFps * cueRate) + 2 / fps
           ).toFixed(3);
+          const needsPreTrimEofPad =
+            !isStill &&
+            asset.probe.duration_ms > 0 &&
+            srcOutMs >= Math.max(0, asset.probe.duration_ms - 5000);
           const vFilters: string[] = isStill
             ? [`fps=${fps}:eof_action=pass`, `tpad=stop_mode=clone:stop_duration=${cueTailPadSec}`]
             : [
                 `settb=AVTB`,
+                ...(needsPreTrimEofPad ? [`tpad=stop_mode=clone:stop_duration=3.000`] : []),
                 `trim=start=${srcInSec}:end=${srcOutSec}`,
                 cueRate === 1.0
                   ? `setpts=PTS-STARTPTS`
@@ -1108,6 +1363,9 @@ export function compileSequenceRenderPlan(
             );
           }
           vFilters.push(`settb=AVTB`, `setpts=PTS-STARTPTS+${cueStartSec}/TB`);
+          if (activeWin && (cueStartMs < winLeadStartMs - 1e-3 || cueEndMs > winEndMs + 1e-3)) {
+            vFilters.push(`trim=start=${winLeadStartSec}:end=${winEndPadSec}`);
+          }
 
           const cuePad = `[v_cue_${cue.id}]`;
           filterChains.push(`[${inIdx}:v]${vFilters.join(",")}${cuePad}`);
@@ -1155,18 +1413,6 @@ export function compileSequenceRenderPlan(
             `${currentVideoPad}${cuePad}overlay=x='${xExpr}':y='${yExpr}':eval=frame:enable='between(t,${cueStartSec},${cueEndSec})':eof_action=pass${nextPad}`
           );
           currentVideoPad = nextPad;
-          drawnVisualLayers.push({
-            id: cue.id,
-            startMs: cueStartMs,
-            endMs: cueEndMs,
-            kind:
-              isStill &&
-              cue.envelopes.length === 0 &&
-              Math.abs(cue.placement.rotation_deg) < 1e-3 &&
-              cue.placement.opacity >= 0.999
-                ? "still_graphic"
-                : "moving",
-          });
         }
       }
     }
@@ -1191,17 +1437,6 @@ export function compileSequenceRenderPlan(
         const nextPad = `[vc_${++vStepCounter}]`;
         filterChains.push(`${currentVideoPad}ass=filename=${escapedAssPath}${nextPad}`);
         currentVideoPad = nextPad;
-        for (const tc of orderedCues) {
-          if (tc.typography && tc.typography.text.trim()) {
-            const st = resolveCueStartMs(seq, tc);
-            drawnVisualLayers.push({
-              id: tc.id,
-              startMs: st,
-              endMs: st + tc.duration_ms,
-              kind: "moving",
-            });
-          }
-        }
       }
     }
   };
@@ -1220,9 +1455,48 @@ export function compileSequenceRenderPlan(
     const asset = libMap.get(clip.asset_handle);
     if (!asset || !asset.probe.has_video) continue;
 
+    // If this clip has a cross-transition (`dissolve`, `wipe_left`, `wipe_right`, `slide_up`, `zoom_in`)
+    // into `clips[i+1]`, hold its final frame under `clips[i+1]` during the transition duration so there is ZERO dip to backdrop!
+    const hasNextClip = i < seq.spine.clips.length - 1;
+    const outTrans = clip.transition_out;
+    const holdTailMs =
+      hasNextClip && outTrans && outTrans.kind !== "fade" ? outTrans.duration_ms : 0;
+
+    const clipStartMs = clip.timeline_in_ms;
+    const clipEndMs = clip.timeline_in_ms + clip.duration_ms + holdTailMs;
+    const isStaticStillClip =
+      isStillGraphic(asset) &&
+      clip.envelopes.length === 0 &&
+      (!clip.transition_out || clip.transition_out.duration_ms <= 0) &&
+      (!incomingTransition || incomingTransition.duration_ms <= 0);
+    drawnVisualLayers.push({
+      id: clip.id,
+      startMs: clipStartMs,
+      endMs: clipEndMs,
+      kind: isStaticStillClip ? "still_graphic" : "moving",
+    });
+
+    if (activeWin && (clipEndMs <= winStartMs - 1e-3 || clipStartMs >= winEndMs + 1e-3)) {
+      continue;
+    }
+
     const absAssetPath = resolveLibraryItemPath(paths.rootDir, asset);
+    const isStill = isStillGraphic(asset);
+    const allowClipSeek =
+      compileOptions?.singleFrameAtMs !== undefined ||
+      asset.probe.duration_ms >= 180_000 ||
+      seq.spine.clips.length > 24;
+    const clipSeek = isStill
+      ? null
+      : buildSeekableMediaInput(
+          absAssetPath,
+          clip.source_in_ms,
+          clip.source_out_ms,
+          asset.probe.duration_ms,
+          allowClipSeek
+        );
     // A still image is a single frame: loop it so it covers the whole source range of the clip.
-    const inIdx = isStillGraphic(asset)
+    const inIdx = isStill
       ? addInput([
           "-loop",
           "1",
@@ -1233,20 +1507,12 @@ export function compileSequenceRenderPlan(
           "-i",
           absAssetPath,
         ])
-      : addInput(["-i", absAssetPath]);
+      : addInput(clipSeek!.inputArgs);
 
-    const srcInSec = (clip.source_in_ms / 1000).toFixed(3);
-    const srcOutSec = (clip.source_out_ms / 1000).toFixed(3);
+    const srcInSec = clipSeek ? clipSeek.localSrcInSec : (clip.source_in_ms / 1000).toFixed(3);
+    const srcOutSec = clipSeek ? clipSeek.localSrcOutSec : (clip.source_out_ms / 1000).toFixed(3);
     const tlInSec = (clip.timeline_in_ms / 1000).toFixed(3);
-
-    // If this clip has a cross-transition (`dissolve`, `wipe_left`, `wipe_right`, `slide_up`, `zoom_in`)
-    // into `clips[i+1]`, hold its final frame under `clips[i+1]` during the transition duration so there is ZERO dip to backdrop!
-    const hasNextClip = i < seq.spine.clips.length - 1;
-    const outTrans = clip.transition_out;
-    const holdTailMs =
-      hasNextClip && outTrans && outTrans.kind !== "fade" ? outTrans.duration_ms : 0;
-
-    const tlOutSec = ((clip.timeline_in_ms + clip.duration_ms + holdTailMs) / 1000).toFixed(3);
+    const tlOutSec = (clipEndMs / 1000).toFixed(3);
 
     // Compute effectiveRate from integrated `clip.duration_ms` so speed_ramp durations match exactly
     const effectiveRate = Math.max(
@@ -1267,8 +1533,13 @@ export function compileSequenceRenderPlan(
         Math.max(0, clipDurSec - scaledSrcSpanSec) + 3 / (srcFps * effectiveRate) + 2 / fps
       ).toFixed(3);
 
+      const needsPreTrimEofPad =
+        !isStill &&
+        asset.probe.duration_ms > 0 &&
+        clip.source_out_ms >= Math.max(0, asset.probe.duration_ms - 5000);
       const vFilters: string[] = [
         `settb=AVTB`,
+        ...(needsPreTrimEofPad ? [`tpad=stop_mode=clone:stop_duration=3.000`] : []),
         `trim=start=${srcInSec}:end=${srcOutSec}`,
         `setpts=(PTS-STARTPTS)/${effectiveRate.toFixed(4)}`,
         `fps=${fps}:eof_action=pass`,
@@ -1420,6 +1691,9 @@ export function compileSequenceRenderPlan(
       }
 
       vFilters.push(`settb=AVTB`, `setpts=PTS+${tlInSec}/TB`);
+      if (activeWin && (clipStartMs < winLeadStartMs - 1e-3 || clipEndMs > winEndMs + 1e-3)) {
+        vFilters.push(`trim=start=${winLeadStartSec}:end=${winEndPadSec}`);
+      }
 
       const clipPad = `[v_sp_${i}]`;
       filterChains.push(`[${inIdx}:v]${vFilters.join(",")}${clipPad}`);
@@ -1481,17 +1755,6 @@ export function compileSequenceRenderPlan(
         `${currentVideoPad}${clipPad}overlay=x='${xExpr}':y='${yExpr}':eval=frame:enable='between(t,${tlInSec},${tlOutSec})':eof_action=pass${nextPad}`
       );
       currentVideoPad = nextPad;
-      const isStaticStillClip =
-        isStillGraphic(asset) &&
-        clip.envelopes.length === 0 &&
-        (!clip.transition_out || clip.transition_out.duration_ms <= 0) &&
-        (!incomingTransition || incomingTransition.duration_ms <= 0);
-      drawnVisualLayers.push({
-        id: clip.id,
-        startMs: clip.timeline_in_ms,
-        endMs: clip.timeline_in_ms + clip.duration_ms + holdTailMs,
-        kind: isStaticStillClip ? "still_graphic" : "moving",
-      });
     }
   }
 
@@ -1528,21 +1791,34 @@ export function compileSequenceRenderPlan(
 
   // Finalize Video Output Pad (preserve AVTB so FFmpeg -t duration trim does not round down to 1/fps)
   const finalVideoPad = "[vout]";
-  filterChains.push(`${currentVideoPad}format=yuv420p,settb=AVTB${finalVideoPad}`);
+  if (activeWin && compileOptions?.singleFrameAtMs === undefined) {
+    filterChains.push(
+      `${currentVideoPad}trim=start=${winStartSec}:end=${winEndSec},setpts=PTS-STARTPTS,format=yuv420p,settb=AVTB${finalVideoPad}`
+    );
+  } else {
+    filterChains.push(`${currentVideoPad}format=yuv420p,settb=AVTB${finalVideoPad}`);
+  }
 
   // --- 3. Compile Audio Graph via the single shared `compileSequenceAudioPlan` ---
-  const audioPlan = compileSequenceAudioPlan(seq, paths, seq.stage.master_audio, {
-    inputIndexOffset: nextInputIdx,
-    minDurationMs: compileOptions?.minDurationMs,
-  });
-  inputArgs.push(...audioPlan.inputArgs);
-  filterChains.push(audioPlan.filterComplex);
+  const shouldIncludeAudio =
+    compileOptions?.includeAudio !== false && compileOptions?.singleFrameAtMs === undefined;
+  let audioOutPad = "[aout]";
+  if (shouldIncludeAudio) {
+    const audioPlan = compileSequenceAudioPlan(seq, paths, seq.stage.master_audio, {
+      inputIndexOffset: nextInputIdx,
+      minDurationMs: compileOptions?.minDurationMs,
+      activeWindowMs: compileOptions?.activeWindowMs,
+    });
+    inputArgs.push(...audioPlan.inputArgs);
+    filterChains.push(audioPlan.filterComplex);
+    audioOutPad = audioPlan.audioOutPad;
+  }
 
   return {
     inputArgs,
     filterComplex: ["sws_flags=accurate_rnd+full_chroma_int", ...filterChains].join(";"),
     videoOutPad: finalVideoPad,
-    audioOutPad: audioPlan.audioOutPad,
+    audioOutPad,
     totalDurationMs,
     renderWidth,
     renderHeight,

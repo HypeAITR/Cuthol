@@ -29,8 +29,14 @@ import {
   renderHyperFramesBatchFramesPng,
   shouldUseNvencForRender,
 } from "../compositor/hyperframes_bridge.js";
-import { CutholDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
-import { resolveHyperFramesWorkers } from "../core/env.js";
+import {
+  createSubprocessFailureDiagnostic,
+  CutholDiagnostic,
+  CutholError,
+  DIAGNOSTICS,
+  estimateCommandLineLength,
+} from "../core/diagnostics.js";
+import { resolveHyperFramesWorkers, resolveMaxClipsPerRenderSegment } from "../core/env.js";
 import { CutholSequence } from "../core/schema.js";
 import { loadSequence, WorkspacePaths } from "../core/workspace.js";
 import { evaluateRgb24FrameBlankness } from "../monitor/preview.js";
@@ -357,6 +363,367 @@ function buildVideoCodecArgs(
   ];
 }
 
+export interface RenderTimeSegment {
+  index: number;
+  startFrame: number;
+  endFrame: number;
+  frameCount: number;
+  startMs: number;
+  endMs: number;
+}
+
+export function computeRenderTimeSegments(
+  seq: CutholSequence,
+  totalDurationMs: number,
+  maxItemsPerSegment = resolveMaxClipsPerRenderSegment()
+): RenderTimeSegment[] {
+  const fps = Math.max(1, seq.stage.fps);
+  const totalFrames = Math.max(1, Math.ceil((totalDurationMs / 1000) * fps - 1e-6));
+
+  const itemIntervalsMs: Array<[number, number]> = [];
+  for (let i = 0; i < seq.spine.clips.length; i++) {
+    const c = seq.spine.clips[i];
+    const hasNext = i < seq.spine.clips.length - 1;
+    const holdTail =
+      hasNext && c.transition_out && c.transition_out.kind !== "fade"
+        ? c.transition_out.duration_ms
+        : 0;
+    itemIntervalsMs.push([c.timeline_in_ms, c.timeline_in_ms + c.duration_ms + holdTail]);
+  }
+  for (const lane of seq.lanes) {
+    if (lane.muted) continue;
+    for (const cue of lane.cues) {
+      if (!cue.asset_handle && cue.kind !== "composition") continue;
+      const st = resolveCueStartMs(seq, cue);
+      itemIntervalsMs.push([st, st + cue.duration_ms]);
+    }
+  }
+
+  const countOverlappingItems = (winStartMs: number, winEndMs: number): number => {
+    let count = 0;
+    for (const [st, en] of itemIntervalsMs) {
+      if (en > winStartMs + 1e-3 && st < winEndMs - 1e-3) count++;
+    }
+    return count;
+  };
+
+  if (
+    seq.spine.clips.length <= maxItemsPerSegment &&
+    itemIntervalsMs.length <= maxItemsPerSegment * 2
+  ) {
+    return [
+      {
+        index: 0,
+        startFrame: 0,
+        endFrame: totalFrames,
+        frameCount: totalFrames,
+        startMs: 0,
+        endMs: (totalFrames * 1000) / fps,
+      },
+    ];
+  }
+
+  const boundaryFramesSet = new Set<number>([0, totalFrames]);
+  for (const c of seq.spine.clips) {
+    const f = Math.max(0, Math.min(totalFrames, Math.round((c.timeline_in_ms / 1000) * fps)));
+    boundaryFramesSet.add(f);
+  }
+  for (const [st] of itemIntervalsMs) {
+    const f = Math.max(0, Math.min(totalFrames, Math.round((st / 1000) * fps)));
+    boundaryFramesSet.add(f);
+  }
+  const sortedCandidates = [...boundaryFramesSet].sort((a, b) => a - b);
+
+  const segments: RenderTimeSegment[] = [];
+  let curStartFrame = 0;
+
+  while (curStartFrame < totalFrames) {
+    const curStartMs = (curStartFrame * 1000) / fps;
+    let chosenEndFrame = curStartFrame;
+
+    for (const candFrame of sortedCandidates) {
+      if (candFrame <= curStartFrame) continue;
+      const candEndMs = (candFrame * 1000) / fps;
+      const spineInWin = seq.spine.clips.filter(
+        (c) =>
+          c.timeline_in_ms + c.duration_ms > curStartMs - 1e-3 &&
+          c.timeline_in_ms < candEndMs + 1e-3
+      ).length;
+      const totalInWin = countOverlappingItems(curStartMs - 1e-3, candEndMs + 1e-3);
+
+      if (
+        chosenEndFrame > curStartFrame &&
+        (spineInWin > maxItemsPerSegment || totalInWin > maxItemsPerSegment * 2)
+      ) {
+        break;
+      }
+      chosenEndFrame = candFrame;
+      if (spineInWin >= maxItemsPerSegment || totalInWin >= maxItemsPerSegment * 2) {
+        break;
+      }
+    }
+
+    if (chosenEndFrame <= curStartFrame) {
+      chosenEndFrame = Math.min(totalFrames, curStartFrame + Math.max(1, fps * 10));
+    }
+
+    segments.push({
+      index: segments.length,
+      startFrame: curStartFrame,
+      endFrame: chosenEndFrame,
+      frameCount: chosenEndFrame - curStartFrame,
+      startMs: (curStartFrame * 1000) / fps,
+      endMs: (chosenEndFrame * 1000) / fps,
+    });
+    curStartFrame = chosenEndFrame;
+  }
+
+  return segments;
+}
+
+function escapeConcatFilePath(filePath: string): string {
+  return filePath.replace(/\\/g, "/").replace(/'/g, "'\\''");
+}
+
+function buildMasterAudioPostConcatFilter(
+  inputPad: string,
+  outputPad: string,
+  masterAudio?: CutholSequence["stage"]["master_audio"]
+): string {
+  const masterGainDb = masterAudio?.gain_db ?? 0;
+  const gainStage = Math.abs(masterGainDb) > 0.01 ? `volume=${masterGainDb.toFixed(2)}dB,` : "";
+  const limiterLimit = masterAudio
+    ? Math.max(
+        0.1,
+        Math.min(0.98, Math.pow(10, Math.min(-0.1, masterAudio.true_peak_ceiling_dbtp - 0.55) / 20))
+      ).toFixed(4)
+    : "0.891";
+  return `${inputPad}aformat=sample_rates=48000:channel_layouts=stereo,${gainStage}alimiter=limit=${limiterLimit}:level=disabled${outputPad}`;
+}
+
+export interface SegmentedAudioBuildResult {
+  mode: "direct_plan" | "concat_wav";
+  directPlan?: CompiledAudioPlan;
+  concatListPath?: string;
+  masterFilterComplex?: string;
+  audioOutPad: string;
+  totalDurationMs: number;
+  hasActiveAudio: boolean;
+  maxInputsInAnyCall: number;
+  maxCommandLengthChars: number;
+}
+
+export function buildOrRenderSequenceAudioForMixOrRender(
+  seq: CutholSequence,
+  paths: WorkspacePaths,
+  masterAudio: CutholSequence["stage"]["master_audio"] | undefined,
+  options?: {
+    minDurationMs?: number;
+    maxItemsPerSegment?: number;
+    inputIndexOffset?: number;
+  }
+): SegmentedAudioBuildResult {
+  const maxItems = options?.maxItemsPerSegment ?? resolveMaxClipsPerRenderSegment();
+  const totalDurationMs = computeRenderDurationMs(seq, options?.minDurationMs ?? 0);
+  const segments = computeRenderTimeSegments(seq, totalDurationMs, maxItems);
+
+  if (segments.length <= 1) {
+    const directPlan = compileSequenceAudioPlan(seq, paths, masterAudio, {
+      inputIndexOffset: options?.inputIndexOffset ?? 0,
+      minDurationMs: options?.minDurationMs,
+    });
+    const inputCount = directPlan.inputArgs.filter((a) => a === "-i").length;
+    if (inputCount <= maxItems * 2 + 2) {
+      const cmdLen = estimateCommandLineLength("ffmpeg", [
+        ...directPlan.inputArgs,
+        "-/filter_complex",
+        "filter.txt",
+      ]);
+      return {
+        mode: "direct_plan",
+        directPlan,
+        audioOutPad: directPlan.audioOutPad,
+        totalDurationMs: directPlan.totalDurationMs,
+        hasActiveAudio: directPlan.hasActiveAudio,
+        maxInputsInAnyCall: inputCount,
+        maxCommandLengthChars: cmdLen,
+      };
+    }
+  }
+
+  fs.mkdirSync(paths.blobsDir, { recursive: true });
+  const libDigests = seq.library.map((x) => `${x.handle}:${x.digest_sha256}`);
+
+  interface AudioSegTask {
+    seg: RenderTimeSegment;
+    segSamples: number;
+    wavPath: string;
+    tmpWavPath: string;
+    filterPath: string;
+    ffArgs: string[];
+    inputCount: number;
+    cmdLen: number;
+    hasActiveAudio: boolean;
+    needsEncode: boolean;
+  }
+
+  const tasks: AudioSegTask[] = [];
+  let anyActiveAudio = false;
+  let maxInputsInAnyCall = 1;
+  let maxCommandLengthChars = 0;
+
+  for (const seg of segments) {
+    const startSample = Math.round((seg.startMs / 1000) * 48000);
+    const endSample = Math.round((seg.endMs / 1000) * 48000);
+    const segSamples = Math.max(1, endSample - startSample);
+
+    const segPlan = compileSequenceAudioPlan(seq, paths, undefined, {
+      activeWindowMs: [seg.startMs, seg.endMs],
+      applyMasterFinalize: false,
+    });
+    if (segPlan.hasActiveAudio) anyActiveAudio = true;
+
+    const segFilter = `${segPlan.filterComplex};${segPlan.audioOutPad}aresample=48000,atrim=start_sample=0:end_sample=${segSamples},asetpts=PTS-STARTPTS[aseg_out]`;
+    const segHash = crypto
+      .createHash("sha256")
+      .update(
+        JSON.stringify({
+          libDigests,
+          segSamples,
+          inputArgs: segPlan.inputArgs,
+          segFilter,
+        })
+      )
+      .digest("hex")
+      .slice(0, 16);
+
+    const wavPath = path.join(paths.blobsDir, `aseg_${segHash}.wav`);
+    const tmpWavPath = `${wavPath}.${process.pid}.${seg.index}.tmp.wav`;
+    const filterPath = `${wavPath}.${process.pid}.${seg.index}.filter.txt`;
+    const ffArgs = [
+      "-y",
+      "-v",
+      "error",
+      ...segPlan.inputArgs,
+      "-/filter_complex",
+      filterPath,
+      "-map",
+      "[aseg_out]",
+      "-c:a",
+      "pcm_f32le",
+      "-ar",
+      "48000",
+      "-ac",
+      "2",
+      tmpWavPath,
+    ];
+    const inputCount = segPlan.inputArgs.filter((a) => a === "-i").length;
+    const cmdLen = estimateCommandLineLength("ffmpeg", ffArgs);
+    if (inputCount > maxInputsInAnyCall) maxInputsInAnyCall = inputCount;
+    if (cmdLen > maxCommandLengthChars) maxCommandLengthChars = cmdLen;
+
+    const cached = fs.existsSync(wavPath) && fs.statSync(wavPath).size > 44;
+    tasks.push({
+      seg,
+      segSamples,
+      wavPath,
+      tmpWavPath,
+      filterPath,
+      ffArgs,
+      inputCount,
+      cmdLen,
+      hasActiveAudio: segPlan.hasActiveAudio,
+      needsEncode: !cached,
+    });
+  }
+
+  const pending = tasks.filter((t) => t.needsEncode);
+  if (pending.length > 0) {
+    for (const t of pending) {
+      fs.writeFileSync(t.filterPath, (() => {
+        const segPlan = compileSequenceAudioPlan(seq, paths, undefined, {
+          activeWindowMs: [t.seg.startMs, t.seg.endMs],
+          applyMasterFinalize: false,
+        });
+        return `${segPlan.filterComplex};${segPlan.audioOutPad}aresample=48000,atrim=start_sample=0:end_sample=${t.segSamples},asetpts=PTS-STARTPTS[aseg_out]`;
+      })(), "utf8");
+    }
+    try {
+      const jobs: ParallelFfmpegJob[] = pending.map((t) => ({
+        args: t.ffArgs,
+        cwd: paths.rootDir,
+      }));
+      const results = runParallelFfmpegJobsSync(
+        jobs,
+        pending.map(() => 16 * 1024 * 1024),
+        Math.max(2, Math.min(os.cpus().length, 6))
+      );
+      for (let i = 0; i < pending.length; i++) {
+        const t = pending[i];
+        const r = results[i];
+        if (!r || r.status !== 0 || r.error || !fs.existsSync(t.tmpWavPath)) {
+          if (fs.existsSync(t.tmpWavPath)) {
+            try {
+              fs.unlinkSync(t.tmpWavPath);
+            } catch {
+              // ignore
+            }
+          }
+          throw new CutholError(
+            createSubprocessFailureDiagnostic({
+              tool: "ffmpeg audio segment",
+              executable: "ffmpeg",
+              args: t.ffArgs,
+              proc: {
+                status: r?.status ?? null,
+                error: r?.error,
+                stderr: r?.stderr ?? "",
+              },
+              clipCount: seq.spine.clips.length,
+              fallbackDetail: `audio segment #${t.seg.index} failed`,
+            })
+          );
+        }
+        fs.renameSync(t.tmpWavPath, t.wavPath);
+      }
+    } finally {
+      for (const t of pending) {
+        if (fs.existsSync(t.filterPath)) {
+          try {
+            fs.unlinkSync(t.filterPath);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+  }
+
+  const concatLines = tasks.map((t) => `file '${escapeConcatFilePath(t.wavPath)}'`).join("\n") + "\n";
+  const concatHash = crypto.createHash("sha256").update(concatLines).digest("hex").slice(0, 14);
+  const concatListPath = path.join(paths.blobsDir, `aconcat_${concatHash}.txt`);
+  fs.writeFileSync(concatListPath, concatLines, "utf8");
+
+  const inIdx = options?.inputIndexOffset ?? 0;
+  const audioOutPad = "[aout]";
+  const masterFilterComplex = buildMasterAudioPostConcatFilter(
+    `[${inIdx}:a]`,
+    audioOutPad,
+    masterAudio
+  );
+
+  return {
+    mode: "concat_wav",
+    concatListPath,
+    masterFilterComplex,
+    audioOutPad,
+    totalDurationMs,
+    hasActiveAudio: anyActiveAudio,
+    maxInputsInAnyCall,
+    maxCommandLengthChars,
+  };
+}
+
 export function renderSequenceToMp4(options: {
   workspaceDir: string;
   outputPath?: string;
@@ -386,13 +753,6 @@ export function renderSequenceToMp4(options: {
     ? { from: "h264_nvenc", to: "libx264", reason: nvencDecision.fallbackReason }
     : null;
 
-  const tCompile0 = Date.now();
-  // A composition that cannot be rendered throws CUTHOL-G503 from the compiler; nothing is substituted.
-  // NVENC is used for Cuthol's own composite encode only; HyperFrames encodes overlays on the CPU
-  // (its GPU encode is not faster here and its rate control cannot be set from outside).
-  const plan = compileSequenceRenderPlan(sequence, paths, preset, { workers });
-  const compileAndOverlaysMs = Date.now() - tCompile0;
-
   const defaultOut = path.join(paths.rootDir, "output", `render_r${sequence.meta.revision}_${preset}.mp4`);
   const resolvedOut = options.outputPath
     ? path.isAbsolute(options.outputPath)
@@ -401,63 +761,132 @@ export function renderSequenceToMp4(options: {
     : defaultOut;
 
   fs.mkdirSync(path.dirname(resolvedOut), { recursive: true });
+  fs.mkdirSync(paths.blobsDir, { recursive: true });
   const tmpOut = `${resolvedOut}.${process.pid}.${Date.now()}.tmp.mp4`;
 
-  let canRemuxDirectBlob = false;
-  let directBlobAudioPlan: CompiledAudioPlan | null = null;
-  if (plan.directVideoBlobPath && fs.existsSync(plan.directVideoBlobPath)) {
-    let blobEncoder: "h264_nvenc" | "libx264" | null = null;
-    let blobFallbackReason: string | null = null;
-    const metaPath = `${plan.directVideoBlobPath}.meta.json`;
-    if (fs.existsSync(metaPath)) {
-      try {
-        const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
-        if (meta.encoder === "h264_nvenc" || meta.encoder === "libx264") {
-          blobEncoder = meta.encoder;
+  const totalDurationMs = computeRenderDurationMs(sequence);
+  const maxItemsPerSegment = resolveMaxClipsPerRenderSegment();
+  const segments = computeRenderTimeSegments(sequence, totalDurationMs, maxItemsPerSegment);
+
+  let compileAndOverlaysMs = 0;
+  let encodeMs = 0;
+  let singleStageUsed = false;
+  let renderWidth = 0;
+  let renderHeight = 0;
+  let fps = sequence.stage.fps;
+
+  if (segments.length <= 1) {
+    const tCompile0 = Date.now();
+    // A composition that cannot be rendered throws CUTHOL-G503 from the compiler; nothing is substituted.
+    // NVENC is used for Cuthol's own composite encode only; HyperFrames encodes overlays on the CPU
+    // (its GPU encode is not faster here and its rate control cannot be set from outside).
+    const plan = compileSequenceRenderPlan(sequence, paths, preset, { workers });
+    compileAndOverlaysMs = Date.now() - tCompile0;
+    renderWidth = plan.renderWidth;
+    renderHeight = plan.renderHeight;
+    fps = plan.fps;
+
+    let canRemuxDirectBlob = false;
+    let directBlobAudioBuild: SegmentedAudioBuildResult | null = null;
+    if (plan.directVideoBlobPath && fs.existsSync(plan.directVideoBlobPath)) {
+      let blobEncoder: "h264_nvenc" | "libx264" | null = null;
+      let blobFallbackReason: string | null = null;
+      const metaPath = `${plan.directVideoBlobPath}.meta.json`;
+      if (fs.existsSync(metaPath)) {
+        try {
+          const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+          if (meta.encoder === "h264_nvenc" || meta.encoder === "libx264") {
+            blobEncoder = meta.encoder;
+          }
+          if (typeof meta.gpu_fallback_reason === "string" && meta.gpu_fallback_reason) {
+            blobFallbackReason = meta.gpu_fallback_reason;
+          }
+        } catch {
+          // ignore metadata parse error
         }
-        if (typeof meta.gpu_fallback_reason === "string" && meta.gpu_fallback_reason) {
-          blobFallbackReason = meta.gpu_fallback_reason;
-        }
-      } catch {
-        // ignore metadata parse error
+      }
+      if (blobFallbackReason && activeEncoder === "h264_nvenc") {
+        activeEncoder = "libx264";
+        encoderFallback = { from: "h264_nvenc", to: "libx264", reason: blobFallbackReason };
+      }
+      directBlobAudioBuild = buildOrRenderSequenceAudioForMixOrRender(
+        sequence,
+        paths,
+        sequence.stage.master_audio,
+        { inputIndexOffset: 1, maxItemsPerSegment }
+      );
+      // The overlay blob already holds the final picture: copy its stream and report the encoder that made it.
+      canRemuxDirectBlob = true;
+      if (blobEncoder && blobEncoder !== activeEncoder) {
+        activeEncoder = blobEncoder;
+        encoderFallback = null;
       }
     }
-    if (blobFallbackReason && activeEncoder === "h264_nvenc") {
-      activeEncoder = "libx264";
-      encoderFallback = { from: "h264_nvenc", to: "libx264", reason: blobFallbackReason };
-    }
-    directBlobAudioPlan = compileSequenceAudioPlan(sequence, paths, sequence.stage.master_audio, {
-      inputIndexOffset: 1,
-    });
-    // The overlay blob already holds the final picture: copy its stream and report the encoder that made it.
-    canRemuxDirectBlob = true;
-    if (blobEncoder && blobEncoder !== activeEncoder) {
-      activeEncoder = blobEncoder;
-      encoderFallback = null;
-    }
-  }
 
-  const buildRenderFfmpegArgs = (
-    encoder: "h264_nvenc" | "libx264",
-    useStreamCopy: boolean
-  ): string[] => {
-    if (plan.directVideoBlobPath && directBlobAudioPlan) {
+    const filterScriptPath = `${tmpOut}.filter.txt`;
+    const buildRenderFfmpegArgs = (
+      encoder: "h264_nvenc" | "libx264",
+      useStreamCopy: boolean
+    ): string[] => {
+      if (plan.directVideoBlobPath && directBlobAudioBuild) {
+        const audioInputArgs =
+          directBlobAudioBuild.mode === "direct_plan"
+            ? directBlobAudioBuild.directPlan!.inputArgs
+            : ["-f", "concat", "-safe", "0", "-i", directBlobAudioBuild.concatListPath!];
+        const audioFilter =
+          directBlobAudioBuild.mode === "direct_plan"
+            ? directBlobAudioBuild.directPlan!.filterComplex
+            : directBlobAudioBuild.masterFilterComplex!;
+        const useScript = audioFilter.length > 4000;
+        if (useScript) {
+          fs.writeFileSync(filterScriptPath, audioFilter, "utf8");
+        }
+        return [
+          "-y",
+          "-v",
+          "error",
+          "-i",
+          plan.directVideoBlobPath,
+          ...audioInputArgs,
+          ...(useScript ? ["-/filter_complex", filterScriptPath] : ["-filter_complex", audioFilter]),
+          "-map",
+          "0:v:0",
+          "-map",
+          directBlobAudioBuild.audioOutPad,
+          "-t",
+          (plan.totalDurationMs / 1000).toFixed(3),
+          ...(useStreamCopy ? ["-c:v", "copy"] : buildVideoCodecArgs(encoder, preset)),
+          "-c:a",
+          "aac",
+          "-b:a",
+          "192k",
+          "-movflags",
+          "+faststart",
+          tmpOut,
+        ];
+      }
+
+      const useScript =
+        plan.filterComplex.length > 4000 ||
+        estimateCommandLineLength("ffmpeg", plan.inputArgs) + plan.filterComplex.length > 12000;
+      if (useScript) {
+        fs.writeFileSync(filterScriptPath, plan.filterComplex, "utf8");
+      }
       return [
         "-y",
         "-v",
         "error",
-        "-i",
-        plan.directVideoBlobPath,
-        ...directBlobAudioPlan.inputArgs,
-        "-filter_complex",
-        directBlobAudioPlan.filterComplex,
+        ...plan.inputArgs,
+        ...(useScript
+          ? ["-/filter_complex", filterScriptPath]
+          : ["-filter_complex", plan.filterComplex]),
         "-map",
-        "0:v:0",
+        plan.videoOutPad,
         "-map",
-        directBlobAudioPlan.audioOutPad,
+        plan.audioOutPad,
         "-t",
         (plan.totalDurationMs / 1000).toFixed(3),
-        ...(useStreamCopy ? ["-c:v", "copy"] : buildVideoCodecArgs(encoder, preset)),
+        ...buildVideoCodecArgs(encoder, preset),
         "-c:a",
         "aac",
         "-b:a",
@@ -466,22 +895,327 @@ export function renderSequenceToMp4(options: {
         "+faststart",
         tmpOut,
       ];
+    };
+
+    const tEncode0 = Date.now();
+    singleStageUsed = canRemuxDirectBlob;
+    let ffArgs: string[] = buildRenderFfmpegArgs(activeEncoder, singleStageUsed);
+
+    try {
+      const proc = spawnSync("ffmpeg", ffArgs, {
+        cwd: paths.rootDir,
+        encoding: "utf8",
+        // No wall-clock limit: a full render scales with sequence length (long videos take hours).
+        maxBuffer: 256 * 1024 * 1024,
+      });
+
+      let finalProc = proc;
+      if (
+        (finalProc.status !== 0 || finalProc.error || !fs.existsSync(tmpOut)) &&
+        !finalProc.error &&
+        (activeEncoder === "h264_nvenc" || singleStageUsed)
+      ) {
+        if (fs.existsSync(tmpOut)) {
+          try {
+            fs.unlinkSync(tmpOut);
+          } catch {
+            // ignore
+          }
+        }
+        const errDetail = (finalProc.stderr || finalProc.stdout || "NVENC encode failed")
+          .trim()
+          .slice(-240);
+        if (activeEncoder === "h264_nvenc") {
+          activeEncoder = "libx264";
+          encoderFallback = {
+            from: "h264_nvenc",
+            to: "libx264",
+            reason: `h264_nvenc failed at encode time (${errDetail}); fell back to libx264`,
+          };
+        }
+        singleStageUsed = false;
+        ffArgs = buildRenderFfmpegArgs("libx264", false);
+        finalProc = spawnSync("ffmpeg", ffArgs, {
+          cwd: paths.rootDir,
+          encoding: "utf8",
+          maxBuffer: 256 * 1024 * 1024,
+        });
+      }
+      encodeMs = Date.now() - tEncode0;
+
+      if (finalProc.status !== 0 || finalProc.error || !fs.existsSync(tmpOut)) {
+        if (fs.existsSync(tmpOut)) {
+          try {
+            fs.unlinkSync(tmpOut);
+          } catch {
+            // ignore cleanup error
+          }
+        }
+        throw new CutholError(
+          createSubprocessFailureDiagnostic({
+            tool: "ffmpeg render",
+            executable: "ffmpeg",
+            args: ffArgs,
+            proc: finalProc,
+            clipCount: sequence.spine.clips.length,
+            fallbackDetail: "render failed",
+          })
+        );
+      }
+    } finally {
+      if (fs.existsSync(filterScriptPath)) {
+        try {
+          fs.unlinkSync(filterScriptPath);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  } else {
+    // Multi-segment compilation and concatenation path for long timelines (hundreds or thousands of clips).
+    const tCompile0 = Date.now();
+    const segmentVideoPlans: Array<{
+      seg: RenderTimeSegment;
+      plan: CompiledRenderPlan;
+    }> = [];
+    for (const seg of segments) {
+      const segPlan = compileSequenceRenderPlan(sequence, paths, preset, {
+        activeWindowMs: [seg.startMs, seg.endMs],
+        includeAudio: false,
+        workers,
+      });
+      renderWidth = segPlan.renderWidth;
+      renderHeight = segPlan.renderHeight;
+      fps = segPlan.fps;
+      segmentVideoPlans.push({ seg, plan: segPlan });
+    }
+    compileAndOverlaysMs = Date.now() - tCompile0;
+
+    const tEncode0 = Date.now();
+    const libDigests = sequence.library.map((x) => `${x.handle}:${x.digest_sha256}`);
+
+    const encodeVideoSegmentsWithEncoder = (
+      encoder: "h264_nvenc" | "libx264"
+    ): { ok: boolean; segMp4Paths: string[]; firstFailure?: ParallelFfmpegJobResult; failedArgs?: string[] } => {
+      interface VideoSegTask {
+        seg: RenderTimeSegment;
+        plan: CompiledRenderPlan;
+        mp4Path: string;
+        tmpMp4Path: string;
+        filterPath: string;
+        ffArgs: string[];
+        needsEncode: boolean;
+      }
+
+      const vTasks: VideoSegTask[] = segmentVideoPlans.map(({ seg, plan: segPlan }) => {
+        const vHash = crypto
+          .createHash("sha256")
+          .update(
+            JSON.stringify({
+              libDigests,
+              preset,
+              encoder,
+              w: segPlan.renderWidth,
+              h: segPlan.renderHeight,
+              fps: segPlan.fps,
+              frameCount: seg.frameCount,
+              inputArgs: segPlan.inputArgs,
+              filterComplex: segPlan.filterComplex,
+            })
+          )
+          .digest("hex")
+          .slice(0, 16);
+
+        const mp4Path = path.join(paths.blobsDir, `vseg_${vHash}.mp4`);
+        const tmpMp4Path = `${mp4Path}.${process.pid}.${seg.index}.tmp.mp4`;
+        const filterPath = `${mp4Path}.${process.pid}.${seg.index}.filter.txt`;
+        const ffArgs = [
+          "-y",
+          "-v",
+          "error",
+          ...segPlan.inputArgs,
+          "-/filter_complex",
+          filterPath,
+          "-map",
+          segPlan.videoOutPad,
+          "-frames:v",
+          String(seg.frameCount),
+          "-r",
+          String(segPlan.fps),
+          "-fps_mode",
+          "cfr",
+          "-an",
+          ...buildVideoCodecArgs(encoder, preset),
+          "-colorspace",
+          "bt709",
+          "-color_primaries",
+          "bt709",
+          "-color_trc",
+          "bt709",
+          "-color_range",
+          "tv",
+          tmpMp4Path,
+        ];
+        const cached = fs.existsSync(mp4Path) && fs.statSync(mp4Path).size > 500;
+        return {
+          seg,
+          plan: segPlan,
+          mp4Path,
+          tmpMp4Path,
+          filterPath,
+          ffArgs,
+          needsEncode: !cached,
+        };
+      });
+
+      const pending = vTasks.filter((t) => t.needsEncode);
+      if (pending.length > 0) {
+        for (const t of pending) {
+          fs.writeFileSync(t.filterPath, t.plan.filterComplex, "utf8");
+        }
+        try {
+          const concurrency =
+            encoder === "h264_nvenc" ? 2 : Math.max(2, Math.min(os.cpus().length, 6));
+          const jobs: ParallelFfmpegJob[] = pending.map((t) => ({
+            args: t.ffArgs,
+            cwd: paths.rootDir,
+          }));
+          const results = runParallelFfmpegJobsSync(
+            jobs,
+            pending.map(() => 32 * 1024 * 1024),
+            concurrency
+          );
+          for (let i = 0; i < pending.length; i++) {
+            const t = pending[i];
+            const r = results[i];
+            if (!r || r.status !== 0 || r.error || !fs.existsSync(t.tmpMp4Path)) {
+              for (const p of pending) {
+                if (fs.existsSync(p.tmpMp4Path)) {
+                  try {
+                    fs.unlinkSync(p.tmpMp4Path);
+                  } catch {
+                    // ignore
+                  }
+                }
+              }
+              return {
+                ok: false,
+                segMp4Paths: [],
+                firstFailure: r,
+                failedArgs: t.ffArgs,
+              };
+            }
+            fs.renameSync(t.tmpMp4Path, t.mp4Path);
+          }
+        } finally {
+          for (const t of pending) {
+            if (fs.existsSync(t.filterPath)) {
+              try {
+                fs.unlinkSync(t.filterPath);
+              } catch {
+                // ignore
+              }
+            }
+          }
+        }
+      }
+
+      return {
+        ok: true,
+        segMp4Paths: vTasks.map((t) => t.mp4Path),
+      };
+    };
+
+    let vSegResult = encodeVideoSegmentsWithEncoder(activeEncoder);
+    if (!vSegResult.ok && activeEncoder === "h264_nvenc" && !vSegResult.firstFailure?.error) {
+      const errDetail = (vSegResult.firstFailure?.stderr || "NVENC segment encode failed")
+        .trim()
+        .slice(-240);
+      activeEncoder = "libx264";
+      encoderFallback = {
+        from: "h264_nvenc",
+        to: "libx264",
+        reason: `h264_nvenc failed at encode time (${errDetail}); fell back to libx264`,
+      };
+      vSegResult = encodeVideoSegmentsWithEncoder("libx264");
     }
 
-    return [
+    if (!vSegResult.ok) {
+      throw new CutholError(
+        createSubprocessFailureDiagnostic({
+          tool: "ffmpeg render segment",
+          executable: "ffmpeg",
+          args: vSegResult.failedArgs ?? [],
+          proc: {
+            status: vSegResult.firstFailure?.status ?? null,
+            error: vSegResult.firstFailure?.error,
+            stderr: vSegResult.firstFailure?.stderr ?? "",
+          },
+          clipCount: sequence.spine.clips.length,
+          fallbackDetail: "video segment render failed",
+        })
+      );
+    }
+
+    const audioBuild = buildOrRenderSequenceAudioForMixOrRender(
+      sequence,
+      paths,
+      sequence.stage.master_audio,
+      { inputIndexOffset: 1, maxItemsPerSegment }
+    );
+
+    const vConcatLines =
+      vSegResult.segMp4Paths
+        .map((p, idx) => {
+          const durSec = (segments[idx].frameCount / fps).toFixed(6);
+          return `file '${escapeConcatFilePath(p)}'\nduration ${durSec}`;
+        })
+        .join("\n") + "\n";
+    const vConcatHash = crypto
+      .createHash("sha256")
+      .update(vConcatLines)
+      .digest("hex")
+      .slice(0, 14);
+    const vConcatPath = path.join(paths.blobsDir, `vconcat_${vConcatHash}.txt`);
+    fs.writeFileSync(vConcatPath, vConcatLines, "utf8");
+
+    const muxFilterScriptPath = `${tmpOut}.mux.filter.txt`;
+    const audioFilter =
+      audioBuild.mode === "direct_plan"
+        ? audioBuild.directPlan!.filterComplex
+        : audioBuild.masterFilterComplex!;
+    fs.writeFileSync(muxFilterScriptPath, audioFilter, "utf8");
+
+    const audioInputArgs =
+      audioBuild.mode === "direct_plan"
+        ? audioBuild.directPlan!.inputArgs
+        : ["-f", "concat", "-safe", "0", "-i", audioBuild.concatListPath!];
+
+    const totalFrames = segments[segments.length - 1].endFrame;
+    const exactTotalDurationSec = (totalFrames / fps).toFixed(6);
+    const muxArgs = [
       "-y",
       "-v",
       "error",
-      ...plan.inputArgs,
-      "-filter_complex",
-      plan.filterComplex,
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      vConcatPath,
+      ...audioInputArgs,
+      "-/filter_complex",
+      muxFilterScriptPath,
       "-map",
-      plan.videoOutPad,
+      "0:v:0",
       "-map",
-      plan.audioOutPad,
+      audioBuild.audioOutPad,
+      "-frames:v",
+      String(totalFrames),
       "-t",
-      (plan.totalDurationMs / 1000).toFixed(3),
-      ...buildVideoCodecArgs(encoder, preset),
+      exactTotalDurationSec,
+      "-c:v",
+      "copy",
       "-c:a",
       "aac",
       "-b:a",
@@ -490,66 +1224,43 @@ export function renderSequenceToMp4(options: {
       "+faststart",
       tmpOut,
     ];
-  };
 
-  const tEncode0 = Date.now();
-  let singleStageUsed = canRemuxDirectBlob;
-  let ffArgs: string[] = buildRenderFfmpegArgs(activeEncoder, singleStageUsed);
+    try {
+      const muxProc = spawnSync("ffmpeg", muxArgs, {
+        cwd: paths.rootDir,
+        encoding: "utf8",
+        maxBuffer: 256 * 1024 * 1024,
+      });
+      encodeMs = Date.now() - tEncode0;
 
-  const proc = spawnSync("ffmpeg", ffArgs, {
-    cwd: paths.rootDir,
-    encoding: "utf8",
-    // No wall-clock limit: a full render scales with sequence length (long videos take hours).
-    maxBuffer: 256 * 1024 * 1024,
-  });
-
-  let finalProc = proc;
-  if (
-    (finalProc.status !== 0 || !fs.existsSync(tmpOut)) &&
-    (activeEncoder === "h264_nvenc" || singleStageUsed)
-  ) {
-    if (fs.existsSync(tmpOut)) {
-      try {
-        fs.unlinkSync(tmpOut);
-      } catch {
-        // ignore
+      if (muxProc.status !== 0 || muxProc.error || !fs.existsSync(tmpOut)) {
+        if (fs.existsSync(tmpOut)) {
+          try {
+            fs.unlinkSync(tmpOut);
+          } catch {
+            // ignore
+          }
+        }
+        throw new CutholError(
+          createSubprocessFailureDiagnostic({
+            tool: "ffmpeg render mux",
+            executable: "ffmpeg",
+            args: muxArgs,
+            proc: muxProc,
+            clipCount: sequence.spine.clips.length,
+            fallbackDetail: "segmented render mux failed",
+          })
+        );
+      }
+    } finally {
+      if (fs.existsSync(muxFilterScriptPath)) {
+        try {
+          fs.unlinkSync(muxFilterScriptPath);
+        } catch {
+          // ignore
+        }
       }
     }
-    const errDetail = (finalProc.stderr || finalProc.stdout || "NVENC encode failed")
-      .trim()
-      .slice(-240);
-    if (activeEncoder === "h264_nvenc") {
-      activeEncoder = "libx264";
-      encoderFallback = {
-        from: "h264_nvenc",
-        to: "libx264",
-        reason: `h264_nvenc failed at encode time (${errDetail}); fell back to libx264`,
-      };
-    }
-    singleStageUsed = false;
-    ffArgs = buildRenderFfmpegArgs("libx264", false);
-    finalProc = spawnSync("ffmpeg", ffArgs, {
-      cwd: paths.rootDir,
-      encoding: "utf8",
-      maxBuffer: 256 * 1024 * 1024,
-    });
-  }
-  const encodeMs = Date.now() - tEncode0;
-
-  if (finalProc.status !== 0 || !fs.existsSync(tmpOut)) {
-    if (fs.existsSync(tmpOut)) {
-      try {
-        fs.unlinkSync(tmpOut);
-      } catch {
-        // ignore cleanup error
-      }
-    }
-    throw new CutholError(
-      DIAGNOSTICS.EXTERNAL_TOOL_FAILED(
-        "ffmpeg render",
-        (finalProc.stderr || finalProc.stdout || "render failed").slice(-600)
-      )
-    );
   }
 
   fs.renameSync(tmpOut, resolvedOut);
@@ -561,7 +1272,7 @@ export function renderSequenceToMp4(options: {
     verification.diagnostics.push(diag);
     verification.warning_count += 1;
   }
-  const edgeStrip = scanRenderedMp4ForEdgeStrips(resolvedOut, plan.totalDurationMs);
+  const edgeStrip = scanRenderedMp4ForEdgeStrips(resolvedOut, totalDurationMs);
   if (edgeStrip) {
     verification.diagnostics.push(edgeStrip);
     verification.warning_count += 1;
@@ -573,10 +1284,10 @@ export function renderSequenceToMp4(options: {
     ok: true,
     output_path: resolvedOut,
     preset,
-    width: plan.renderWidth,
-    height: plan.renderHeight,
-    fps: plan.fps,
-    duration_ms: plan.totalDurationMs,
+    width: renderWidth,
+    height: renderHeight,
+    fps,
+    duration_ms: totalDurationMs,
     size_bytes: stat.size,
     encoder: activeEncoder,
     encoder_fallback: encoderFallback,
@@ -662,6 +1373,23 @@ export function ensurePreviewCompositeMp4(
     };
   }
 
+  const maxItemsPerSegment = resolveMaxClipsPerRenderSegment();
+  const segments = computeRenderTimeSegments(seq, totalDurationMs, maxItemsPerSegment);
+  if (segments.length > 1) {
+    const rendered = renderSequenceToMp4({
+      workspaceDir: paths.rootDir,
+      outputPath: cachedMp4,
+      preset,
+      encoder: "libx264",
+    });
+    return {
+      mp4Path: rendered.output_path,
+      width: rendered.width,
+      height: rendered.height,
+      durationMs: rendered.duration_ms,
+    };
+  }
+
   const plan = compileSequenceRenderPlan(seq, paths, preset);
 
   fs.mkdirSync(paths.blobsDir, { recursive: true });
@@ -669,14 +1397,22 @@ export function ensurePreviewCompositeMp4(
     paths.blobsDir,
     `preview_comp_${stateHash}.${process.pid}.${Date.now()}.tmp.mp4`
   );
+  const filterScriptPath = `${tmpMp4}.filter.txt`;
+  const useScript =
+    plan.filterComplex.length > 4000 ||
+    estimateCommandLineLength("ffmpeg", plan.inputArgs) + plan.filterComplex.length > 12000;
+  if (useScript) {
+    fs.writeFileSync(filterScriptPath, plan.filterComplex, "utf8");
+  }
 
   const ffArgs: string[] = [
     "-y",
     "-v",
     "error",
     ...plan.inputArgs,
-    "-filter_complex",
-    plan.filterComplex,
+    ...(useScript
+      ? ["-/filter_complex", filterScriptPath]
+      : ["-filter_complex", plan.filterComplex]),
     "-map",
     plan.videoOutPad,
     "-map",
@@ -698,27 +1434,41 @@ export function ensurePreviewCompositeMp4(
     tmpMp4,
   ];
 
-  const proc = spawnSync("ffmpeg", ffArgs, {
-    cwd: paths.rootDir,
-    encoding: "utf8",
-    // No wall-clock limit: a full render scales with sequence length (long videos take hours).
-    maxBuffer: 256 * 1024 * 1024,
-  });
+  try {
+    const proc = spawnSync("ffmpeg", ffArgs, {
+      cwd: paths.rootDir,
+      encoding: "utf8",
+      // No wall-clock limit: a full render scales with sequence length (long videos take hours).
+      maxBuffer: 256 * 1024 * 1024,
+    });
 
-  if (proc.status !== 0 || !fs.existsSync(tmpMp4)) {
-    if (fs.existsSync(tmpMp4)) {
+    if (proc.status !== 0 || proc.error || !fs.existsSync(tmpMp4)) {
+      if (fs.existsSync(tmpMp4)) {
+        try {
+          fs.unlinkSync(tmpMp4);
+        } catch {
+          // ignore cleanup error
+        }
+      }
+      throw new CutholError(
+        createSubprocessFailureDiagnostic({
+          tool: "ffmpeg preview composite",
+          executable: "ffmpeg",
+          args: ffArgs,
+          proc,
+          clipCount: seq.spine.clips.length,
+          fallbackDetail: "preview composite failed",
+        })
+      );
+    }
+  } finally {
+    if (fs.existsSync(filterScriptPath)) {
       try {
-        fs.unlinkSync(tmpMp4);
+        fs.unlinkSync(filterScriptPath);
       } catch {
-        // ignore cleanup error
+        // ignore
       }
     }
-    throw new CutholError(
-      DIAGNOSTICS.EXTERNAL_TOOL_FAILED(
-        "ffmpeg preview composite",
-        (proc.stderr || proc.stdout || "preview composite failed").slice(-600)
-      )
-    );
   }
 
   fs.renameSync(tmpMp4, cachedMp4);
@@ -998,9 +1748,10 @@ interface ParallelFfmpegJob {
 }
 
 interface ParallelFfmpegJobResult {
-  status: number;
+  status: number | null;
   stdout: Buffer;
   stderr: string;
+  error?: Error;
 }
 
 let sharedFfmpegPoolWorker: Worker | null = null;
@@ -1016,17 +1767,35 @@ function getFfmpegPoolWorker(): Worker {
         const outChunks = [];
         const errChunks = [];
         let settled = false;
-        const proc = spawn("ffmpeg", job.args, {
-          cwd: job.cwd,
-          stdio: ["ignore", "pipe", "pipe"],
-          windowsHide: true,
-        });
+        let proc;
+        try {
+          proc = spawn("ffmpeg", job.args, {
+            cwd: job.cwd,
+            stdio: ["ignore", "pipe", "pipe"],
+            windowsHide: true,
+          });
+        } catch (err) {
+          resolve({
+            status: null,
+            stdoutBuf: Buffer.alloc(0),
+            stderr: String(err),
+            errorCode: err && err.code ? String(err.code) : undefined,
+            errorMessage: err && err.message ? String(err.message) : String(err),
+          });
+          return;
+        }
         proc.stdout.on("data", (chunk) => outChunks.push(chunk));
         proc.stderr.on("data", (chunk) => errChunks.push(chunk));
         proc.on("error", (err) => {
           if (settled) return;
           settled = true;
-          resolve({ status: 1, stdoutBuf: Buffer.alloc(0), stderr: String(err) });
+          resolve({
+            status: null,
+            stdoutBuf: Buffer.alloc(0),
+            stderr: String(err),
+            errorCode: err && err.code ? String(err.code) : undefined,
+            errorMessage: err && err.message ? String(err.message) : String(err),
+          });
         });
         proc.on("close", (code) => {
           if (settled) return;
@@ -1054,7 +1823,13 @@ function getFfmpegPoolWorker(): Worker {
             res.stdoutBuf.byteOffset,
             res.stdoutBuf.byteOffset + res.stdoutBuf.byteLength
           );
-          results[i] = { status: res.status, stdoutAb: ab, stderr: res.stderr };
+          results[i] = {
+            status: res.status,
+            stdoutAb: ab,
+            stderr: res.stderr,
+            errorCode: res.errorCode,
+            errorMessage: res.errorMessage,
+          };
         }
       }
 
@@ -1100,9 +1875,10 @@ function runParallelFfmpegJobsSync(
     });
     return [
       {
-        status: proc.status ?? 1,
+        status: proc.status,
         stdout: (proc.stdout as Buffer) ?? Buffer.alloc(0),
         stderr: proc.stderr ? proc.stderr.toString("utf8") : "",
+        error: proc.error,
       },
     ];
   }
@@ -1118,11 +1894,25 @@ function runParallelFfmpegJobsSync(
     port1.close();
     if (received?.message?.ok && Array.isArray(received.message.results)) {
       return received.message.results.map(
-        (r: { status: number; stdoutAb: ArrayBuffer; stderr: string }) => ({
-          status: r.status,
-          stdout: Buffer.from(r.stdoutAb),
-          stderr: r.stderr,
-        })
+        (r: {
+          status: number | null;
+          stdoutAb: ArrayBuffer;
+          stderr: string;
+          errorCode?: string;
+          errorMessage?: string;
+        }) => {
+          let errObj: NodeJS.ErrnoException | undefined;
+          if (r.errorCode || r.errorMessage) {
+            errObj = new Error(r.errorMessage || r.stderr || "spawn failed");
+            if (r.errorCode) errObj.code = r.errorCode;
+          }
+          return {
+            status: r.status,
+            stdout: Buffer.from(r.stdoutAb),
+            stderr: r.stderr,
+            error: errObj,
+          };
+        }
       );
     }
   } catch {
@@ -1135,9 +1925,10 @@ function runParallelFfmpegJobsSync(
       maxBuffer: maxBuffers[idx],
     });
     return {
-      status: proc.status ?? 1,
+      status: proc.status,
       stdout: (proc.stdout as Buffer) ?? Buffer.alloc(0),
       stderr: proc.stderr ? proc.stderr.toString("utf8") : "",
+      error: proc.error,
     };
   });
 }
@@ -1242,9 +2033,9 @@ function buildSingleFrameFfmpegPlanFromCompiledPlan(
   const height = plan.renderHeight;
   const pixelCount = width * height;
   const snappedSec = (frameIdx / fps).toFixed(6);
-  const stopSec = ((frameIdx + 2) / fps).toFixed(6);
+  const shortDurSec = (4 / fps).toFixed(6);
 
-  // Split inputArgs into per-input groups and strip the unused audio graph (`anullsrc` + audio inputs)
+  // Split inputArgs into per-input groups and strip any audio inputs
   // so single-frame extraction never decodes or mixes audio tracks.
   const inputGroups: string[][] = [];
   let curGroup: string[] = [];
@@ -1266,70 +2057,33 @@ function buildSingleFrameFfmpegPlanFromCompiledPlan(
       ? plan.filterComplex.slice(0, voutIdx + plan.videoOutPad.length)
       : plan.filterComplex;
 
-  // Check if the video graph only consists of the stage backdrop (`[0:v]`), HyperFrames single-frame
-  // PNG inputs (`[v_hf_...]`), and optional `.ass` subtitles (no spine video clips `[v_sp_...]` or
-  // asset lane cues `[v_cue_...]`). When true, shift `[0:v]` and `[v_hf_...]` directly to `snappedSec`
-  // so FFmpeg composites 1 frame instead of simulating `0 .. snappedSec`.
-  const hasSpineOrAssetVideo =
-    videoFilterComplex.includes("[v_sp_") || videoFilterComplex.includes("[v_cue_");
-  const canJumpDirectlyToFrame =
-    !hasSpineOrAssetVideo &&
-    videoInputGroups.length > 0 &&
-    videoInputGroups[0][videoInputGroups[0].length - 1]?.startsWith("color=") &&
-    videoInputGroups.slice(1).every((g) => g.includes("-loop") && g[g.length - 1]?.endsWith(".png"));
-
-  const shortDurSec = (2 / fps).toFixed(6);
-  if (canJumpDirectlyToFrame) {
-    videoFilterComplex = videoFilterComplex.replace(
-      "[0:v]",
-      `[0:v]setpts=PTS+${snappedSec}/TB,`
-    );
-  }
   for (let idx = 0; idx < videoInputGroups.length; idx++) {
     const g = videoInputGroups[idx];
-    if (idx === 0 && canJumpDirectlyToFrame) {
-      const colorSpec = g[g.length - 1];
-      g[g.length - 1] = colorSpec.replace(
-        /:d=[\d.]+,settb=AVTB$/,
-        `:d=${shortDurSec},settb=AVTB`
-      );
-      continue;
-    }
     const loopPos = g.indexOf("-loop");
     const tPos = g.indexOf("-t");
     const frPos = g.indexOf("-framerate");
     const inputPath = g[g.length - 1];
     if (loopPos >= 0 && tPos >= 0 && frPos >= 0 && inputPath?.endsWith(".png")) {
-      const durVal = g[tPos + 1];
       const fpsVal = g[frPos + 1];
       // Decode the PNG once instead of re-decoding it on every frame via `-loop 1`
       videoInputGroups[idx] = ["-framerate", fpsVal, "-i", inputPath];
 
-      if (canJumpDirectlyToFrame) {
-        videoFilterComplex = videoFilterComplex.replace(
-          new RegExp(
-            `\\[${idx}:v\\]([\\s\\S]*?)tpad=stop_mode=clone:stop_duration=[\\d.]+,settb=AVTB,setpts=PTS-STARTPTS\\+([\\d.]+)/TB(\\[v_hf_[^\\]]+\\])`
-          ),
-          (_m, midFilters: string, cueStartSecStr: string, outPad: string) => {
-            const localSecVal = Math.max(0, Number(snappedSec) - Number(cueStartSecStr)).toFixed(6);
-            return `[${idx}:v]settb=AVTB,setpts=PTS+${localSecVal}/TB,${midFilters}tpad=stop_mode=clone:stop_duration=${shortDurSec},settb=AVTB,setpts=PTS-STARTPTS+${snappedSec}/TB${outPad}`;
-          }
-        );
-      } else {
-        videoFilterComplex = videoFilterComplex.replace(
-          new RegExp(
-            `(\\[${idx}:v\\][\\s\\S]*?)tpad=stop_mode=clone:stop_duration=[\\d.]+(,settb=AVTB,setpts=PTS-STARTPTS\\+[\\d.]+/TB\\[v_hf_[^\\]]+\\])`
-          ),
-          `$1tpad=stop_mode=clone:stop_duration=${durVal}$2`
-        );
-      }
+      const leadFrame = Math.max(0, Math.floor(Math.max(0, frameIdx - 2) / 3) * 3);
+      const leadStartSec = (leadFrame / fps).toFixed(6);
+      videoFilterComplex = videoFilterComplex.replace(
+        new RegExp(
+          `\\[${idx}:v\\]([\\s\\S]*?)tpad=stop_mode=clone:stop_duration=[\\d.]+,settb=AVTB,setpts=PTS-STARTPTS\\+([\\d.]+)/TB(\\[v_hf_[^\\]]+\\])`
+        ),
+        (_m, midFilters: string, cueStartSecStr: string, outPad: string) => {
+          const localSecVal = Math.max(0, Number(snappedSec) - Number(cueStartSecStr)).toFixed(6);
+          return `[${idx}:v]settb=AVTB,setpts=PTS+${localSecVal}/TB,${midFilters}tpad=stop_mode=clone:stop_duration=${shortDurSec},settb=AVTB,setpts=PTS-STARTPTS+${leadStartSec}/TB${outPad}`;
+        }
+      );
     }
   }
 
   const optimizedInputArgs = videoInputGroups.flat();
-  const filterWithSelect = canJumpDirectlyToFrame
-    ? `${videoFilterComplex};${plan.videoOutPad}setpts=PTS-STARTPTS[v_single_out]`
-    : `${videoFilterComplex};${plan.videoOutPad}trim=start=${snappedSec},setpts=PTS-STARTPTS[v_single_out]`;
+  const filterWithSelect = `${videoFilterComplex};${plan.videoOutPad}trim=start=${snappedSec},setpts=PTS-STARTPTS[v_single_out]`;
 
   return {
     ffArgs: [
@@ -1341,7 +2095,7 @@ function buildSingleFrameFfmpegPlanFromCompiledPlan(
       "-map",
       "[v_single_out]",
       "-t",
-      stopSec,
+      shortDurSec,
       "-frames:v",
       "1",
       "-f",
@@ -1391,83 +2145,17 @@ export function renderMultipleCompositeFramesRgb24(
   const maxSafeMs = Math.max(0, Math.floor(lastFrameIdx * (1000 / fps)));
   const frameDurMs = 1000 / fps;
 
-  const templateBySignature = new Map<
-    string,
-    {
-      basePlan: CompiledRenderPlan;
-      blobPrefixes: string[];
-      inputArgPositions: number[];
-    }
-  >();
-
   const plans: SingleFrameFfmpegPlan[] = timestampsMs.map((atMs) => {
     const clampedMs = Math.max(0, Math.min(Math.round(atMs), maxSafeMs));
     const frameIdx = Math.max(0, Math.min(lastFrameIdx, Math.floor((clampedMs / 1000) * fps + 1e-6)));
     const exactFrameMs = (frameIdx * 1000) / fps;
 
     const activeInfo = resolveActiveCompositionRefsAt(seq, paths, exactFrameMs, fps);
-    let compiledPlan: CompiledRenderPlan | null = null;
-
-    if (activeInfo.canReuseTemplate) {
-      const cachedTpl = templateBySignature.get(activeInfo.signature);
-      if (cachedTpl && cachedTpl.blobPrefixes.length === activeInfo.refs.length) {
-        const nextPngPaths: string[] = [];
-        let allCached = true;
-        for (let k = 0; k < activeInfo.refs.length; k++) {
-          const candidatePng = `${cachedTpl.blobPrefixes[k]}${activeInfo.refs[k].compFrameIdx}.png`;
-          if (!fs.existsSync(candidatePng) || fs.statSync(candidatePng).size <= 200) {
-            allCached = false;
-            break;
-          }
-          nextPngPaths.push(candidatePng);
-        }
-        if (allCached) {
-          const clonedInputArgs = [...cachedTpl.basePlan.inputArgs];
-          for (let k = 0; k < cachedTpl.inputArgPositions.length; k++) {
-            clonedInputArgs[cachedTpl.inputArgPositions[k]] = nextPngPaths[k];
-          }
-          compiledPlan = {
-            ...cachedTpl.basePlan,
-            inputArgs: clonedInputArgs,
-            hyperframesBlobs: nextPngPaths,
-          };
-        }
-      }
-    }
-
-    if (!compiledPlan) {
-      compiledPlan = compileSequenceRenderPlan(seq, paths, preset, {
-        activeWindowMs: [exactFrameMs - 1e-3, exactFrameMs + frameDurMs],
-        singleFrameAtMs: exactFrameMs,
-      });
-
-      if (
-        activeInfo.canReuseTemplate &&
-        compiledPlan.hyperframesBlobs.length === activeInfo.refs.length
-      ) {
-        const blobPrefixes: string[] = [];
-        const inputArgPositions: number[] = [];
-        let validTemplate = true;
-        for (let k = 0; k < compiledPlan.hyperframesBlobs.length; k++) {
-          const blobPath = compiledPlan.hyperframesBlobs[k];
-          const m = /^(.*hf_frame_[0-9a-f]+_f)\d+\.png$/i.exec(blobPath);
-          const pos = compiledPlan.inputArgs.indexOf(blobPath);
-          if (!m || pos < 0) {
-            validTemplate = false;
-            break;
-          }
-          blobPrefixes.push(m[1]);
-          inputArgPositions.push(pos);
-        }
-        if (validTemplate) {
-          templateBySignature.set(activeInfo.signature, {
-            basePlan: compiledPlan,
-            blobPrefixes,
-            inputArgPositions,
-          });
-        }
-      }
-    }
+    const compiledPlan = compileSequenceRenderPlan(seq, paths, preset, {
+      activeWindowMs: [exactFrameMs, exactFrameMs + frameDurMs],
+      singleFrameAtMs: exactFrameMs,
+      includeAudio: false,
+    });
 
     const bboxTargets: Array<{ bboxPath: string; pngPath: string }> = [];
     if (
@@ -1565,7 +2253,7 @@ export function renderMultipleCompositeFramesRgb24(
     }));
 
     const res = jobResults[idx];
-    if (res && res.status === 0 && res.stdout && res.stdout.length >= p.pixelCount * 3) {
+    if (res && res.status === 0 && !res.error && res.stdout && res.stdout.length >= p.pixelCount * 3) {
       return {
         rgbBuf: res.stdout.subarray(0, p.pixelCount * 3),
         width: p.width,
@@ -1576,35 +2264,56 @@ export function renderMultipleCompositeFramesRgb24(
       };
     }
 
+    if (res?.error) {
+      throw new CutholError(
+        createSubprocessFailureDiagnostic({
+          tool: "ffmpeg single frame extract",
+          executable: "ffmpeg",
+          args: p.ffArgs,
+          proc: {
+            status: res.status,
+            error: res.error,
+            stderr: res.stderr,
+          },
+          clipCount: seq.spine.clips.length,
+          fallbackDetail: "single frame extract failed",
+        })
+      );
+    }
+
     if (!fallbackMp4Path) {
       fallbackMp4Path = ensurePreviewCompositeMp4(seq, paths, preset).mp4Path;
     }
-    const fallbackProc = spawnSync(
-      "ffmpeg",
-      [
-        "-v",
-        "error",
-        "-ss",
-        (p.clampedMs / 1000).toFixed(3),
-        "-i",
-        fallbackMp4Path,
-        "-frames:v",
-        "1",
-        "-f",
-        "rawvideo",
-        "-pix_fmt",
-        "rgb24",
-        "pipe:1",
-      ],
-      { maxBuffer: p.pixelCount * 4 + 1024 * 1024, timeout: 30_000 }
-    );
+    const fallbackArgs = [
+      "-v",
+      "error",
+      "-ss",
+      (p.clampedMs / 1000).toFixed(3),
+      "-i",
+      fallbackMp4Path,
+      "-frames:v",
+      "1",
+      "-f",
+      "rawvideo",
+      "-pix_fmt",
+      "rgb24",
+      "pipe:1",
+    ];
+    const fallbackProc = spawnSync("ffmpeg", fallbackArgs, {
+      maxBuffer: p.pixelCount * 4 + 1024 * 1024,
+      timeout: 30_000,
+    });
     const fbBuf = fallbackProc.stdout as Buffer;
-    if (fallbackProc.status !== 0 || !fbBuf || fbBuf.length < p.pixelCount * 3) {
+    if (fallbackProc.status !== 0 || fallbackProc.error || !fbBuf || fbBuf.length < p.pixelCount * 3) {
       throw new CutholError(
-        DIAGNOSTICS.EXTERNAL_TOOL_FAILED(
-          "ffmpeg single frame extract",
-          (res?.stderr || fallbackProc.stderr?.toString("utf8") || "extract failed").slice(-400)
-        )
+        createSubprocessFailureDiagnostic({
+          tool: "ffmpeg single frame extract",
+          executable: "ffmpeg",
+          args: fallbackArgs,
+          proc: fallbackProc,
+          clipCount: seq.spine.clips.length,
+          fallbackDetail: res?.stderr || "extract failed",
+        })
       );
     }
     return {

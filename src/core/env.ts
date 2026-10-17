@@ -82,6 +82,26 @@ export function resolveHyperFramesWorkers(overrideWorkers?: number | null): numb
 }
 
 /**
+ * Resolves the maximum number of active spine clips / media inputs per render segment
+ * before switching to time-segmented compilation and concatenation.
+ * - Defaults to 24 clips per segment so simultaneous demuxer/decoder instances and command length stay bounded.
+ * - Can be overridden via `CUTHOL_RENDER_SEGMENT_MAX_CLIPS`.
+ */
+export function resolveMaxClipsPerRenderSegment(overrideMax?: number | null): number {
+  if (typeof overrideMax === "number" && Number.isFinite(overrideMax) && overrideMax >= 1) {
+    return Math.max(1, Math.min(128, Math.floor(overrideMax)));
+  }
+  const raw = process.env.CUTHOL_RENDER_SEGMENT_MAX_CLIPS;
+  if (raw !== undefined && raw.trim()) {
+    const parsed = Number(raw.trim());
+    if (Number.isFinite(parsed) && parsed >= 1) {
+      return Math.max(1, Math.min(128, Math.floor(parsed)));
+    }
+  }
+  return 24;
+}
+
+/**
  * Resolves the video encoder preference for final and intermediate MP4 encoding.
  * - Set `CUTHOL_DISABLE_NVENC=1` (or `CUTHOL_DISABLE_GPU=1` or `CUTHOL_VIDEO_ENCODER=libx264`) to force `libx264`.
  * - Set `CUTHOL_VIDEO_ENCODER=nvenc` to explicitly prefer `h264_nvenc`.

@@ -6,8 +6,8 @@ You cannot watch video; these tools are how you see. MCP returns the images inli
 
 | Call | What you get | Cost |
 |---|---|---|
-| `monitor.frame(at="4.2s", boxes=true)` | One composited frame from the same pipeline as the final render, plus luma stats and blank-frame check. Boxes show safe areas and each visible cue (overlays are measured from their alpha). | seconds |
-| `monitor.sheet(start, end, grid="4x3")` | A grid of frames across `[start, end]`, each rendered through the same single-frame pipeline as `monitor.frame` (composition frames are captured in one batched `snapshot` call and cached per frame, without rendering the full sequence). | ~10–20 s cold, <5 s warm |
+| `monitor.frame(at="4.2s", boxes=true)` | One composited frame from the same pipeline as the final render (compiling only the clips and cues active at `at`), plus luma stats and blank-frame check. Boxes show safe areas and each visible cue (overlays are measured from their alpha). | seconds |
+| `monitor.sheet(start, end, grid="4x3")` | A grid of frames across `[start, end]`, each rendered through the same windowed single-frame pipeline as `monitor.frame` (only clips/cues active at each cell timestamp are compiled; composition frames are captured in one batched `snapshot` call and cached per frame). | ~10–20 s cold, <5 s warm |
 | `monitor.timeline()` | Lane diagram: spine clips and transitions, every cue, music beats and the ducking curve. Best for spotting gaps, overlaps and lanes outlasting the spine. | ~1 s |
 | `composition.preview(cue, at=[…])` | An overlay alone: checkerboard / over footage (over the stage backdrop when nothing visual plays underneath) / alpha mask. | Chrome render |
 
@@ -55,7 +55,8 @@ What to check, concretely:
 | G504 | G5 WARN | Ducking ignored clips without transcripts. |
 | G505 | G5 WARN | Overlay is (almost) fully opaque and hides moving footage playing under it. Not raised when only the stage backdrop or a still image is underneath (a full-frame graphic is then deliberate). |
 | G506 | G5 WARN | The render has an 8 px black strip on its right or bottom edge (a known ffmpeg conversion bug at widths like 1080). Check the HyperFrames/ffmpeg version and render again. |
-| SYS01–07 | — | Project not found, bad time literal, journal entry unavailable, ffmpeg/HyperFrames failure, missing API key, transcript missing, invalid colour (`workspace.backdrop`). |
+| SYS01–08 | — | Project not found, bad time literal, journal entry unavailable, external tool spawn/exit failure (`SYS04`, reporting OS spawn errors such as `ENOENT`), missing API key, transcript missing, invalid colour (`workspace.backdrop`), extension execution failure (`SYS08`). |
+| SYS09 | SYS ERROR | Subprocess command line exceeds the operating system limit (`ENAMETOOLONG` / `E2BIG`); reports the command length, OS character limit, and clip count. |
 
 Every diagnostic is `[CODE] what happened | Öneri: next step`.
 
@@ -66,6 +67,7 @@ Every diagnostic is `[CODE] what happened | Öneri: next step`.
 - **Workers:** HyperFrames worker count is set from hardware cores/memory by default (e.g. 6 on a 12-core machine); override with `workers` (`--workers <N>`) or `CUTHOL_WORKERS`.
 - **Single-stage & opaque fast path:** When a full-frame composition has no moving footage underneath (only stage backdrop or a static still image), Cuthol renders it directly as an opaque MP4 with the backdrop baked in instead of a ProRes 4444 alpha `.mov`, and skips a second video encode (`single_stage: true`) when no upper visual layers exist.
 - **Hardware encoding:** Cuthol's own composite encode (projects with footage under overlays) uses `h264_nvenc` when available; if unavailable, disabled (`CUTHOL_DISABLE_NVENC=1` / `CUTHOL_VIDEO_ENCODER=libx264`), or failing at runtime, it falls back to `libx264`. HyperFrames encodes overlays on the CPU. The result reports the `encoder` that produced the video, any `encoder_fallback`, and stage `timings_ms`. Frame capture in the browser is most of the render time, so a heavy composition (blur/shadow filters, large SVGs, many moving elements) renders slower.
+- **Long multi-clip timelines:** Sequences with many spine clips or lane cues (>24 clips per segment by default, configurable via `CUTHOL_RENDER_SEGMENT_MAX_CLIPS`) are automatically compiled and rendered in frame-exact time segments (`vseg_*.mp4`) with sample-exact 48 kHz float32 PCM audio segments (`aseg_*.wav`), passing filtergraphs via `-/filter_complex` script files and concatenating without re-encoding video. Simultaneous decoder instances and command-line length remain bounded regardless of total clip count, while preserving transitions, compositions, envelopes, subtitles, and `mix.normalize` loudness calibration across segment boundaries.
 
 After encoding, `render` automatically scans the output video for blank/backdrop-filled frames while a spine clip is active (ignoring intentional fade windows) and reports any drop-outs as `CUTHOL-G502` warnings with exact timestamps. In a graphics-only project (empty spine) it scans the frames where no visual cue is on screen (event `clip_id` is empty); frames drawn by compositions are not judged by brightness, because a composition that fails to render already stops the render (G503).
 

@@ -329,8 +329,20 @@ function formatCleanupCandidatesTable(
   const reviewCandidates = Array.isArray(env.review_candidates)
     ? (env.review_candidates as Array<Record<string, unknown>>)
     : [];
+  const repetitionCandidates = Array.isArray(env.repetition_candidates)
+    ? (env.repetition_candidates as Array<Record<string, unknown>>)
+    : [];
   const decisions = Array.isArray(trace?.decisions) ? trace!.decisions! : [];
-  if (decisions.length === 0 && cuts.length === 0 && reviewCandidates.length === 0) return null;
+  if (
+    decisions.length === 0 &&
+    cuts.length === 0 &&
+    reviewCandidates.length === 0 &&
+    repetitionCandidates.length === 0
+  ) {
+    return null;
+  }
+
+  const isDryRunOrVerbose = env.dry_run === true || values.dry_run === true || values.verbose === true;
 
   const rows: string[] = [];
   let appliedIdx = 0;
@@ -396,7 +408,9 @@ function formatCleanupCandidatesTable(
 
   const rawCursor = values.cursor !== undefined ? parseInt(String(values.cursor), 10) : 0;
   const offset = Number.isFinite(rawCursor) && rawCursor > 0 ? rawCursor : 0;
-  const rawLimit = typeof values.limit === "number" && Number.isFinite(values.limit) ? values.limit : 80;
+  const defaultLimit = isDryRunOrVerbose ? 80 : 12;
+  const rawLimit =
+    typeof values.limit === "number" && Number.isFinite(values.limit) ? values.limit : defaultLimit;
   const limit = Math.max(1, Math.min(200, Math.floor(rawLimit)));
   const sliced = rows.slice(offset, offset + limit);
   const nextOffset = offset + sliced.length;
@@ -415,10 +429,11 @@ function formatCleanupCandidatesTable(
       `  … ${rows.length - nextOffset} more candidate(s); next page: speech(action=cleanup, clip=${clipArg}, dry_run=true, cursor="${nextOffset}", limit=${limit})`
     );
   }
-  if (reviewCandidates.length > 0) {
+  if (isDryRunOrVerbose && reviewCandidates.length > 0) {
     const clipArg = String(env.clip_id ?? values.clip ?? "sp_01");
+    const firstCfId = String(reviewCandidates[0]?.id ?? "cf_01");
     outLines.push(
-      `Review candidates (${reviewCandidates.length} contextual filler(s) — not cut automatically; pass cut_candidates=["cf_01", ...] to speech(action=cleanup, clip=${clipArg}, ...) to cut chosen ones in one call):`
+      `Review candidates (${reviewCandidates.length} contextual filler(s) — not cut automatically; pass cut_candidates=["${firstCfId}", ...] to speech(action=cleanup, clip=${clipArg}, ...) to cut chosen ones in one call):`
     );
     for (const rc of reviewCandidates) {
       const id = String(rc.id ?? "?");
@@ -431,6 +446,25 @@ function formatCleanupCandidatesTable(
       const ctx = String(rc.context ?? "");
       outLines.push(
         `  ${id} "${word}" source=${sStart}..${sEnd}ms (${dur}ms, gaps=${gapB}ms/${gapA}ms) · "${ctx}"`
+      );
+    }
+  }
+  if (isDryRunOrVerbose && repetitionCandidates.length > 0) {
+    const firstRrId = String(repetitionCandidates[0]?.id ?? "rr_01");
+    outLines.push(
+      `Repetition / restart candidates (${repetitionCandidates.length} candidate(s) — not cut automatically; pass cut_candidates=["${firstRrId}", "${firstRrId}:keep=1", ...] to cut chosen ones):`
+    );
+    for (const rr of repetitionCandidates) {
+      const id = String(rr.id ?? "?");
+      const kind = String(rr.kind ?? "phrase_repeat");
+      const phrase = String(rr.matched_phrase ?? "");
+      const cStart = rr.suggested_cut_start_ms ?? "?";
+      const cEnd = rr.suggested_cut_end_ms ?? "?";
+      const cDur = rr.suggested_cut_duration_ms ?? "?";
+      const keepAtt = rr.suggested_keep_attempt ?? "?";
+      const ctx = String(rr.context ?? "");
+      outLines.push(
+        `  ${id} [${kind}] "${phrase}" suggested_cut=${cStart}..${cEnd}ms (${cDur}ms, keep=#${keepAtt}) · ${ctx}`
       );
     }
   }
@@ -524,7 +558,30 @@ function compactPayload(
   for (const [k, v] of Object.entries(env)) {
     if (ENVELOPE_KEYS.has(k)) continue;
     if (spec.mutates && !detailed && MUTATION_ECHO_KEYS.has(k) && !(isReframe && k === "clips")) continue;
-    if (isCleanup && (k === "cuts" || k === "review_candidates")) continue;
+    if (
+      isCleanup &&
+      (k === "cuts" ||
+        k === "review_candidates" ||
+        k === "repetition_candidates" ||
+        (!detailed && k === "clip_ids" && Array.isArray(v) && v.length > 8))
+    ) {
+      continue;
+    }
+    if (
+      spec.tool === "mix" &&
+      spec.action === "normalize" &&
+      k === "adjusted_clips" &&
+      Array.isArray(v) &&
+      !detailed
+    ) {
+      payload.adjusted_clips_count =
+        typeof env.adjusted_clips_count === "number" ? env.adjusted_clips_count : v.length;
+      payload[k] = v.slice(0, 8);
+      if (v.length > 8) {
+        payload.adjusted_clips_omitted = v.length - 8;
+      }
+      continue;
+    }
     if (isReframe && k === "clips" && Array.isArray(v)) {
       payload.clips_count = v.length;
       if (values.verbose === true) {
@@ -552,7 +609,7 @@ function compactPayload(
         payload[k] = {
           summary: trace.summary,
           params: trace.params,
-          rules: trace.rules,
+          ...(detailed ? { rules: trace.rules } : {}),
         };
         continue;
       }

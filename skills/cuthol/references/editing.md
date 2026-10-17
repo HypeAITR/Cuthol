@@ -5,7 +5,7 @@ Notation: `tool.action(args)` is an MCP call; the CLI form is `cuthol <tool> <ac
 ## Projects
 
 - `workspace.init(dir, aspect, fps, title)` creates `cuthol.sequence.json` plus a `.cuthol/` cache folder. Aspect `9:16` (1080x1920), `16:9` (1920x1080), `1:1`, `4:5`. Default 9:16 @ 30 fps — set it explicitly.
-- `workspace.open(dir)` selects an existing project for the MCP session.
+- `workspace.open(dir, verbose?)` (CLI `workspace open [dir] [--verbose]`) selects an existing project for the MCP session and returns a compact summary (total counts + first 3 library items and spine clips + lane cue counts). Pass `verbose=true` (or call `brief(lens="overview")`) for the full library and spine tables.
 - `workspace.backdrop(color="#RRGGBB")` (CLI `workspace backdrop --color "#RRGGBB"`) sets the stage backdrop colour (default `#0D0F12`): the base of every frame wherever no clip or cue covers it. Journaled; `Changed:` shows `stage.backdrop.color=<new> (was <old>)` and undo restores the old colour. A value that is not 6 hex digits is refused (SYS07).
 - Relative paths in MCP arguments (`files`, `comp_dir`, `out`, `file`) resolve against the project folder. On the CLI, relative file paths (e.g. `library ingest <files...>`) resolve against the current working directory.
 
@@ -31,8 +31,10 @@ Clips are contiguous. `timeline position = sum of previous clip durations`. You 
 | `speed(clip, rate, preserve_pitch?)` | 0.5 = slow motion, 2 = double speed. The clip's timeline duration changes; transcripts stay correct. |
 | `transition(clip, kind, duration, easing)` | Outgoing transition into the next clip: `dissolve`, `fade`, `wipe_left`, `wipe_right`, `slide_up`, `zoom_in`, `none`. Duration ≤ half of the shorter neighbouring clip (G303). The blend happens after the cut point (it overlaps the start of the next clip). |
 | `transform(clip, x, y, scale, scale_x, scale_y, rotation, opacity, fit, mirror_x, mirror_y)` | Static placement. Values are absolute (`"1.2"`) or relative (`"+=0.1"`, `"-=5"`). `fit`: `cover` (fill, crop), `contain` (letterbox), `fill` (stretch). |
+| `mute(clip | clips | all_spine?, muted?)` | Mute one spine clip (`clip="sp_01"`), a list (`clips=["sp_01","sp_02"]`), or the entire spine (`all_spine=true` or omit `clip`). Pass `muted=false` (or use `unmute`) to restore audio. |
+| `unmute(clip | clips | all_spine?)` | Unmute one clip, a list of clips, or all spine clips. |
 | `reframe(clip | clips | all_spine?, mode?, points?, replace?, deadband?, x?, fps?, dry_run?)` | Track a single speaker/subject in wider footage (e.g. 16:9 on a 9:16 stage) and write `placement.scale_x` + a calm `placement.x_pct` pan envelope (or manual focal points). |
-| `envelope(clip, param, points=["0ms:1.0","4s:1.15"], easing)` | Keyframes over the item's own time (0 = its start). Works on spine clips and lane cues. Params: `placement.x_pct`, `placement.y_pct`, `placement.scale_x`, `placement.scale_y`, `placement.rotation_deg`, `placement.opacity`, `audio_chain.gain_db`. A slow zoom needs both `scale_x` and `scale_y`. |
+| `envelope(clip, param, points=["0ms:1.0","4s:1.15"], easing)` | Keyframes over the item's own time (0 = its start). Works on spine clips and lane cues. Params: `placement.x_pct`, `placement.y_pct`, `placement.scale_x`, `placement.scale_y`, `placement.rotation_deg`, `placement.opacity`, `audio_chain.gain_db`. A slow zoom needs both `scale_x` and `scale_y` (compiled with sub-pixel interpolation so slow scale/pan ramps advance smoothly without 2 px stepping or aspect wobble). |
 
 Clips shorter than 2 frames are rejected (G301). Source ranges beyond the media are rejected (G202).
 
@@ -70,15 +72,21 @@ Default lanes (z order: higher is on top; negative = audio-only lanes under the 
 | `ln_sfx` | sfx | −5 | sound effects |
 | `ln_bgm` | music | −10 | music bed |
 
-- `lane.add_cue(lane, kind?, asset?, text?, at | anchor+offset, duration, in?, out?, rate?, preserve_pitch?, z_index?, size, color, max_width, x, y, scale, rotation?, opacity)`.
+- `lane.add_cue(lane, kind?, asset?, text?, at | anchor+offset, duration, in?, out?, rate?, preserve_pitch?, gain_db?, muted?, z_index?, size, color, max_width, x, y, scale, rotation?, opacity)`.
   - Text title: `lane.add_cue(lane="ln_titles", text="Başlık", at="0.5s", duration="2.5s", y=-30, size=72)`.
   - Default typography sizes scale with stage orientation: on vertical `9:16` (`1080x1920`), titles default to `size=76` px (`max_width=70`%) and lane captions to `size=64` px (`max_width=70`%); on landscape `16:9` (`1920x1080`), titles default to `size=56` px (`max_width=76`%) and lane captions to `size=44` px (`max_width=76`%, auto-captions `42` px / `80`%).
-  - Music bed: `lane.add_cue(lane="ln_bgm", kind="music", asset="aud_02", at="0s", duration="14s")`.
+  - Music bed: `lane.add_cue(lane="ln_bgm", kind="music", asset="aud_02", at="0s", duration="14s", gain_db=-10)`.
   - Voiceover: `lane.add_cue(lane="ln_vo", kind="voiceover", asset="aud_01", at="0.5s", duration=<asset length>, rate=1.0)`.
   - B-roll over a clip: `lane.add_cue(lane="ln_broll", kind="broll", asset="vid_03", anchor="sp_02", offset="1s", duration="2s")`.
 - `x`/`y` are % of the stage measured from the centre: `x=0,y=0` is centred, `y=-35` near the top, `y=30` near the bottom. Keep text inside the title-safe area (G401 tells you by how many px it overflows).
-- **Anchor** cues that belong to a particular shot. Absolute (`at`) cues stay at their time when the spine changes — good for music and narration, bad for shot-specific titles.
-- `lane.update_cue(cue, at, duration, in, out, rate, preserve_pitch, z_index, x, y, scale, rotation, opacity, text, size, max_width, gain_db)` — placement (`x`, `y`, `scale`, `rotation`, `opacity`) accepts `+=`/`-=`; `rotation` is in clockwise degrees and applies to both visual (`broll`/graphic/composition) and typography (`title`/`caption`) cues in `monitor` and `render`.
+- **Anchor** cues that belong to a particular shot (`anchor="sp_02", offset="1s"`) or to another lane cue (`anchor="cue_01", offset="18s"`, e.g. an SFX cue attached to a voiceover cue so it moves when the voiceover is cut with `lane.excise`). Absolute (`at`) cues stay at their time when the spine changes.
+- `lane.update_cue(cue, at, anchor, offset, duration, in, out, rate, preserve_pitch, z_index, x, y, scale, rotation, opacity, text, size, max_width, gain_db, muted)` — placement (`x`, `y`, `scale`, `rotation`, `opacity`) accepts `+=`/`-=`; `rotation` is in clockwise degrees and applies to both visual (`broll`/graphic/composition) and typography (`title`/`caption`) cues in `monitor` and `render`.
+- **Excising ranges from an audio/video lane cue (`lane.excise`):**
+  `lane.excise(cue="cue_01", ranges=["10s..14s", …], coord="source"|"sequence"|"clip_local"|"cue_local", ripple=true, across="lane"|"all_lanes"|"all"|"spine"|"none")` (CLI `cuthol lane excise --cue cue_01 --ranges 10s..14s [--coord source] [--across lane]`) removes one or more intervals from a `voiceover`, `music`, `sfx`, or video `broll` cue in a single atomic transaction (one `workspace.undo` step):
+  - Splits the cue around the removed ranges (keeping `cue_01` for the first kept segment and allocating new `cue_XX` IDs for subsequent segments) and slices any keyframe envelopes.
+  - **Ripple behaviour (`ripple=true`, `across="lane"` by default):** Closes the excised gap so audio after the cut plays immediately, shifts subsequent cues on the same lane earlier, re-anchors any cues attached to `cue_01` (`anchor="cue_01"`) to the matching kept segment at its new timeline position, and shifts projected transcript word timings (`C.word`, `C.global.words`, `speech.captions`, and any existing `ln_captions` cues bound to `cue_01`).
+  - **Cross-lane / spine options (`across`):** Pass `across="all_lanes"` to also shift unlocked cues on other lanes; pass `across="all"` (or `"spine"`) to also excise the corresponding timeline intervals from the primary spine; pass `ripple=false` (or `across="none"`) to leave a gap without shifting later audio.
+  - **Visual non-stream cues:** Calling `lane.excise` on a `composition`, `title`, `caption`, or still graphic cue is refused with `[CUTHOL-G310]` (`INVALID_CUE_EXCISE_KIND`) because those cues do not have a linear source media stream; use `lane.update_cue(duration=…)` or `lane.remove_cue` instead.
 - **Speed on lane audio/media cues (`rate`, `preserve_pitch`):** Set `rate` (0.1..16.0, e.g. `lane.update_cue(cue="cue_01", rate=1.3)`) on `ln_vo`, `ln_sfx`, `ln_bgm`, or `ln_broll` cues. Unless you also pass an explicit `duration`, Cuthol locks `[source_in_ms, source_out_ms]` to the asset range and updates `duration_ms = round((source_out_ms - source_in_ms) / rate)` (and scales any envelopes on the cue). Audio compilation (`compileSequenceAudioPlan`, shared by `render` and `mix.normalize`) applies `atempo` when `preserve_pitch=true` (default), and transcript words on `ln_vo` cues are projected at the sped-up times into `C.word`, `C.global.words`, and `speech.captions`.
 - **Simultaneous / layered compositions:** Multiple composition cues can overlap in time — for example, a single 90+ second composition carrying the scenes while a second composition (a continuous mascot or corner badge) runs on top for the entire duration. Stacking order is deterministic: across lanes, higher `lane.z_index` renders on top; within the same lane (`ln_motion`), cues with higher `z_index` (or later cues when `z_index` is equal/omitted) render on top.
 - `lane.remove_cue(cues=[...])`, `lane.lock(lane)`, `lane.unlock(lane)`.
@@ -113,4 +121,4 @@ Edits that break G1–G3 (schema, files, timing) are rolled back automatically a
 
 ## Cue sheets (bulk edits)
 
-`cue.export(file="edit.cues.json")` writes the current edit in the cue-sheet format. Edit the file, then `cue.diff(file)` → `cue.plan(file)` (dry run with verification) → `cue.apply(file)` (one journaled transaction). Use this when you need many coordinated changes.
+`cue.export(file="edit.cues.json")` writes the current edit in the cue-sheet format (including `muted` and `gain_db` on both `spine` entries and `cues`). Edit the file, then `cue.diff(file)` → `cue.plan(file)` (dry run with verification) → `cue.apply(file)` (one journaled transaction). Use this when you need many coordinated changes.

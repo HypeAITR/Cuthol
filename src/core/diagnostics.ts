@@ -353,12 +353,13 @@ export const DIAGNOSTICS = {
     cueId: string,
     ruleCode: string,
     message: string,
-    fixHint?: string
+    fixHint?: string,
+    severity: DiagnosticSeverity = "WARN"
   ) =>
     createDiagnostic(
       "CUTHOL-G407",
       "G4_STAGE",
-      "WARN",
+      severity,
       `'${cueId}' kompozisyonunda HyperFrames lint bulgusu (${ruleCode}): ${message}`,
       fixHint && fixHint.trim()
         ? fixHint.trim()
@@ -457,6 +458,32 @@ export const DIAGNOSTICS = {
       cueId
     ),
 
+  RENDER_AUDIO_ALIGNMENT_MISMATCH: (
+    issues: Array<{
+      item_id: string;
+      check_at_ms: number;
+      measured_offset_ms: number;
+      similarity: number;
+      detail: string;
+    }>
+  ) => {
+    const summary = issues
+      .map(
+        (x) =>
+          `${x.item_id}@${Math.round(x.check_at_ms)}ms (${x.detail}, ofset=${x.measured_offset_ms >= 0 ? "+" : ""}${x.measured_offset_ms.toFixed(1)}ms, benzerlik=${x.similarity.toFixed(2)})`
+      )
+      .join("; ");
+    const firstId = issues[0]?.item_id;
+    return createDiagnostic(
+      "CUTHOL-G508",
+      "G5_SIGNAL",
+      "WARN",
+      `Render sonrası ses sağlık kontrolünde ${issues.length} noktada ses kayması veya sinyal kaybı tespit edildi: ${summary}.`,
+      `İlgili ses öğesinin ('${firstId ?? "cue/klip"}') bölüm sınırı geçişini, başlangıç zamanını ve ses zincirini kontrol edip render'ı yenileyin.`,
+      firstId
+    );
+  },
+
   REVISION_MISMATCH: (expectedRev: number, actualRev: number) =>
     createDiagnostic(
       "CUTHOL-G109",
@@ -519,13 +546,17 @@ export const DIAGNOSTICS = {
     expectedVersion: string,
     expectedHash: string,
     actualVersion: string,
-    actualHash: string
+    actualHash: string,
+    severity: DiagnosticSeverity = "WARN",
+    detail?: string
   ) =>
     createDiagnostic(
       "CUTHOL-G205",
       "G2_ASSETS",
-      "WARN",
-      `Projede etkin olan '${name}' eklentisi diskte değişmiş (sekansta kayıtlı: v${expectedVersion} ${expectedHash}, diskte güncel: v${actualVersion} ${actualHash}).`,
+      severity,
+      detail
+        ? `Projede etkin olan '${name}' eklentisi veya kompozisyondaki kopyası kaynağından farklı (${detail}; sekansta kayıtlı: v${expectedVersion} ${expectedHash}, diskte güncel: v${actualVersion} ${actualHash}); render eski kopyayla çıkmaması için durdurulur.`
+        : `Projede etkin olan '${name}' eklentisi diskte değişmiş (sekansta kayıtlı: v${expectedVersion} ${expectedHash}, diskte güncel: v${actualVersion} ${actualHash}); render eski kopyayla çıkmaması için durdurulur.`,
       `Değişikliği onaylayıp yeni içerik özetine (hash) geçmek ve kompozisyonları senkronlamak için 'cuthol extension enable --name ${name}' çalıştırın.`,
       name
     ),
@@ -568,6 +599,16 @@ export const DIAGNOSTICS = {
       `Filtre grafiğini dosyadan ('-/filter_complex <dosya>') geçirin veya çok klipli sekansı zaman parçalı (segmented) derleme yoluyla işleyin.`
     );
   },
+
+  INVALID_CUE_EXCISE_KIND: (cueId: string, kind: string) =>
+    createDiagnostic(
+      "CUTHOL-G310",
+      "G3_TIMING",
+      "ERROR",
+      `'${cueId}' öğesi ('${kind}') doğrusal kaynak medya akışına sahip olmadığı için 'lane excise' ile içinden aralık çıkarılamaz.`,
+      `'lane excise' yalnızca ses ('voiceover', 'music', 'sfx') ve video ('broll') medya cue'larında çalışır. Kompozisyon, başlık, altyazı veya durağan görsellerin süresini değiştirmek için 'cuthol lane update-cue --cue ${cueId} --duration <süre>' veya silmek için 'cuthol lane remove-cue --cues ${cueId}' kullanın.`,
+      cueId
+    ),
 } as const;
 
 export function estimateCommandLineLength(executable: string, args: readonly string[]): number {

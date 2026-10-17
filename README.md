@@ -12,6 +12,7 @@ An agent edits through a CLI (`cuthol`) or an MCP server (`cuthol mcp`). It read
 - **Speech.**
   - Transcription with word timings.
   - Pause and filler cleanup with cut edges placed in real silence, over one clip or the whole spine in a single undoable step.
+  - Mute spine clips, and cut a range out of a voiceover or music cue with later cues and word timings following.
   - Contextual fillers, repeated phrases and restarted sentences are offered for review with stable ids rather than cut blindly; the agent decides what goes.
   - Word-highlighted captions and voiceover synthesis.
 - **Mix.** Loudness normalization to a target (ITU-R BS.1770, e.g. −14 LUFS / −1 dBTP), voice polish, music ducking under speech, and cut alignment to a regular beat grid.
@@ -26,7 +27,7 @@ An agent edits through a CLI (`cuthol`) or an MCP server (`cuthol mcp`). It read
   - Integer-millisecond model with typed handles (`vid_01`, `sp_01`, `cue_01`) that are never reused.
   - An atomic edit journal with undo previews and `expect_rev`, plus lane locking.
   - 5 verification gates (schema, assets, timing, stage, signal) with structured diagnostics, including HyperFrames lint findings for each composition.
-- **Extensions.** Agents can add their own tools without rebuilding Cuthol: composition helpers, asset packs (fonts, mascots, icons), audio/video/image processors and multi-step recipes. An extension is kept for one project or installed for every project.
+- **Extensions.** Agents can add their own tools without rebuilding Cuthol: composition helpers, asset packs (fonts, mascots, icons), audio/video/image processors, multi-step recipes, and planners that read the edit's timing (word times, events declared by compositions) and propose cue changes applied as one undoable step. An extension is kept for one project or installed for every project.
 
 ## Requirements
 
@@ -134,6 +135,7 @@ A Cuthol project is a folder:
 
 - Diagnostics have the form `[CUTHOL-Gxxx] what | Öneri: fix`. They and some guidance text are currently in Turkish. `Öneri` means "suggestion".
 - Renders have no time limit; long videos simply take longer. Overlays render in parallel (`CUTHOL_WORKERS` or `render --workers`, default from your CPU cores and memory); a motion-graphics video with nothing underneath renders in one stage, and drafts capture overlays at 480p. NVIDIA GPUs are used for the final encode when available (`CUTHOL_DISABLE_NVENC=1` turns it off). No GPU is required. If an overlay cannot be rendered, the render fails with an error instead of substituting anything.
+- Overlays are cached by the data each composition actually uses, so a revision re-renders only what changed; every render reports how many overlays came from cache and why the others were re-rendered. After a render Cuthol checks that segmented audio lines up with its sources.
 - Rendering presets:
   - `draft_480p`: a fast proxy for checking.
   - `master_1080p`: the deliverable.

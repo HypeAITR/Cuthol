@@ -18,6 +18,8 @@ import {
   InverseOperationKind,
 } from "./envelope.js";
 import { AspectPreset, createEmptySequence, CutholSequence } from "./schema.js";
+import { formatTimecode } from "./time.js";
+import { computeSequenceDurationMs } from "./timeline.js";
 
 export const SEQUENCE_FILENAME = "cuthol.sequence.json";
 export const STATE_DIRNAME = ".cuthol";
@@ -615,3 +617,167 @@ export function tagCurrentRevision(dir: string, tag: string): JournalEntry {
   writeJsonAtomically(paths.journalIndexFile, manifest);
   return entry;
 }
+
+export function formatWorkspaceOpenSummary(
+  seq: CutholSequence,
+  options: { verbose?: boolean; maxItems?: number } = {}
+): string {
+  const maxItems = options.maxItems ?? 3;
+  const totalMs = computeSequenceDurationMs(seq);
+  const totalCues = seq.lanes.reduce((sum, l) => sum + l.cues.length, 0);
+  const lines: string[] = [];
+
+  lines.push(
+    `- Project: **${seq.meta.title}** (\`${seq.meta.project_id}\`) | Rev: \`r${seq.meta.revision}\` | Stage: \`${seq.stage.width}x${seq.stage.height}\` (\`${seq.stage.aspect}\`) @ \`${seq.stage.fps}fps\` | Backdrop: \`${seq.stage.backdrop.color}\` | Duration: \`${totalMs}ms\` (\`${formatTimecode(totalMs)}\`)`
+  );
+
+  if (seq.library.length === 0) {
+    lines.push(`- Library (0 items): _(empty)_`);
+  } else if (options.verbose) {
+    lines.push(`- Library (${seq.library.length} items):`);
+    for (const item of seq.library) {
+      const dims = item.probe.has_video
+        ? `${item.probe.width}x${item.probe.height}@${item.probe.fps}fps`
+        : "audio-only";
+      lines.push(
+        `  - \`${item.handle}\` (${item.kind}, ${item.probe.duration_ms}ms, ${dims}, uri: \`${item.uri}\`)`
+      );
+    }
+  } else {
+    const shownLib = seq.library.slice(0, maxItems).map((item) => {
+      return `\`${item.handle}\` (${item.kind}, ${item.probe.duration_ms}ms)`;
+    });
+    const moreLib =
+      seq.library.length > maxItems
+        ? ` … (+${seq.library.length - maxItems} more; pass verbose=true or run brief for full table)`
+        : "";
+    lines.push(`- Library (${seq.library.length} items): ${shownLib.join(", ")}${moreLib}`);
+  }
+
+  if (seq.spine.clips.length === 0) {
+    lines.push(`- Primary Spine (0 clips): _(empty)_`);
+  } else if (options.verbose) {
+    lines.push(`- Primary Spine (${seq.spine.clips.length} clips):`);
+    for (const clip of seq.spine.clips) {
+      const endMs = clip.timeline_in_ms + clip.duration_ms;
+      const muteTag = clip.audio_chain.muted ? ", MUTED" : "";
+      lines.push(
+        `  - \`${clip.id}\` (\`${clip.asset_handle}\`): timeline \`${clip.timeline_in_ms}..${endMs}ms\` | source \`${clip.source_in_ms}..${clip.source_out_ms}ms\`${muteTag}`
+      );
+    }
+  } else {
+    const shownClips = seq.spine.clips.slice(0, maxItems).map((clip) => {
+      const endMs = clip.timeline_in_ms + clip.duration_ms;
+      const muteTag = clip.audio_chain.muted ? ", muted" : "";
+      return `\`${clip.id}\` (${clip.asset_handle}, ${clip.timeline_in_ms}..${endMs}ms${muteTag})`;
+    });
+    const moreClips =
+      seq.spine.clips.length > maxItems ? ` … (+${seq.spine.clips.length - maxItems} more)` : "";
+    lines.push(`- Primary Spine (${seq.spine.clips.length} clips): ${shownClips.join(", ")}${moreClips}`);
+  }
+
+  if (seq.lanes.length === 0) {
+    lines.push(`- Parallel Lanes (0 lanes, 0 cues): _(none)_`);
+  } else {
+    const laneParts = seq.lanes.map((lane) => {
+      const firstCues = lane.cues
+        .slice(0, 2)
+        .map((c) => c.id)
+        .join(",");
+      const cuePreview =
+        lane.cues.length > 0
+          ? ` [${firstCues}${lane.cues.length > 2 ? `…+${lane.cues.length - 2}` : ""}]`
+          : "";
+      return `\`${lane.id}\` (${lane.kind}: ${lane.cues.length} cue${lane.cues.length === 1 ? "" : "s"}${lane.muted ? ", MUTED" : ""}${cuePreview})`;
+    });
+    lines.push(
+      `- Parallel Lanes (${seq.lanes.length} lanes, ${totalCues} cues): ${laneParts.join(", ")}`
+    );
+  }
+
+  if (seq.extensions && seq.extensions.length > 0) {
+    lines.push(
+      `- Enabled Extensions (${seq.extensions.length}): ${seq.extensions.map((e) => `\`${e.name}\` v${e.version}`).join(", ")}`
+    );
+  }
+
+  return lines.join("\n");
+}
+
+export function openWorkspaceSummary(
+  dir: string,
+  options: { verbose?: boolean; maxItems?: number } = {}
+): {
+  workspace_dir: string;
+  project_id: string;
+  title: string;
+  revision: number;
+  duration_ms: number;
+  counts: {
+    library: number;
+    spine_clips: number;
+    lanes: number;
+    cues: number;
+  };
+  library_preview: Array<{ handle: string; kind: string; duration_ms: number; uri: string }>;
+  library_omitted?: number;
+  spine_preview: Array<{
+    id: string;
+    asset_handle: string;
+    timeline_in_ms: number;
+    duration_ms: number;
+    muted: boolean;
+  }>;
+  spine_omitted?: number;
+  lanes_summary: Array<{ id: string; kind: string; cues_count: number; muted: boolean }>;
+  summary_text: string;
+} {
+  const { paths, sequence } = loadSequence(dir);
+  const maxItems = options.verbose ? sequence.library.length : (options.maxItems ?? 3);
+  const maxSpine = options.verbose ? sequence.spine.clips.length : (options.maxItems ?? 3);
+  const totalMs = computeSequenceDurationMs(sequence);
+  const totalCues = sequence.lanes.reduce((sum, l) => sum + l.cues.length, 0);
+
+  const libSlice = sequence.library.slice(0, maxItems).map((item) => ({
+    handle: item.handle,
+    kind: item.kind,
+    duration_ms: item.probe.duration_ms,
+    uri: item.uri,
+  }));
+  const libOmitted = Math.max(0, sequence.library.length - libSlice.length);
+
+  const spineSlice = sequence.spine.clips.slice(0, maxSpine).map((clip) => ({
+    id: clip.id,
+    asset_handle: clip.asset_handle,
+    timeline_in_ms: clip.timeline_in_ms,
+    duration_ms: clip.duration_ms,
+    muted: clip.audio_chain.muted,
+  }));
+  const spineOmitted = Math.max(0, sequence.spine.clips.length - spineSlice.length);
+
+  return {
+    workspace_dir: paths.rootDir,
+    project_id: sequence.meta.project_id,
+    title: sequence.meta.title,
+    revision: sequence.meta.revision,
+    duration_ms: totalMs,
+    counts: {
+      library: sequence.library.length,
+      spine_clips: sequence.spine.clips.length,
+      lanes: sequence.lanes.length,
+      cues: totalCues,
+    },
+    library_preview: libSlice,
+    ...(libOmitted > 0 ? { library_omitted: libOmitted } : {}),
+    spine_preview: spineSlice,
+    ...(spineOmitted > 0 ? { spine_omitted: spineOmitted } : {}),
+    lanes_summary: sequence.lanes.map((l) => ({
+      id: l.id,
+      kind: l.kind,
+      cues_count: l.cues.length,
+      muted: l.muted,
+    })),
+    summary_text: formatWorkspaceOpenSummary(sequence, options),
+  };
+}
+

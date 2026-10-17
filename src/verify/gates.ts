@@ -32,6 +32,7 @@ import {
 } from "../library/probe.js";
 import {
   compositionUsesAudio,
+  detectCompositionExtensionCopyDrift,
   exportBridgeDataForCue,
   syncAllCompositionBridges,
   syncEnabledExtensionAssetsToComposition,
@@ -392,6 +393,7 @@ export function verifySequence(
           for (const extRef of seq.extensions) {
             try {
               const currentExt = resolveExtension(extRef.name, paths.rootDir);
+              const copyDrift = detectCompositionExtensionCopyDrift(seq, extRef.name, paths);
               if (
                 currentExt.contentHash !== extRef.content_hash ||
                 currentExt.version !== extRef.version
@@ -402,7 +404,23 @@ export function verifySequence(
                     extRef.version,
                     extRef.content_hash,
                     currentExt.version,
-                    currentExt.contentHash
+                    currentExt.contentHash,
+                    "WARN",
+                    copyDrift.drifted
+                      ? `kompozisyon kopyası eski/farklı: ${copyDrift.driftedCompositions.join(", ")}`
+                      : undefined
+                  )
+                );
+              } else if (copyDrift.drifted) {
+                diagnostics.push(
+                  DIAGNOSTICS.EXTENSION_HASH_MISMATCH(
+                    extRef.name,
+                    extRef.version,
+                    extRef.content_hash,
+                    currentExt.version,
+                    currentExt.contentHash,
+                    "WARN",
+                    `kompozisyon kopyası kaynağından farklı: ${copyDrift.driftedCompositions.join(", ")}`
                   )
                 );
               }
@@ -772,8 +790,15 @@ export function verifySequence(
           );
           for (const lf of lintRes.findings) {
             diagnostics.push(
-              DIAGNOSTICS.COMPOSITION_LINT_FINDING(cue.id, lf.code, lf.message, lf.fixHint)
+              DIAGNOSTICS.COMPOSITION_LINT_FINDING(cue.id, lf.code, lf.message, lf.fixHint, "WARN")
             );
+          }
+          for (const lf of lintRes.info_findings) {
+            if (lf.code === "duplicate_media_discovery_risk") {
+              diagnostics.push(
+                DIAGNOSTICS.COMPOSITION_LINT_FINDING(cue.id, lf.code, lf.message, lf.fixHint, "INFO")
+              );
+            }
           }
         }
 

@@ -20,7 +20,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { resolveHyperFramesWorkers, resolveVideoEncoderPreference } from "../core/env.js";
-import { extractScalarHyperFramesVariables, hashDirectoryRecursive } from "./bridge_exporter.js";
+import {
+  analyzeCompositionDataUsage,
+  computeUsedBridgePayloadHashes,
+  extractScalarHyperFramesVariables,
+  hashCompositionFilesExcludingBridgeData,
+  hashDirectoryRecursive,
+} from "./bridge_exporter.js";
 import {
   CUTHOL_BRIDGE_SCHEMA,
   CutholBridgeV1,
@@ -159,6 +165,104 @@ function computeCompositionLintHash(absCompDir: string, entryHtml: string): stri
   return hash.digest("hex");
 }
 
+export function isDuplicateImgMediaDiscoveryFinding(
+  finding: {
+    code?: string;
+    message?: string;
+    snippet?: string;
+    selector?: string;
+  },
+  absCompDir?: string,
+  entryHtml = "index.html"
+): boolean {
+  if (finding.code !== "duplicate_media_discovery_risk") return false;
+  const msg = String(finding.message ?? "");
+  const snippet = String(finding.snippet ?? "");
+  const selector = String(finding.selector ?? "");
+
+  if (
+    /\bmatching\s+(?:video|audio)\s+entries\b/i.test(msg) ||
+    /^\s*<?(?:video|audio)\b/i.test(snippet) ||
+    /^\s*(?:video|audio)\b/i.test(selector)
+  ) {
+    return false;
+  }
+  if (
+    /\bmatching\s+img\s+entries\b/i.test(msg) ||
+    /^\s*<?img\b/i.test(snippet) ||
+    /^\s*img\b/i.test(selector)
+  ) {
+    return true;
+  }
+
+  if (absCompDir) {
+    try {
+      const htmlPath = path.join(path.resolve(absCompDir), entryHtml || "index.html");
+      if (fs.existsSync(htmlPath)) {
+        const html = fs.readFileSync(htmlPath, "utf8");
+        const videoAudioSrcs = new Set<string>();
+        let hasDupVideoAudio = false;
+        const vaRe = /<(?:video|audio)\b[^>]*?\bsrc\s*=\s*(["'])([^"']+)\1/gi;
+        let m: RegExpExecArray | null;
+        while ((m = vaRe.exec(html)) !== null) {
+          const src = m[2].trim();
+          if (videoAudioSrcs.has(src)) {
+            hasDupVideoAudio = true;
+            break;
+          }
+          videoAudioSrcs.add(src);
+        }
+        if (hasDupVideoAudio) return false;
+
+        const imgSrcs = new Set<string>();
+        const imgRe = /<img\b[^>]*?\bsrc\s*=\s*(["'])([^"']+)\1/gi;
+        while ((m = imgRe.exec(html)) !== null) {
+          const src = m[2].trim();
+          if (imgSrcs.has(src)) return true;
+          imgSrcs.add(src);
+        }
+      }
+    } catch {
+      // ignore read failure
+    }
+  }
+  return false;
+}
+
+function normalizeLintEntryForCuthol(
+  raw: Omit<HyperFramesLintResult, "cached">,
+  absCompDir: string,
+  entryHtml: string
+): Omit<HyperFramesLintResult, "cached"> {
+  const findings: HyperFramesLintFinding[] = [];
+  const infoFindings: HyperFramesLintFinding[] = [...(raw.info_findings ?? [])];
+
+  for (const f of raw.findings ?? []) {
+    if (
+      SIZE_AND_SPLIT_LINT_CODES.has(f.code) ||
+      isDuplicateImgMediaDiscoveryFinding(f, absCompDir, entryHtml)
+    ) {
+      const infoItem: HyperFramesLintFinding = { ...f, severity: "info" };
+      if (
+        !infoFindings.some(
+          (x) => x.code === infoItem.code && x.message === infoItem.message && x.snippet === infoItem.snippet
+        )
+      ) {
+        infoFindings.push(infoItem);
+      }
+    } else {
+      findings.push(f);
+    }
+  }
+
+  return {
+    ok: findings.every((f) => f.severity !== "error"),
+    content_hash: raw.content_hash,
+    findings,
+    info_findings: infoFindings,
+  };
+}
+
 export function lintHyperFramesComposition(
   compositionDir: string,
   entryHtml = "index.html",
@@ -198,8 +302,9 @@ export function lintHyperFramesComposition(
         "cached"
       >;
       if (parsed && Array.isArray(parsed.findings) && parsed.content_hash === contentHash) {
-        lintMemoryCache.set(contentHash, parsed);
-        return { ...parsed, cached: true };
+        const normalized = normalizeLintEntryForCuthol(parsed, absCompDir, entryHtml);
+        lintMemoryCache.set(contentHash, normalized);
+        return { ...normalized, cached: true };
       }
     } catch {
       // ignore corrupt cache file
@@ -235,13 +340,24 @@ export function lintHyperFramesComposition(
         };
         for (const f of parsed.findings ?? []) {
           const code = String(f.code ?? "hyperframes_lint");
+          const isImgDup = isDuplicateImgMediaDiscoveryFinding(
+            {
+              code,
+              message: f.message,
+              snippet: f.snippet,
+              selector: f.selector,
+            },
+            absCompDir,
+            entryHtml
+          );
           const item: HyperFramesLintFinding = {
             code,
-            severity: SIZE_AND_SPLIT_LINT_CODES.has(code)
-              ? "info"
-              : f.severity === "error" || f.severity === "warning"
-                ? f.severity
-                : "info",
+            severity:
+              SIZE_AND_SPLIT_LINT_CODES.has(code) || isImgDup
+                ? "info"
+                : f.severity === "error" || f.severity === "warning"
+                  ? f.severity
+                  : "info",
             message: String(f.message ?? ""),
             ...(f.fixHint ? { fixHint: String(f.fixHint) } : {}),
             ...(f.selector ? { selector: String(f.selector) } : {}),
@@ -275,12 +391,16 @@ export function lintHyperFramesComposition(
     }
   }
 
-  const entry: Omit<HyperFramesLintResult, "cached"> = {
-    ok: findings.every((f) => f.severity !== "error"),
-    content_hash: contentHash,
-    findings,
-    info_findings: infoFindings,
-  };
+  const entry = normalizeLintEntryForCuthol(
+    {
+      ok: findings.every((f) => f.severity !== "error"),
+      content_hash: contentHash,
+      findings,
+      info_findings: infoFindings,
+    },
+    absCompDir,
+    entryHtml
+  );
   lintMemoryCache.set(contentHash, entry);
   if (diskCachePath) {
     try {
@@ -1152,6 +1272,290 @@ export function shouldUseNvencForRender(overrideEncoder?: string | null): {
   return { useNvenc: true, fallbackReason: null };
 }
 
+export type OverlayCacheReason =
+  | "cached"
+  | "new"
+  | "html_changed"
+  | "slice_changed"
+  | "global_used_changed"
+  | "props_changed"
+  | "backdrop_changed";
+
+export interface OverlayRenderItemSummary {
+  composition: string;
+  composition_dir: string;
+  blob_path: string;
+  cached: boolean;
+  reason: OverlayCacheReason;
+  elapsed_ms: number;
+}
+
+export interface RenderOverlaySummary {
+  total: number;
+  cached: number;
+  rendered: number;
+  reasons: Record<string, number>;
+  elapsed_ms: number;
+  rerendered: Array<{
+    composition: string;
+    reason: OverlayCacheReason;
+    elapsed_ms: number;
+  }>;
+  summary: string;
+}
+
+let activeOverlayTrackingMap: Map<string, OverlayRenderItemSummary> | null = null;
+
+export function beginOverlayRenderTracking(): void {
+  activeOverlayTrackingMap = new Map<string, OverlayRenderItemSummary>();
+}
+
+export function finishOverlayRenderTracking(): RenderOverlaySummary {
+  const items = activeOverlayTrackingMap ? [...activeOverlayTrackingMap.values()] : [];
+  activeOverlayTrackingMap = null;
+
+  const total = items.length;
+  let cached = 0;
+  let rendered = 0;
+  let elapsedMs = 0;
+  const reasons: Record<string, number> = {};
+  const rerendered: Array<{
+    composition: string;
+    reason: OverlayCacheReason;
+    elapsed_ms: number;
+  }> = [];
+
+  for (const item of items) {
+    elapsedMs += item.elapsed_ms;
+    if (item.cached) {
+      cached += 1;
+    } else {
+      rendered += 1;
+      reasons[item.reason] = (reasons[item.reason] ?? 0) + 1;
+      rerendered.push({
+        composition: item.composition,
+        reason: item.reason,
+        elapsed_ms: item.elapsed_ms,
+      });
+    }
+  }
+
+  const secStr = `${(elapsedMs / 1000).toFixed(2)}s`;
+  let summary: string;
+  if (total === 0) {
+    summary = `0 overlays (${secStr})`;
+  } else if (rendered === 0) {
+    summary = `${cached}/${total} cached, 0 rendered (${secStr})`;
+  } else {
+    const reasonParts = Object.entries(reasons)
+      .map(([r, c]) => `${r}=${c}`)
+      .join(", ");
+    const names = rerendered
+      .slice(0, 5)
+      .map((r) => `${r.composition}:${r.reason}`)
+      .join(", ");
+    const more = rerendered.length > 5 ? ` +${rerendered.length - 5}` : "";
+    summary = `${cached}/${total} cached, ${rendered} rendered (${reasonParts}; ${names}${more}) in ${secStr}`;
+  }
+
+  return {
+    total,
+    cached,
+    rendered,
+    reasons,
+    elapsed_ms: elapsedMs,
+    rerendered,
+    summary,
+  };
+}
+
+function recordOverlayRenderOutcome(item: OverlayRenderItemSummary): void {
+  if (!activeOverlayTrackingMap) return;
+  const key = path.resolve(item.composition_dir);
+  const existing = activeOverlayTrackingMap.get(key);
+  if (!existing) {
+    activeOverlayTrackingMap.set(key, { ...item });
+    return;
+  }
+  existing.elapsed_ms += item.elapsed_ms;
+  if (!item.cached) {
+    existing.cached = false;
+    existing.reason = item.reason;
+    existing.blob_path = item.blob_path;
+  }
+}
+
+const fileSha256Memo = new Map<string, string>();
+
+function hashFileContentSha256(filePath: string): string {
+  try {
+    const abs = path.resolve(filePath);
+    const st = fs.statSync(abs);
+    const memoKey = `${abs}:${st.size}:${st.mtimeMs}`;
+    const hit = fileSha256Memo.get(memoKey);
+    if (hit) return hit;
+    const digest = crypto.createHash("sha256").update(fs.readFileSync(abs)).digest("hex").slice(0, 16);
+    fileSha256Memo.set(memoKey, digest);
+    return digest;
+  } catch {
+    return "missing";
+  }
+}
+
+const stillThumb16x9Memo = new Map<string, Buffer | null>();
+
+function getStillImageThumb16x9Rgb24(pngPath: string): Buffer | null {
+  try {
+    const abs = path.resolve(pngPath);
+    if (!fs.existsSync(abs)) return null;
+    const st = fs.statSync(abs);
+    const memoKey = `${abs}:${st.size}`;
+    if (stillThumb16x9Memo.has(memoKey)) {
+      return stillThumb16x9Memo.get(memoKey) ?? null;
+    }
+    const sidecarPath = `${abs}.thumb16x9.rgb`;
+    if (fs.existsSync(sidecarPath) && fs.statSync(sidecarPath).size === 16 * 9 * 3) {
+      const buf = fs.readFileSync(sidecarPath);
+      stillThumb16x9Memo.set(memoKey, buf);
+      return buf;
+    }
+    const proc = spawnSync(
+      "ffmpeg",
+      [
+        "-v",
+        "error",
+        "-i",
+        abs,
+        "-vf",
+        "scale=16:9:flags=area",
+        "-frames:v",
+        "1",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "pipe:1",
+      ],
+      { maxBuffer: 65536, timeout: 10_000 }
+    );
+    const out = proc.stdout as Buffer;
+    if (proc.status === 0 && out && out.length >= 16 * 9 * 3) {
+      const slice = Buffer.from(out.subarray(0, 16 * 9 * 3));
+      stillThumb16x9Memo.set(memoKey, slice);
+      try {
+        fs.writeFileSync(sidecarPath, slice);
+      } catch {
+        // ignore sidecar write error
+      }
+      return slice;
+    }
+    stillThumb16x9Memo.set(memoKey, null);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function areStillBackdropsVisuallyEquivalent(pngA?: string, pngB?: string): boolean {
+  if (!pngA && !pngB) return true;
+  if (!pngA || !pngB) return false;
+  const absA = path.resolve(pngA);
+  const absB = path.resolve(pngB);
+  if (absA === absB) return true;
+  if (!fs.existsSync(absA) || !fs.existsSync(absB)) return false;
+  if (hashFileContentSha256(absA) === hashFileContentSha256(absB)) return true;
+
+  const thumbA = getStillImageThumb16x9Rgb24(absA);
+  const thumbB = getStillImageThumb16x9Rgb24(absB);
+  if (!thumbA || !thumbB || thumbA.length !== thumbB.length) return false;
+
+  let diffSum = 0;
+  let maxDiff = 0;
+  for (let i = 0; i < thumbA.length; i++) {
+    const d = Math.abs(thumbA[i] - thumbB[i]);
+    diffSum += d;
+    if (d > maxDiff) maxDiff = d;
+  }
+  const mae = diffSum / thumbA.length;
+  return mae <= 3.5 && maxDiff <= 24;
+}
+
+interface CompositionCacheStateRecord {
+  compositionDir: string;
+  filesHash: string;
+  usedSliceHash: string;
+  usedGlobalHash: string;
+  propsHash: string;
+  durationMs: number;
+  transparent: boolean;
+  mode: string;
+  backdropDigest: string;
+  backdropImagePath?: string;
+  cachedBlobs: Record<string, string>;
+}
+
+function getCompositionStateFilePath(blobsDir: string, absCompDir: string): string {
+  const compKey = crypto.createHash("sha256").update(path.resolve(absCompDir)).digest("hex").slice(0, 16);
+  return path.join(blobsDir, `hf_state_${compKey}.json`);
+}
+
+function readCompositionCacheState(blobsDir: string, absCompDir: string): CompositionCacheStateRecord | null {
+  const statePath = getCompositionStateFilePath(blobsDir, absCompDir);
+  if (!fs.existsSync(statePath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(statePath, "utf8")) as CompositionCacheStateRecord;
+  } catch {
+    return null;
+  }
+}
+
+function writeCompositionCacheState(
+  blobsDir: string,
+  absCompDir: string,
+  state: CompositionCacheStateRecord
+): void {
+  try {
+    fs.mkdirSync(blobsDir, { recursive: true });
+    const statePath = getCompositionStateFilePath(blobsDir, absCompDir);
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
+  } catch {
+    // ignore state write error
+  }
+}
+
+function clearBridgeMetaLastDataChangeReason(absCompDir: string): void {
+  const metaPath = path.join(absCompDir, "assets/.cuthol-bridge-meta.json");
+  if (!fs.existsSync(metaPath)) return;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+    if (parsed && parsed.lastDataChangeReason) {
+      parsed.lastDataChangeReason = null;
+      fs.writeFileSync(metaPath, JSON.stringify(parsed, null, 2), "utf8");
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function compositionOccludesHtmlBackdrop(absCompDir: string, htmlSource: string): boolean {
+  // Only an explicit author declaration on the composition root counts: `data-cuthol-opaque="true"`
+  // means the composition paints its own opaque full-frame surface for its whole duration,
+  // so the stage backdrop underneath can never show through.
+  const declared =
+    /<[^>]*\bdata-composition-id\b[^>]*\bdata-cuthol-opaque\s*=\s*["']?true\b|<[^>]*\bdata-cuthol-opaque\s*=\s*["']?true\b[^>]*\bdata-composition-id\b/i.test(
+      htmlSource
+    );
+  if (!declared) return false;
+  // Safety: transparent root or masks can still reveal the backdrop.
+  if (/#root\s*\{[^}]*\bbackground(?:-color)?\s*:\s*transparent\b/i.test(htmlSource)) {
+    return false;
+  }
+  if (/\bmask-composite\b|\b-webkit-mask\b/i.test(htmlSource)) {
+    return false;
+  }
+  return true;
+}
+
 function syncScalarVarsAndComputeCompositionHash(options: {
   absCompDir: string;
   entryHtml: string;
@@ -1169,15 +1573,26 @@ function syncScalarVarsAndComputeCompositionHash(options: {
 }): {
   hash: string;
   nativeHash: string;
+  legacyHash: string;
+  legacyNativeHash: string;
+  filesHash: string;
+  usedSliceHash: string;
+  usedGlobalHash: string;
+  propsHash: string;
+  backdropDigest: string;
+  legacyBackdropDigest: string;
+  legacyDirHash: string;
+  validLegacyDirHashes: string[];
+  lastDataChangeReason: "slice_changed" | "global_used_changed" | null;
   scalarVars: Record<string, string | number | boolean>;
   isSceneHost: boolean;
   nativeWidth: number;
   nativeHeight: number;
   targetWidth: number;
   targetHeight: number;
+  computeCandidateKey: (dirH: string, w: number, h: number, bd: string) => string;
 } {
-  // Synchronize `assets/cuthol-vars.json` BEFORE `hashDirectoryRecursive`
-  // so `recursiveDirHash` is never computed against stale variables on disk.
+  // Synchronize `assets/cuthol-vars.json` BEFORE hashing so the cache key is never computed against stale variables.
   const varsFile = path.join(options.absCompDir, "assets/cuthol-vars.json");
   const scalarVars = extractScalarHyperFramesVariables(options.props);
   const nextVarsJson = JSON.stringify(scalarVars, null, 2);
@@ -1205,75 +1620,417 @@ function syncScalarVarsAndComputeCompositionHash(options: {
     options.mode === "scene_host" &&
     Boolean(options.backdropVideoPath && fs.existsSync(options.backdropVideoPath));
 
-  const recursiveDirHash = hashDirectoryRecursive(options.absCompDir);
+  const filesHash = hashCompositionFilesExcludingBridgeData(options.absCompDir);
+  const usage = analyzeCompositionDataUsage(options.absCompDir, options.entryHtml, options.props);
+  const dataJsonPath = path.join(options.absCompDir, "assets/cuthol-data.json");
+  let parsedBridge: Partial<CutholBridgeV1> | null = null;
+  if (fs.existsSync(dataJsonPath)) {
+    try {
+      parsedBridge = JSON.parse(fs.readFileSync(dataJsonPath, "utf8")) as Partial<CutholBridgeV1>;
+    } catch {
+      parsedBridge = null;
+    }
+  }
+  const { usedSliceHash, usedGlobalHash } = computeUsedBridgePayloadHashes(parsedBridge, usage);
+  const propsHash = crypto
+    .createHash("sha256")
+    .update(JSON.stringify(options.props ?? {}))
+    .digest("hex")
+    .slice(0, 16);
+
+  const effectiveDirHash = crypto
+    .createHash("sha256")
+    .update(`files:${filesHash}\nslice:${usedSliceHash}\nglobal:${usedGlobalHash}\n`)
+    .digest("hex");
+
+  const legacyDirHash = hashDirectoryRecursive(options.absCompDir);
+
+  let validLegacyDirHashes: string[] = [];
+  let lastDataChangeReason: "slice_changed" | "global_used_changed" | null = null;
+  const metaSidecarPath = path.join(options.absCompDir, "assets/.cuthol-bridge-meta.json");
+  if (fs.existsSync(metaSidecarPath)) {
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaSidecarPath, "utf8"));
+      if (Array.isArray(meta.validLegacyDirHashes)) {
+        validLegacyDirHashes = meta.validLegacyDirHashes;
+      }
+      if (
+        meta.lastDataChangeReason === "slice_changed" ||
+        meta.lastDataChangeReason === "global_used_changed"
+      ) {
+        lastDataChangeReason = meta.lastDataChangeReason;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   let backdropDigest = "";
+  let legacyBackdropDigest = "";
+  const selfOccludesBackdrop =
+    !options.transparent &&
+    !isSceneHost &&
+    compositionOccludesHtmlBackdrop(options.absCompDir, options.htmlSource);
   if (isSceneHost && options.backdropVideoPath) {
+    backdropDigest = `video-sha256:${hashFileContentSha256(options.backdropVideoPath)}`;
     try {
       const st = fs.statSync(options.backdropVideoPath);
-      backdropDigest = `${path.basename(options.backdropVideoPath)}:${st.size}:${st.mtimeMs}`;
+      legacyBackdropDigest = `${path.basename(options.backdropVideoPath)}:${st.size}:${st.mtimeMs}`;
     } catch {
-      backdropDigest = "none";
+      legacyBackdropDigest = "none";
+    }
+  } else if (!options.transparent && selfOccludesBackdrop) {
+    backdropDigest = "self-opaque";
+    if (options.backdropImagePath) {
+      try {
+        const st = fs.statSync(options.backdropImagePath);
+        legacyBackdropDigest = `still:${path.basename(options.backdropImagePath)}:${st.size}`;
+      } catch {
+        legacyBackdropDigest = "still:none";
+      }
+    } else if (options.opaqueBackdropColor) {
+      legacyBackdropDigest = `color:${options.opaqueBackdropColor.trim().toLowerCase()}`;
     }
   } else if (!options.transparent && options.backdropImagePath) {
+    backdropDigest = `still-sha256:${hashFileContentSha256(options.backdropImagePath)}`;
     try {
       const st = fs.statSync(options.backdropImagePath);
-      backdropDigest = `still:${path.basename(options.backdropImagePath)}:${st.size}`;
+      legacyBackdropDigest = `still:${path.basename(options.backdropImagePath)}:${st.size}`;
     } catch {
-      backdropDigest = "still:none";
+      legacyBackdropDigest = "still:none";
     }
   } else if (!options.transparent && options.opaqueBackdropColor) {
     backdropDigest = `color:${options.opaqueBackdropColor.trim().toLowerCase()}`;
+    legacyBackdropDigest = backdropDigest;
   }
 
-  // Resolution-specific cache key so `draft_480p` and `master_1080p` never overwrite each other's blobs.
-  const hash = crypto
-    .createHash("sha256")
-    .update(recursiveDirHash)
-    .update(
-      JSON.stringify({
-        entry: options.entryHtml,
-        w: targetWidth,
-        h: targetHeight,
-        fps: options.fps,
-        dur: options.durationMs,
-        props: options.props,
-        transparent: options.transparent,
-        mode: options.mode,
-        backdropDigest,
-      })
-    )
-    .digest("hex")
-    .slice(0, 16);
+  const computeCandidateKey = (dirH: string, w: number, h: number, bd: string): string =>
+    crypto
+      .createHash("sha256")
+      .update(dirH)
+      .update(
+        JSON.stringify({
+          entry: options.entryHtml,
+          w,
+          h,
+          fps: options.fps,
+          dur: options.durationMs,
+          props: options.props,
+          transparent: options.transparent,
+          mode: options.mode,
+          backdropDigest: bd,
+        })
+      )
+      .digest("hex")
+      .slice(0, 16);
 
-  const nativeHash = crypto
-    .createHash("sha256")
-    .update(recursiveDirHash)
-    .update(
-      JSON.stringify({
-        entry: options.entryHtml,
-        w: nativeWidth,
-        h: nativeHeight,
-        fps: options.fps,
-        dur: options.durationMs,
-        props: options.props,
-        transparent: options.transparent,
-        mode: options.mode,
-        backdropDigest,
-      })
-    )
-    .digest("hex")
-    .slice(0, 16);
+  // Resolution-specific cache key depending ONLY on composition files + used slice + used global data.
+  const hash = computeCandidateKey(effectiveDirHash, targetWidth, targetHeight, backdropDigest);
+  const nativeHash = computeCandidateKey(effectiveDirHash, nativeWidth, nativeHeight, backdropDigest);
+  const legacyHash = computeCandidateKey(legacyDirHash, targetWidth, targetHeight, legacyBackdropDigest);
+  const legacyNativeHash = computeCandidateKey(legacyDirHash, nativeWidth, nativeHeight, legacyBackdropDigest);
 
   return {
     hash,
     nativeHash,
+    legacyHash,
+    legacyNativeHash,
+    filesHash,
+    usedSliceHash,
+    usedGlobalHash,
+    propsHash,
+    backdropDigest,
+    legacyBackdropDigest,
+    legacyDirHash,
+    validLegacyDirHashes,
+    lastDataChangeReason,
     scalarVars,
     isSceneHost,
     nativeWidth,
     nativeHeight,
     targetWidth,
     targetHeight,
+    computeCandidateKey,
   };
+}
+
+function isValidVideoBlobOnDisk(blobPath: string): boolean {
+  if (!blobPath || !fs.existsSync(blobPath)) return false;
+  const legacyFallbackSidecar = `${blobPath}.fallback.json`;
+  if (fs.existsSync(legacyFallbackSidecar)) {
+    for (const stale of [blobPath, legacyFallbackSidecar]) {
+      try {
+        fs.unlinkSync(stale);
+      } catch {
+        // ignore
+      }
+    }
+    return false;
+  }
+  try {
+    return fs.statSync(blobPath).size > 1000;
+  } catch {
+    return false;
+  }
+}
+
+function resolveCachedCompositionVideoBlob(params: {
+  absCompDir: string;
+  entryPath: string;
+  blobsDir: string;
+  ext: "mov" | "mp4";
+  durationMs: number;
+  transparent: boolean;
+  mode: "overlay_alpha" | "scene_host";
+  backdropImagePath?: string;
+  hashInfo: ReturnType<typeof syncScalarVarsAndComputeCompositionHash>;
+}): {
+  cachedBlobPath: string | null;
+  isExactTargetRes: boolean;
+  missReason: OverlayCacheReason;
+  matchedBackdropImagePath?: string;
+} {
+  const { absCompDir, entryPath, blobsDir, ext, durationMs, transparent, mode, backdropImagePath, hashInfo } =
+    params;
+  const {
+    hash,
+    nativeHash,
+    legacyHash,
+    legacyNativeHash,
+    filesHash,
+    usedSliceHash,
+    usedGlobalHash,
+    propsHash,
+    backdropDigest,
+    legacyDirHash,
+    validLegacyDirHashes,
+    lastDataChangeReason,
+    nativeWidth,
+    nativeHeight,
+    targetWidth,
+    targetHeight,
+    computeCandidateKey,
+  } = hashInfo;
+
+  const outBlob = path.join(blobsDir, `hf_comp_${hash}.${ext}`);
+  if (isValidVideoBlobOnDisk(outBlob)) {
+    return {
+      cachedBlobPath: outBlob,
+      isExactTargetRes: true,
+      missReason: "cached",
+      matchedBackdropImagePath: backdropImagePath,
+    };
+  }
+
+  if (nativeHash !== hash) {
+    const nativeBlob = path.join(blobsDir, `hf_comp_${nativeHash}.${ext}`);
+    if (isValidVideoBlobOnDisk(nativeBlob)) {
+      return {
+        cachedBlobPath: nativeBlob,
+        isExactTargetRes: false,
+        missReason: "cached",
+        matchedBackdropImagePath: backdropImagePath,
+      };
+    }
+  }
+
+  const prevState = readCompositionCacheState(blobsDir, absCompDir);
+  if (prevState) {
+    if (prevState.filesHash !== filesHash) {
+      return { cachedBlobPath: null, isExactTargetRes: false, missReason: "html_changed" };
+    }
+    if (prevState.usedSliceHash !== usedSliceHash) {
+      return { cachedBlobPath: null, isExactTargetRes: false, missReason: "slice_changed" };
+    }
+    if (prevState.usedGlobalHash !== usedGlobalHash) {
+      return { cachedBlobPath: null, isExactTargetRes: false, missReason: "global_used_changed" };
+    }
+    if (prevState.propsHash !== propsHash || prevState.durationMs !== durationMs) {
+      return { cachedBlobPath: null, isExactTargetRes: false, missReason: "props_changed" };
+    }
+    if (prevState.transparent !== transparent || prevState.mode !== mode) {
+      return { cachedBlobPath: null, isExactTargetRes: false, missReason: "backdrop_changed" };
+    }
+
+    const exactBdTargetKey = `${targetWidth}x${targetHeight}:${ext}:${backdropDigest}`;
+    const exactBdNativeKey = `${nativeWidth}x${nativeHeight}:${ext}:${backdropDigest}`;
+    if (prevState.cachedBlobs?.[exactBdTargetKey] && isValidVideoBlobOnDisk(prevState.cachedBlobs[exactBdTargetKey])) {
+      return {
+        cachedBlobPath: prevState.cachedBlobs[exactBdTargetKey],
+        isExactTargetRes: true,
+        missReason: "cached",
+        matchedBackdropImagePath: backdropImagePath,
+      };
+    }
+    if (prevState.cachedBlobs?.[exactBdNativeKey] && isValidVideoBlobOnDisk(prevState.cachedBlobs[exactBdNativeKey])) {
+      return {
+        cachedBlobPath: prevState.cachedBlobs[exactBdNativeKey],
+        isExactTargetRes: targetWidth === nativeWidth && targetHeight === nativeHeight,
+        missReason: "cached",
+        matchedBackdropImagePath: backdropImagePath,
+      };
+    }
+
+    const backdropMatches =
+      prevState.backdropDigest === backdropDigest ||
+      (!transparent &&
+        Boolean(backdropImagePath && prevState.backdropImagePath) &&
+        areStillBackdropsVisuallyEquivalent(backdropImagePath, prevState.backdropImagePath));
+
+    if (backdropMatches) {
+      const targetResKey = `${targetWidth}x${targetHeight}:${ext}`;
+      const nativeResKey = `${nativeWidth}x${nativeHeight}:${ext}`;
+      const savedTarget = prevState.cachedBlobs?.[targetResKey];
+      if (savedTarget && isValidVideoBlobOnDisk(savedTarget)) {
+        return {
+          cachedBlobPath: savedTarget,
+          isExactTargetRes: true,
+          missReason: "cached",
+          matchedBackdropImagePath: prevState.backdropImagePath ?? backdropImagePath,
+        };
+      }
+      const savedNative = prevState.cachedBlobs?.[nativeResKey];
+      if (savedNative && isValidVideoBlobOnDisk(savedNative)) {
+        return {
+          cachedBlobPath: savedNative,
+          isExactTargetRes: targetWidth === nativeWidth && targetHeight === nativeHeight,
+          missReason: "cached",
+          matchedBackdropImagePath: prevState.backdropImagePath ?? backdropImagePath,
+        };
+      }
+    }
+  }
+
+  if (lastDataChangeReason) {
+    return {
+      cachedBlobPath: null,
+      isExactTargetRes: false,
+      missReason: lastDataChangeReason,
+    };
+  }
+
+  // Backward-compatible lookup for pre-existing `.cuthol/blobs/hf_comp_<legacyHash>` caches
+  // when neither composition files nor used bridge slices have changed.
+  const canTryLegacyBlobs =
+    !prevState ||
+    (prevState.filesHash === filesHash &&
+      prevState.usedSliceHash === usedSliceHash &&
+      prevState.usedGlobalHash === usedGlobalHash &&
+      prevState.propsHash === propsHash &&
+      prevState.durationMs === durationMs &&
+      prevState.transparent === transparent &&
+      prevState.mode === mode);
+
+  if (canTryLegacyBlobs) {
+    const legOut = path.join(blobsDir, `hf_comp_${legacyHash}.${ext}`);
+    if (isValidVideoBlobOnDisk(legOut)) {
+      return {
+        cachedBlobPath: legOut,
+        isExactTargetRes: true,
+        missReason: "cached",
+        matchedBackdropImagePath: backdropImagePath,
+      };
+    }
+    const legNat = path.join(blobsDir, `hf_comp_${legacyNativeHash}.${ext}`);
+    if (isValidVideoBlobOnDisk(legNat)) {
+      return {
+        cachedBlobPath: legNat,
+        isExactTargetRes: targetWidth === nativeWidth && targetHeight === nativeHeight,
+        missReason: "cached",
+        matchedBackdropImagePath: backdropImagePath,
+      };
+    }
+
+    const candidateDirHashes = [
+      legacyDirHash,
+      ...validLegacyDirHashes.filter((h) => h !== legacyDirHash),
+    ];
+    for (const candDirH of candidateDirHashes) {
+      for (const [w, h, exact] of [
+        [targetWidth, targetHeight, true] as const,
+        [nativeWidth, nativeHeight, targetWidth === nativeWidth && targetHeight === nativeHeight] as const,
+      ]) {
+        const directCand = path.join(
+          blobsDir,
+          `hf_comp_${computeCandidateKey(candDirH, w, h, hashInfo.legacyBackdropDigest)}.${ext}`
+        );
+        if (isValidVideoBlobOnDisk(directCand)) {
+          return {
+            cachedBlobPath: directCand,
+            isExactTargetRes: exact,
+            missReason: "cached",
+            matchedBackdropImagePath: backdropImagePath,
+          };
+        }
+      }
+    }
+
+    if (!transparent && backdropImagePath && fs.existsSync(blobsDir)) {
+      try {
+        const stillFiles = fs.readdirSync(blobsDir).filter((f) => f.startsWith("sh_still_") && f.endsWith(".png"));
+        for (const candDirH of candidateDirHashes) {
+          for (const [w, h, exact] of [
+            [targetWidth, targetHeight, true] as const,
+            [nativeWidth, nativeHeight, targetWidth === nativeWidth && targetHeight === nativeHeight] as const,
+          ]) {
+            for (const sf of stillFiles) {
+              const sfFull = path.join(blobsDir, sf);
+              let sfSize = 0;
+              try {
+                sfSize = fs.statSync(sfFull).size;
+              } catch {
+                continue;
+              }
+              const bd = `still:${sf}:${sfSize}`;
+              const candHash = computeCandidateKey(candDirH, w, h, bd);
+              const candBlob = path.join(blobsDir, `hf_comp_${candHash}.${ext}`);
+              if (isValidVideoBlobOnDisk(candBlob)) {
+                if (
+                  backdropDigest === "self-opaque" ||
+                  areStillBackdropsVisuallyEquivalent(backdropImagePath, sfFull)
+                ) {
+                  return {
+                    cachedBlobPath: candBlob,
+                    isExactTargetRes: exact,
+                    missReason: "cached",
+                    matchedBackdropImagePath: sfFull,
+                  };
+                }
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore directory scan error
+      }
+    }
+  }
+
+  if (prevState) {
+    return { cachedBlobPath: null, isExactTargetRes: false, missReason: "backdrop_changed" };
+  }
+
+  // Determine initial miss reason when no prior state file existed
+  let missReason: OverlayCacheReason = "new";
+  const dataJsonPath = path.join(absCompDir, "assets/cuthol-data.json");
+  if (fs.existsSync(blobsDir) && fs.existsSync(dataJsonPath)) {
+    try {
+      const hasAnyExistingCompBlobs = fs
+        .readdirSync(blobsDir)
+        .some((f) => f.startsWith("hf_comp_") && (f.endsWith(".mp4") || f.endsWith(".mov")));
+      if (hasAnyExistingCompBlobs) {
+        const htmlMtime = fs.statSync(entryPath).mtimeMs;
+        const dataMtime = fs.statSync(dataJsonPath).mtimeMs;
+        if (htmlMtime > dataMtime + 50) {
+          missReason = "html_changed";
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return { cachedBlobPath: null, isExactTargetRes: false, missReason };
 }
 
 function stageCompositionRenderDir(options: {
@@ -1398,7 +2155,9 @@ export function renderHyperFramesCompositionToMp4(options: {
   useGpu?: boolean;
   crf?: number;
 }): string {
+  const tStart = Date.now();
   const absCompDir = path.resolve(options.compositionDir);
+  const compName = path.basename(absCompDir) || "main";
   const entryPath = path.join(absCompDir, options.entryHtml);
   if (!fs.existsSync(entryPath)) {
     throw new CutholError(DIAGNOSTICS.MISSING_FILE_ON_DISK("composition", entryPath));
@@ -1422,39 +2181,78 @@ export function renderHyperFramesCompositionToMp4(options: {
     fs.writeFileSync(entryPath, htmlSource, "utf8");
   }
 
-  const { hash, scalarVars, isSceneHost, nativeWidth, nativeHeight, targetWidth, targetHeight } =
-    syncScalarVarsAndComputeCompositionHash({
-      absCompDir,
-      entryHtml: options.entryHtml,
-      htmlSource,
-      width: options.width,
-      height: options.height,
-      fps: options.fps,
-      durationMs: options.durationMs,
-      props: options.props,
-      transparent: options.transparent,
-      mode,
-      backdropVideoPath: options.backdropVideoPath,
-      opaqueBackdropColor: options.opaqueBackdropColor,
-      backdropImagePath: options.backdropImagePath,
-    });
+  const hashInfo = syncScalarVarsAndComputeCompositionHash({
+    absCompDir,
+    entryHtml: options.entryHtml,
+    htmlSource,
+    width: options.width,
+    height: options.height,
+    fps: options.fps,
+    durationMs: options.durationMs,
+    props: options.props,
+    transparent: options.transparent,
+    mode,
+    backdropVideoPath: options.backdropVideoPath,
+    opaqueBackdropColor: options.opaqueBackdropColor,
+    backdropImagePath: options.backdropImagePath,
+  });
+  const { hash, scalarVars, isSceneHost, nativeWidth, nativeHeight, targetWidth, targetHeight } = hashInfo;
 
   fs.mkdirSync(options.blobsDir, { recursive: true });
   const ext = useTrueAlphaMov ? "mov" : "mp4";
   const outBlob = path.join(options.blobsDir, `hf_comp_${hash}.${ext}`);
-  // Blobs written by older versions as a placeholder box carry a `.fallback.json` sidecar; never reuse them.
-  const legacyFallbackSidecar = `${outBlob}.fallback.json`;
-  if (fs.existsSync(legacyFallbackSidecar)) {
-    for (const stale of [outBlob, legacyFallbackSidecar]) {
-      try {
-        fs.unlinkSync(stale);
-      } catch {
-        // ignore
-      }
-    }
-  }
-  if (fs.existsSync(outBlob) && fs.statSync(outBlob).size > 1000) {
-    return outBlob;
+
+  const persistStateForBlob = (resolvedBlob: string, isExactRes: boolean, matchedBackdrop?: string): void => {
+    const prev = readCompositionCacheState(options.blobsDir, absCompDir);
+    const cachedBlobs: Record<string, string> = { ...(prev?.cachedBlobs ?? {}) };
+    const resKey = isExactRes
+      ? `${targetWidth}x${targetHeight}:${ext}`
+      : `${nativeWidth}x${nativeHeight}:${ext}`;
+    cachedBlobs[resKey] = resolvedBlob;
+    cachedBlobs[`${resKey}:${hashInfo.backdropDigest}`] = resolvedBlob;
+    writeCompositionCacheState(options.blobsDir, absCompDir, {
+      compositionDir: absCompDir,
+      filesHash: hashInfo.filesHash,
+      usedSliceHash: hashInfo.usedSliceHash,
+      usedGlobalHash: hashInfo.usedGlobalHash,
+      propsHash: hashInfo.propsHash,
+      durationMs: options.durationMs,
+      transparent: options.transparent,
+      mode,
+      backdropDigest: hashInfo.backdropDigest,
+      backdropImagePath: matchedBackdrop ?? options.backdropImagePath,
+      cachedBlobs,
+    });
+    clearBridgeMetaLastDataChangeReason(absCompDir);
+  };
+
+  const cacheLookup = resolveCachedCompositionVideoBlob({
+    absCompDir,
+    entryPath,
+    blobsDir: options.blobsDir,
+    ext,
+    durationMs: options.durationMs,
+    transparent: options.transparent,
+    mode,
+    backdropImagePath: options.backdropImagePath,
+    hashInfo,
+  });
+
+  if (cacheLookup.cachedBlobPath) {
+    persistStateForBlob(
+      cacheLookup.cachedBlobPath,
+      cacheLookup.isExactTargetRes,
+      cacheLookup.matchedBackdropImagePath
+    );
+    recordOverlayRenderOutcome({
+      composition: compName,
+      composition_dir: absCompDir,
+      blob_path: cacheLookup.cachedBlobPath,
+      cached: true,
+      reason: "cached",
+      elapsed_ms: Date.now() - tStart,
+    });
+    return cacheLookup.cachedBlobPath;
   }
 
   const hfBin = findLocalHyperFramesCliMjs();
@@ -1588,6 +2386,15 @@ export function renderHyperFramesCompositionToMp4(options: {
         } catch {
           // non-blocking metadata write
         }
+        persistStateForBlob(outBlob, true, options.backdropImagePath);
+        recordOverlayRenderOutcome({
+          composition: compName,
+          composition_dir: absCompDir,
+          blob_path: outBlob,
+          cached: false,
+          reason: cacheLookup.missReason,
+          elapsed_ms: Date.now() - tStart,
+        });
         if (useTrueAlphaMov) {
           recordCompositionAlphaBboxSidecar(absCompDir, outBlob, durationSec * 0.5);
         }
@@ -1757,22 +2564,23 @@ export function renderHyperFramesSingleFramePng(options: {
   );
   const snappedSec = Number((frameIdx / options.fps).toFixed(6));
 
-  const { hash, nativeHash, isSceneHost, nativeWidth, nativeHeight, targetWidth, targetHeight } =
-    syncScalarVarsAndComputeCompositionHash({
-      absCompDir,
-      entryHtml: options.entryHtml,
-      htmlSource,
-      width: options.width,
-      height: options.height,
-      fps: options.fps,
-      durationMs: options.durationMs,
-      props: options.props,
-      transparent: options.transparent,
-      mode,
-      backdropVideoPath: options.backdropVideoPath,
-      opaqueBackdropColor: options.opaqueBackdropColor,
-      backdropImagePath: options.backdropImagePath,
-    });
+  const hashInfo = syncScalarVarsAndComputeCompositionHash({
+    absCompDir,
+    entryHtml: options.entryHtml,
+    htmlSource,
+    width: options.width,
+    height: options.height,
+    fps: options.fps,
+    durationMs: options.durationMs,
+    props: options.props,
+    transparent: options.transparent,
+    mode,
+    backdropVideoPath: options.backdropVideoPath,
+    opaqueBackdropColor: options.opaqueBackdropColor,
+    backdropImagePath: options.backdropImagePath,
+  });
+  const { hash, nativeHash, legacyHash, isSceneHost, nativeWidth, nativeHeight, targetWidth, targetHeight } =
+    hashInfo;
 
   fs.mkdirSync(options.blobsDir, { recursive: true });
   const outPng = path.join(options.blobsDir, `hf_frame_${hash}_f${frameIdx}.png`);
@@ -1782,46 +2590,39 @@ export function renderHyperFramesSingleFramePng(options: {
     }
     return { pngPath: outPng, snappedSec, frameIdx };
   }
-
-  // If the full video blob (.mov or .mp4) is ALREADY cached at target resolution, extract the exact frame `frameIdx` from it
-  const cachedMov = path.join(options.blobsDir, `hf_comp_${hash}.mov`);
-  const cachedMp4 = path.join(options.blobsDir, `hf_comp_${hash}.mp4`);
-  const cachedVideo = fs.existsSync(cachedMov)
-    ? cachedMov
-    : fs.existsSync(cachedMp4)
-      ? cachedMp4
-      : null;
-
-  if (cachedVideo && fs.statSync(cachedVideo).size > 1000) {
-    if (extractFrameFromVideoBlob(cachedVideo, frameIdx, options.fps, outPng)) {
-      if (options.transparent && !isSceneHost && cachedVideo.endsWith(".mov")) {
-        recordCompositionAlphaBboxSidecar(absCompDir, outPng);
-      }
-      return { pngPath: outPng, snappedSec, frameIdx };
+  const legPng = path.join(options.blobsDir, `hf_frame_${legacyHash}_f${frameIdx}.png`);
+  if (legacyHash !== hash && fs.existsSync(legPng) && fs.statSync(legPng).size > 200) {
+    if (options.transparent && !isSceneHost) {
+      recordCompositionAlphaBboxSidecar(absCompDir, legPng);
     }
+    return { pngPath: legPng, snappedSec, frameIdx };
   }
 
-  // If a master-resolution video blob is already cached (`nativeHash`), scale from it instead of launching Chrome
-  if (nativeHash !== hash) {
-    const nativeMov = path.join(options.blobsDir, `hf_comp_${nativeHash}.mov`);
-    const nativeMp4 = path.join(options.blobsDir, `hf_comp_${nativeHash}.mp4`);
-    const nativeVideo = fs.existsSync(nativeMov)
-      ? nativeMov
-      : fs.existsSync(nativeMp4)
-        ? nativeMp4
-        : null;
-    if (nativeVideo && fs.statSync(nativeVideo).size > 1000) {
-      if (
-        extractFrameFromVideoBlob(
-          nativeVideo,
-          frameIdx,
-          options.fps,
-          outPng,
-          targetWidth,
-          targetHeight
-        )
-      ) {
-        if (options.transparent && !isSceneHost && nativeVideo.endsWith(".mov")) {
+  for (const candExt of ["mov", "mp4"] as const) {
+    const resolved = resolveCachedCompositionVideoBlob({
+      absCompDir,
+      entryPath,
+      blobsDir: options.blobsDir,
+      ext: candExt,
+      durationMs: options.durationMs,
+      transparent: candExt === "mov",
+      mode,
+      backdropImagePath: options.backdropImagePath,
+      hashInfo,
+    });
+    if (resolved.cachedBlobPath) {
+      const extracted = resolved.isExactTargetRes
+        ? extractFrameFromVideoBlob(resolved.cachedBlobPath, frameIdx, options.fps, outPng)
+        : extractFrameFromVideoBlob(
+            resolved.cachedBlobPath,
+            frameIdx,
+            options.fps,
+            outPng,
+            targetWidth,
+            targetHeight
+          );
+      if (extracted) {
+        if (options.transparent && !isSceneHost && resolved.cachedBlobPath.endsWith(".mov")) {
           recordCompositionAlphaBboxSidecar(absCompDir, outPng);
         }
         return { pngPath: outPng, snappedSec, frameIdx };

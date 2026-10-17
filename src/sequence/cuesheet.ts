@@ -9,6 +9,7 @@
 
 import { resolveCueStartMs } from "../core/timeline.js";
 import {
+  allocateNextHandle,
   AspectPreset,
   createDefaultAudioChain,
   createDefaultPlacement,
@@ -30,6 +31,7 @@ import {
 } from "../core/schema.js";
 import { loadSequence, WorkspacePaths } from "../core/workspace.js";
 import { commitVerifiedMutation, VerificationReport, verifySequence } from "../verify/gates.js";
+import { syncCueAnchors } from "./lanes.js";
 import { computeClipDurationMs, reflowSpine } from "./spine.js";
 
 export interface CueSheetSpineEntry {
@@ -43,6 +45,7 @@ export interface CueSheetSpineEntry {
   speed_ramp?: SpeedRampPoint[] | null;
   placement?: Partial<SpatialPlacement>;
   gain_db?: number;
+  muted?: boolean;
   fade_in_ms?: number;
   fade_out_ms?: number;
   denoise?: boolean;
@@ -55,7 +58,7 @@ export interface CueSheetSpineEntry {
 }
 
 export interface CueSheetCueEntry {
-  id: string;
+  id?: string;
   lane_id: string;
   op?: "upsert" | "delete";
   kind?: LaneKind;
@@ -69,6 +72,7 @@ export interface CueSheetCueEntry {
   typography?: Partial<TypographySpec>;
   composition?: HyperFramesMountSpec;
   gain_db?: number;
+  muted?: boolean;
   envelopes?: ParameterEnvelope[];
 }
 
@@ -176,6 +180,7 @@ export function mergeCueSheetIntoSequence(
         if (entry.speed_ramp !== undefined) updated.playback.speed_ramp = entry.speed_ramp;
         if (entry.placement) Object.assign(updated.placement, entry.placement);
         if (entry.gain_db !== undefined) updated.audio_chain.gain_db = entry.gain_db;
+        if (entry.muted !== undefined) updated.audio_chain.muted = entry.muted;
         if (entry.fade_in_ms !== undefined) updated.audio_chain.fade_in_ms = entry.fade_in_ms;
         if (entry.fade_out_ms !== undefined) updated.audio_chain.fade_out_ms = entry.fade_out_ms;
         if (entry.denoise !== undefined) updated.audio_chain.denoise.enabled = entry.denoise;
@@ -226,6 +231,7 @@ export function mergeCueSheetIntoSequence(
           envelopes: entry.envelopes ?? [],
         };
         if (entry.gain_db !== undefined) created.audio_chain.gain_db = entry.gain_db;
+        if (entry.muted !== undefined) created.audio_chain.muted = entry.muted;
         if (entry.fade_in_ms !== undefined) created.audio_chain.fade_in_ms = entry.fade_in_ms;
         if (entry.fade_out_ms !== undefined) created.audio_chain.fade_out_ms = entry.fade_out_ms;
         if (entry.denoise !== undefined) created.audio_chain.denoise.enabled = entry.denoise;
@@ -284,11 +290,17 @@ export function mergeCueSheetIntoSequence(
   // Merge Lane Cues (preserving ID even if moved between lanes!)
   if (sheet.cues) {
     for (const entry of sheet.cues) {
+      const allCueIds = seq.lanes.flatMap((l) => l.cues.map((c) => c.id));
+      const resolvedId =
+        entry.id && entry.id.trim() && entry.id.trim() !== "auto"
+          ? entry.id.trim()
+          : allocateNextHandle(allCueIds, "cue", seq);
+
       // Locate existing cue across all lanes
       let prevCue: LaneCue | undefined;
       let prevLaneId: string | undefined;
       for (const lane of seq.lanes) {
-        const idx = lane.cues.findIndex((c) => c.id === entry.id);
+        const idx = lane.cues.findIndex((c) => c.id === resolvedId);
         if (idx >= 0) {
           prevCue = lane.cues[idx];
           prevLaneId = lane.id;
@@ -298,7 +310,7 @@ export function mergeCueSheetIntoSequence(
       }
 
       if (entry.op === "delete") {
-        if (prevCue) diff.cues_removed.push(entry.id);
+        if (prevCue) diff.cues_removed.push(resolvedId);
         continue;
       }
 
@@ -321,11 +333,27 @@ export function mergeCueSheetIntoSequence(
         const updated: LaneCue = structuredClone(prevCue);
         if (entry.kind !== undefined) updated.kind = entry.kind;
         if (entry.asset_handle !== undefined) updated.asset_handle = entry.asset_handle;
-        if (entry.anchor !== undefined) updated.anchor = entry.anchor;
+        if (entry.anchor !== undefined) {
+          if (entry.anchor === null) {
+            updated.anchor = null;
+            delete updated.cue_anchor;
+          } else {
+            const isSpine = seq.spine.clips.some((c) => c.id === entry.anchor!.ref);
+            const isCue = !isSpine && seq.lanes.some((l) => l.cues.some((c) => c.id === entry.anchor!.ref));
+            if (isCue) {
+              updated.anchor = null;
+              updated.cue_anchor = entry.anchor;
+            } else {
+              updated.anchor = entry.anchor;
+              delete updated.cue_anchor;
+            }
+          }
+        }
         if (entry.at_ms !== undefined) {
           updated.at_ms = entry.at_ms;
-          if (entry.anchor === undefined && prevCue.anchor !== null && entry.at_ms !== prevCue.at_ms) {
+          if (entry.anchor === undefined && (prevCue.anchor !== null || prevCue.cue_anchor) && entry.at_ms !== prevCue.at_ms) {
             updated.anchor = null;
+            delete updated.cue_anchor;
           }
         }
         if (entry.duration_ms !== undefined) updated.duration_ms = entry.duration_ms;
@@ -367,6 +395,10 @@ export function mergeCueSheetIntoSequence(
           if (!updated.audio_chain) updated.audio_chain = createDefaultAudioChain();
           updated.audio_chain.gain_db = entry.gain_db;
         }
+        if (entry.muted !== undefined) {
+          if (!updated.audio_chain) updated.audio_chain = createDefaultAudioChain();
+          updated.audio_chain.muted = entry.muted;
+        }
         if (entry.envelopes !== undefined) updated.envelopes = entry.envelopes;
         if (updated.anchor) {
           updated.at_ms = resolveCueStartMs(seq, updated);
@@ -374,22 +406,38 @@ export function mergeCueSheetIntoSequence(
 
         targetLane.cues.push(updated);
         if (prevLaneId !== targetLane.id || JSON.stringify(prevCue) !== JSON.stringify(updated)) {
-          diff.cues_updated.push(entry.id);
+          diff.cues_updated.push(resolvedId);
         }
       } else {
         const kind = entry.kind ?? targetLane.kind;
+        let spineAnchor: CueAnchor | null = entry.anchor ?? null;
+        let cueAnchor: CueAnchor | undefined;
+        if (entry.anchor) {
+          const isSpine = seq.spine.clips.some((c) => c.id === entry.anchor!.ref);
+          const isCue = !isSpine && seq.lanes.some((l) => l.cues.some((c) => c.id === entry.anchor!.ref));
+          if (isCue) {
+            spineAnchor = null;
+            cueAnchor = entry.anchor;
+          }
+        }
         const created: LaneCue = {
-          id: entry.id,
+          id: resolvedId,
           kind,
           asset_handle: entry.asset_handle,
-          anchor: entry.anchor ?? null,
+          anchor: spineAnchor,
+          ...(cueAnchor ? { cue_anchor: cueAnchor } : {}),
           at_ms: entry.at_ms ?? 0,
           duration_ms: entry.duration_ms ?? 2000,
           source_in_ms: entry.source_in_ms,
           source_out_ms: entry.source_out_ms,
           placement: { ...createDefaultPlacement(), ...(entry.placement ?? {}) },
           audio_chain:
-            kind === "music" || kind === "sfx" || kind === "voiceover" || kind === "broll"
+            kind === "music" ||
+            kind === "sfx" ||
+            kind === "voiceover" ||
+            kind === "broll" ||
+            entry.gain_db !== undefined ||
+            entry.muted !== undefined
               ? createDefaultAudioChain()
               : undefined,
           typography: entry.typography
@@ -412,12 +460,18 @@ export function mergeCueSheetIntoSequence(
           composition: entry.composition,
           envelopes: entry.envelopes ?? [],
         };
-        if (entry.gain_db !== undefined && created.audio_chain) {
+        if (entry.gain_db !== undefined) {
+          if (!created.audio_chain) created.audio_chain = createDefaultAudioChain();
           created.audio_chain.gain_db = entry.gain_db;
+        }
+        if (entry.muted !== undefined) {
+          if (!created.audio_chain) created.audio_chain = createDefaultAudioChain();
+          created.audio_chain.muted = entry.muted;
         }
 
         targetLane.cues.push(created);
-        diff.cues_added.push(entry.id);
+        syncSequenceHandleCounters(seq, [resolvedId]);
+        diff.cues_added.push(resolvedId);
       }
     }
   }
@@ -429,6 +483,7 @@ export function mergeCueSheetIntoSequence(
       cue.at_ms = resolveCueStartMs(seq, cue);
     }
   }
+  syncCueAnchors(seq);
 
   return { nextSeq: seq, diff };
 }
@@ -484,6 +539,7 @@ export function exportSequenceToCueSheet(seq: CutholSequence): CutholCueSheet {
       speed_ramp: c.playback.speed_ramp,
       placement: c.placement,
       gain_db: c.audio_chain.gain_db,
+      muted: c.audio_chain.muted,
       fade_in_ms: c.audio_chain.fade_in_ms,
       fade_out_ms: c.audio_chain.fade_out_ms,
       denoise: c.audio_chain.denoise.enabled,
@@ -501,7 +557,7 @@ export function exportSequenceToCueSheet(seq: CutholSequence): CutholCueSheet {
         op: "upsert" as const,
         kind: cue.kind,
         asset_handle: cue.asset_handle,
-        anchor: cue.anchor,
+        anchor: cue.anchor ?? cue.cue_anchor ?? null,
         at_ms: cue.at_ms,
         duration_ms: cue.duration_ms,
         source_in_ms: cue.source_in_ms,
@@ -510,6 +566,7 @@ export function exportSequenceToCueSheet(seq: CutholSequence): CutholCueSheet {
         typography: cue.typography,
         composition: cue.composition,
         gain_db: cue.audio_chain?.gain_db,
+        muted: cue.audio_chain?.muted,
         envelopes: cue.envelopes,
       }))
     ),

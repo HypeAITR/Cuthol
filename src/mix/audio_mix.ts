@@ -43,6 +43,7 @@ export interface NormalizeAudioResult {
   target_reached: boolean;
   warning?: string;
   adjusted_clips_count: number;
+  skipped_muted_count?: number;
   adjusted_clips: Array<{
     id: string;
     integrated_lufs: number;
@@ -298,10 +299,13 @@ export function normalizeSequenceAudio(options: {
 
   for (const clip of initialSeq.spine.clips) {
     if (targetSet && !targetSet.has(clip.id)) continue;
+    if (clip.audio_chain.muted) continue;
     ensureLoudnessForAsset(clip.asset_handle);
   }
   for (const lane of initialSeq.lanes) {
+    if (lane.muted) continue;
     for (const cue of lane.cues) {
+      if (cue.audio_chain?.muted) continue;
       const includeCue = targetSet ? targetSet.has(cue.id) : lane.id === "ln_vo" || cue.kind === "voiceover";
       if (!includeCue) continue;
       ensureLoudnessForAsset(cue.asset_handle);
@@ -310,7 +314,9 @@ export function normalizeSequenceAudio(options: {
   const fallbackToAllAudioCues = !targetSet && loudnessByAsset.size === 0;
   if (fallbackToAllAudioCues) {
     for (const lane of initialSeq.lanes) {
+      if (lane.muted) continue;
       for (const cue of lane.cues) {
+        if (cue.audio_chain?.muted) continue;
         ensureLoudnessForAsset(cue.asset_handle);
       }
     }
@@ -327,8 +333,17 @@ export function normalizeSequenceAudio(options: {
         applied_gain_db: number;
         effective_mix_gain_db: number;
       }> = [];
+      let skippedMutedCount = 0;
+      const libMap = new Map(seq.library.map((x) => [x.handle, x]));
       for (const clip of seq.spine.clips) {
         if (targetSet && !targetSet.has(clip.id)) continue;
+        if (clip.audio_chain.muted) {
+          const asset = libMap.get(clip.asset_handle);
+          if (!asset || asset.probe.has_audio) {
+            skippedMutedCount++;
+          }
+          continue;
+        }
         const m = loudnessByAsset.get(clip.asset_handle);
         if (!m) continue;
 
@@ -355,6 +370,13 @@ export function normalizeSequenceAudio(options: {
             ? targetSet.has(cue.id)
             : fallbackToAllAudioCues || lane.id === "ln_vo" || cue.kind === "voiceover";
           if (!includeCue || !cue.asset_handle) continue;
+          if (lane.muted || cue.audio_chain?.muted) {
+            const asset = libMap.get(cue.asset_handle);
+            if (!asset || asset.probe.has_audio) {
+              skippedMutedCount++;
+            }
+            continue;
+          }
           const m = loudnessByAsset.get(cue.asset_handle);
           if (!m) continue;
 
@@ -384,11 +406,12 @@ export function normalizeSequenceAudio(options: {
       for (const item of list) {
         item.effective_mix_gain_db = Number((item.applied_gain_db + cal.masterGainDb).toFixed(2));
       }
-      return { list, cal };
+      return { list, cal, skippedMutedCount };
     }
   );
 
   const adjusted = mutRes.list;
+  const skippedMutedCount = mutRes.skippedMutedCount;
   const { before: mixBefore, after: mixAfter, masterGainDb, targetReached } = mutRes.cal;
   const warningMsg = !targetReached
     ? `Hedef ses seviyesine (${targetLufs} LUFS) tam ulaşılamadı: ölçülen son karışım ${mixAfter.integrated_lufs} LUFS (gerçek tepe ${mixAfter.true_peak_dbtp} dBTP, tavan ${truePeakDbtp} dBTP).`
@@ -494,6 +517,7 @@ export function normalizeSequenceAudio(options: {
     target_reached: targetReached,
     ...(warningMsg ? { warning: warningMsg } : {}),
     adjusted_clips_count: adjusted.length,
+    ...(skippedMutedCount > 0 ? { skipped_muted_count: skippedMutedCount } : {}),
     adjusted_clips: returnedClips,
     ...(omittedCount > 0 ? { adjusted_clips_omitted: omittedCount } : {}),
     decision_trace: decisionTrace,

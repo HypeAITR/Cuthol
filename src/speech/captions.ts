@@ -186,42 +186,36 @@ export function generateSequenceCaptions(options: {
 
     // Also check voiceover lane cues (`ln_vo` or `cue.kind === "voiceover"`) unless `--all-spine` is set
     if (!options.allSpineOnly) {
+      const seenVoAssets = new Set<string>();
       for (const lane of initialSeq.lanes) {
         if (lane.muted) continue;
         for (const voCue of lane.cues) {
           const isVoCue = lane.id === "ln_vo" || lane.kind === "voiceover" || voCue.kind === "voiceover";
           if (!isVoCue || !voCue.asset_handle || voCue.audio_chain?.muted) continue;
+          if (seenSpineAssets.has(voCue.asset_handle) || seenVoAssets.has(voCue.asset_handle)) {
+            continue;
+          }
+          seenVoAssets.add(voCue.asset_handle);
           try {
             const doc = loadCachedTranscriptForAsset(options.workspaceDir, voCue.asset_handle, lang);
             if (!detectedTranscriptLang && doc.language) detectedTranscriptLang = doc.language;
-            const cueStart = resolveCueStartMs(initialSeq, voCue);
-            const cueRate = getCuePlaybackRate(voCue);
-            const cueSourceIn = voCue.source_in_ms ?? 0;
-            const maxSpanMs = Math.round(voCue.duration_ms * cueRate);
-            const cueSourceOut = Math.min(
-              voCue.source_out_ms ?? cueSourceIn + maxSpanMs,
-              cueSourceIn + maxSpanMs
+            const allAssetWords = doc.words.map((w) => ({
+              word: w.punctuated_word || w.word,
+              source_start_ms: w.source_start_ms,
+              source_end_ms: w.source_end_ms,
+              confidence: w.confidence,
+            }));
+            const projected = projectTranscriptAcrossSequence(
+              initialSeq,
+              voCue.asset_handle,
+              allAssetWords
             );
-            for (const w of doc.words) {
-              if (w.source_end_ms <= cueSourceIn || w.source_start_ms >= cueSourceOut) continue;
-              const clampedStart = Math.max(cueSourceIn, w.source_start_ms);
-              const clampedEnd = Math.min(cueSourceOut, w.source_end_ms);
-              if (clampedEnd <= clampedStart) continue;
-              const seqStart = cueStart + Math.round((clampedStart - cueSourceIn) / cueRate);
-              const seqEnd = Math.max(
-                seqStart + 1,
-                cueStart + Math.min(voCue.duration_ms, Math.round((clampedEnd - cueSourceIn) / cueRate))
-              );
-              allProjectedWords.push({
-                word: w.punctuated_word || w.word,
-                source_start_ms: clampedStart,
-                source_end_ms: clampedEnd,
-                sequence_start_ms: seqStart,
-                sequence_end_ms: seqEnd,
-                clip_id: voCue.id,
-                excised: false,
-                confidence: w.confidence,
-              });
+            for (const pw of projected) {
+              if (pw.excised || pw.sequence_start_ms === null || pw.sequence_end_ms === null) {
+                skippedExcisedCount++;
+              } else {
+                allProjectedWords.push(pw);
+              }
             }
           } catch {
             // Ignore if no transcript

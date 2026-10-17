@@ -30,6 +30,7 @@ import {
   validateActionArgs,
   WORKSPACELESS_TOOLS,
 } from "./catalog.js";
+import { formatWorkspaceOpenSummary, loadSequence } from "../core/workspace.js";
 import { resolveExtension } from "../extensions/manager.js";
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -286,7 +287,7 @@ const ENVELOPE_KEYS = new Set([
 ]);
 
 /** Keys of edit results that only repeat what the `Changed:` line already says. */
-const MUTATION_ECHO_KEYS = new Set(["clip", "cue", "clips", "remaining_clips", "remainingClips", "envelope", "revision", "sequence"]);
+const MUTATION_ECHO_KEYS = new Set(["clip", "cue", "clips", "remaining_clips", "remainingClips", "remainingCues", "envelope", "revision", "sequence"]);
 const HINT_KEYS = new Set(["query_hints", "hint", "hints", "suggestion", "next_step", "override_hint"]);
 
 function translateHints(node: unknown, key?: string): unknown {
@@ -804,6 +805,13 @@ export function formatEnvelopeCompact(options: FormatEnvelopeCompactOptions): {
         .join(", ");
       const more = plans.length > 6 ? ` (+${plans.length - 6} more)` : "";
       lines.push(`Would change: reframe ${preview}${more}`);
+    } else if (spec.tool === "extension" && spec.action === "run" && env.kind === "planner") {
+      const added = Array.isArray(env.cues_added) ? env.cues_added.length : 0;
+      const updated = Array.isArray(env.cues_updated) ? env.cues_updated.length : 0;
+      const removed = Array.isArray(env.cues_removed) ? env.cues_removed.length : 0;
+      lines.push(
+        `Would change: planner ${String(env.extension)}.${String(env.planner)} (+${added} cue(s), ~${updated} updated, -${removed} removed)`
+      );
     }
   } else if (spec.mutates && advanced && delta?.summary && delta.summary !== env.command) {
     lines.push(`Changed: ${delta.summary}`);
@@ -821,8 +829,12 @@ export function formatEnvelopeCompact(options: FormatEnvelopeCompactOptions): {
       typeof env.master_gain_db === "number"
         ? ` · master_gain ${env.master_gain_db >= 0 ? "+" : ""}${env.master_gain_db} dB`
         : "";
+    const skippedMuted =
+      typeof env.skipped_muted_count === "number" && env.skipped_muted_count > 0
+        ? ` · skipped_muted=${env.skipped_muted_count}`
+        : "";
     lines.push(
-      `Loudness: ${beforeLufs}${env.achieved_lufs} LUFS (target ${env.target_lufs} LUFS, true_peak ${env.achieved_true_peak_dbtp ?? "?"} / ${env.true_peak_dbtp ?? -1} dBTP${masterGain}) · target_reached=${reached}`
+      `Loudness: ${beforeLufs}${env.achieved_lufs} LUFS (target ${env.target_lufs} LUFS, true_peak ${env.achieved_true_peak_dbtp ?? "?"} / ${env.true_peak_dbtp ?? -1} dBTP${masterGain}) · target_reached=${reached}${skippedMuted}`
     );
     if (!reached && typeof env.warning === "string") {
       lines.push(`WARN [TARGET_NOT_REACHED] ${translateCliHint(env.warning)}`);
@@ -1093,9 +1105,14 @@ export class CutholMcpServer {
     const run = async (): Promise<McpToolResult> => {
       if (spec.tool === "workspace" && spec.action === "open") {
         this.sessionDir = dir;
-        const brief = await this.runCli(["brief", "--lens=overview", `--dir=${dir}`], dir, spec, ctx);
         this.lastKnownRevision.set(dir, readRevision(dir) ?? 0);
-        return this.textResult(`OK workspace.open · session project is now ${dir}\n\n${brief.stdout.trim()}`, false);
+        if (values.verbose === true) {
+          const brief = await this.runCli(["brief", "--lens=overview", `--dir=${dir}`], dir, spec, ctx);
+          return this.textResult(`OK workspace.open · session project is now ${dir}\n\n${brief.stdout.trim()}`, false);
+        }
+        const { sequence } = loadSequence(dir);
+        const summary = formatWorkspaceOpenSummary(sequence, { verbose: false });
+        return this.textResult(`OK workspace.open · session project is now ${dir}\n\n${summary}`, false);
       }
 
       if (spec.tool === "composition" && (spec.action === "write" || spec.action === "read")) {

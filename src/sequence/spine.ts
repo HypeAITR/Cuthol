@@ -15,6 +15,8 @@ import {
   createDefaultPlacement,
   createDefaultTreatments,
   CutholSequence,
+  getCuePlaybackRate,
+  LaneCue,
   ParameterEnvelope,
   ParameterEnvelopePoint,
   SpatialPlacement,
@@ -304,39 +306,60 @@ export function projectTranscriptAcrossSequence(
   assetHandle: string,
   rawWords: Array<{ word: string; source_start_ms: number; source_end_ms: number; confidence?: number }>
 ): TimedWordToken[] {
-  const matchingClips = seq.spine.clips.filter((c) => c.asset_handle === assetHandle);
+  const unmutedSpineClips = seq.spine.clips.filter(
+    (c) => c.asset_handle === assetHandle && !c.audio_chain.muted
+  );
+  const matchingClips =
+    unmutedSpineClips.length > 0
+      ? unmutedSpineClips
+      : seq.spine.clips.filter((c) => c.asset_handle === assetHandle);
   const matchingLaneCues = seq.lanes
     .filter((l) => !l.muted)
     .flatMap((l) => l.cues)
     .filter((c) => c.asset_handle === assetHandle && !c.audio_chain?.muted);
   const results: TimedWordToken[] = [];
 
-  if (matchingClips.length === 0 && matchingLaneCues.length > 0) {
+  if (unmutedSpineClips.length === 0 && matchingLaneCues.length > 0) {
     for (const w of rawWords) {
-      let matchedAnyCue = false;
-      for (const cue of matchingLaneCues) {
-        const cueStart = resolveCueStartMs(seq, cue);
+      const wordMidMs = (w.source_start_ms + w.source_end_ms) / 2;
+      const wordDur = Math.max(1, w.source_end_ms - w.source_start_ms);
+      const candidateCues = matchingLaneCues.filter((cue) => {
+        const cueRate = getCuePlaybackRate(cue);
         const srcIn = cue.source_in_ms ?? 0;
-        const srcOut = cue.source_out_ms ?? srcIn + cue.duration_ms;
-        if (w.source_end_ms <= srcIn || w.source_start_ms >= srcOut) continue;
-        const clampedStart = Math.max(srcIn, w.source_start_ms);
-        const clampedEnd = Math.min(srcOut, w.source_end_ms);
-        if (clampedEnd <= clampedStart) continue;
-        const seqStart = cueStart + (clampedStart - srcIn);
-        const seqEnd = Math.max(seqStart + 1, cueStart + Math.min(cue.duration_ms, clampedEnd - srcIn));
-        results.push({
-          word: w.word,
-          source_start_ms: clampedStart,
-          source_end_ms: clampedEnd,
-          sequence_start_ms: seqStart,
-          sequence_end_ms: seqEnd,
-          clip_id: cue.id,
-          excised: false,
-          confidence: w.confidence,
-        });
-        matchedAnyCue = true;
+        const maxSpanMs = Math.round(cue.duration_ms * cueRate);
+        const srcOut = Math.min(cue.source_out_ms ?? srcIn + maxSpanMs, srcIn + maxSpanMs);
+        const overlap = Math.min(srcOut, w.source_end_ms) - Math.max(srcIn, w.source_start_ms);
+        if (overlap <= 0) return false;
+        return (
+          (wordMidMs >= srcIn && wordMidMs < srcOut) ||
+          overlap >= wordDur * 0.5 ||
+          matchingLaneCues.length === 1
+        );
+      });
+
+      const ownerCues: LaneCue[] = [];
+      for (const cue of candidateCues) {
+        const prevOwner = ownerCues[ownerCues.length - 1];
+        const prevRate = prevOwner ? getCuePlaybackRate(prevOwner) : 1;
+        const prevSrcIn = prevOwner ? (prevOwner.source_in_ms ?? 0) : 0;
+        const prevSrcOut = prevOwner
+          ? (prevOwner.source_out_ms ?? prevSrcIn + Math.round(prevOwner.duration_ms * prevRate))
+          : 0;
+        const currRate = getCuePlaybackRate(cue);
+        const currSrcIn = cue.source_in_ms ?? 0;
+        const currSrcOut = cue.source_out_ms ?? currSrcIn + Math.round(cue.duration_ms * currRate);
+        if (prevOwner && prevSrcOut === currSrcIn) {
+          const prevOverlap = Math.min(prevSrcOut, w.source_end_ms) - Math.max(prevSrcIn, w.source_start_ms);
+          const currOverlap = Math.min(currSrcOut, w.source_end_ms) - Math.max(currSrcIn, w.source_start_ms);
+          if (currOverlap > prevOverlap) {
+            ownerCues[ownerCues.length - 1] = cue;
+          }
+        } else {
+          ownerCues.push(cue);
+        }
       }
-      if (!matchedAnyCue) {
+
+      if (ownerCues.length === 0) {
         results.push({
           word: w.word,
           source_start_ms: w.source_start_ms,
@@ -347,6 +370,32 @@ export function projectTranscriptAcrossSequence(
           excised: true,
           confidence: w.confidence,
         });
+      } else {
+        for (const cue of ownerCues) {
+          const cueStart = resolveCueStartMs(seq, cue);
+          const cueRate = getCuePlaybackRate(cue);
+          const srcIn = cue.source_in_ms ?? 0;
+          const maxSpanMs = Math.round(cue.duration_ms * cueRate);
+          const srcOut = Math.min(cue.source_out_ms ?? srcIn + maxSpanMs, srcIn + maxSpanMs);
+          const clampedStart = Math.max(srcIn, w.source_start_ms);
+          const clampedEnd = Math.min(srcOut, w.source_end_ms);
+          if (clampedEnd <= clampedStart) continue;
+          const seqStart = cueStart + Math.round((clampedStart - srcIn) / cueRate);
+          const seqEnd = Math.max(
+            seqStart + 1,
+            cueStart + Math.min(cue.duration_ms, Math.round((clampedEnd - srcIn) / cueRate))
+          );
+          results.push({
+            word: w.word,
+            source_start_ms: clampedStart,
+            source_end_ms: clampedEnd,
+            sequence_start_ms: seqStart,
+            sequence_end_ms: seqEnd,
+            clip_id: cue.id,
+            excised: false,
+            confidence: w.confidence,
+          });
+        }
       }
     }
     return results;
@@ -439,6 +488,22 @@ export function reflowSpine(seq: CutholSequence): void {
     for (const cue of lane.cues) {
       if (cue.anchor) {
         cue.at_ms = resolveCueStartMs(seq, cue);
+      }
+    }
+  }
+  const cueById = new Map<string, LaneCue>();
+  for (const lane of seq.lanes) {
+    for (const cue of lane.cues) {
+      cueById.set(cue.id, cue);
+    }
+  }
+  for (const lane of seq.lanes) {
+    for (const cue of lane.cues) {
+      if (cue.cue_anchor) {
+        const refCue = cueById.get(cue.cue_anchor.ref);
+        if (refCue) {
+          cue.at_ms = Math.max(0, resolveCueStartMs(seq, refCue) + cue.cue_anchor.offset_ms);
+        }
       }
     }
   }
@@ -1638,3 +1703,63 @@ export function reframeSpineClips(options: ReframeSpineOptions): ReframeSpineRes
     verification,
   };
 }
+
+export function setSpineMute(options: {
+  workspaceDir: string;
+  clipIds?: string[];
+  allSpine?: boolean;
+  muted: boolean;
+}): {
+  clips: SpineClip[];
+  muted_ids: string[];
+  unmuted_ids: string[];
+  revision: number;
+  verification: VerificationReport;
+} {
+  const { sequence: initialSeq } = loadSequence(options.workspaceDir);
+  const targetIds =
+    options.allSpine || !options.clipIds || options.clipIds.length === 0
+      ? initialSeq.spine.clips.map((c) => c.id)
+      : options.clipIds;
+
+  if (targetIds.length === 0) {
+    throw new CutholError(DIAGNOSTICS.UNKNOWN_HANDLE("sp_01"));
+  }
+  for (const cid of targetIds) {
+    if (!initialSeq.spine.clips.some((c) => c.id === cid)) {
+      throw new CutholError(DIAGNOSTICS.UNKNOWN_HANDLE(cid));
+    }
+  }
+
+  const targetSet = new Set(targetIds);
+  const opName = options.muted
+    ? `spine.mute(${targetIds.join(",")})`
+    : `spine.unmute(${targetIds.join(",")})`;
+
+  const { result, revision, verification } = commitVerifiedMutation(
+    options.workspaceDir,
+    opName,
+    (seq) => {
+      const updatedClips: SpineClip[] = [];
+      const mutedIds: string[] = [];
+      const unmutedIds: string[] = [];
+      for (const clip of seq.spine.clips) {
+        if (!targetSet.has(clip.id)) continue;
+        clip.audio_chain.muted = options.muted;
+        updatedClips.push(clip);
+        if (options.muted) mutedIds.push(clip.id);
+        else unmutedIds.push(clip.id);
+      }
+      return { updatedClips, mutedIds, unmutedIds };
+    }
+  );
+
+  return {
+    clips: result.updatedClips,
+    muted_ids: result.mutedIds,
+    unmuted_ids: result.unmutedIds,
+    revision,
+    verification,
+  };
+}
+

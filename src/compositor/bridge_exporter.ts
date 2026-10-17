@@ -110,6 +110,7 @@ export function hashDirectoryRecursive(rootDir: string): string {
     for (const entry of entries) {
       if (
         entry.name.startsWith(".tmp.") ||
+        entry.name.startsWith(".cuthol-") ||
         entry.name.endsWith(".tmp.mp4") ||
         entry.name.endsWith(".tmp.mov") ||
         entry.name === "cuthol-bbox.json"
@@ -174,51 +175,357 @@ export function extractScalarHyperFramesVariables(
 const AUDIO_USAGE_REGEX =
   /\b(?:C|__cuthol|global)\s*\.\s*audio\b|\.\s*audio\s*\.\s*(?:low|mid|high)\b|\baudio\s*\(\s*["'](?:low|mid|high)["']/;
 
+export interface CompositionDataUsage {
+  usesLocalWords: boolean;
+  usesLocalBeats: boolean;
+  usesLocalAudio: boolean;
+  usesLocalCuts: boolean;
+  usesSequenceTiming: boolean;
+  usesGlobalWords: boolean;
+  usesGlobalBeats: boolean;
+  usesGlobalAudio: boolean;
+  usesGlobalCuts: boolean;
+  usesGlobalTiming: boolean;
+  usesAnyGlobal: boolean;
+}
+
+function stripCommentsForUsageAnalysis(source: string): string {
+  return source
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/(?<![:\\/])\/\/[^\r\n]*/g, " ");
+}
+
 /**
- * Checks whether a HyperFrames composition directory (entry HTML or user JS files)
- * references `C.audio` / `C.global.audio` / `data.audio`.
+ * Inspects a composition's HTML and JS files (including injected extension helpers `cuthol-ext-*.js`,
+ * excluding generated `cuthol-data.js`, `cuthol-runtime.js`, and `gsap.min.js`) to determine which
+ * local and global timeline intelligence slices the composition actually reads.
+ * If dynamic/ambiguous access is detected, errs on the safe side and marks the slice as used.
  */
-export function compositionUsesAudio(compDir: string, entryHtml = "index.html"): boolean {
+export function analyzeCompositionDataUsage(
+  compDir: string,
+  entryHtml = "index.html",
+  props?: Record<string, unknown>
+): CompositionDataUsage {
+  const allTrue: CompositionDataUsage = {
+    usesLocalWords: true,
+    usesLocalBeats: true,
+    usesLocalAudio: true,
+    usesLocalCuts: true,
+    usesSequenceTiming: true,
+    usesGlobalWords: true,
+    usesGlobalBeats: true,
+    usesGlobalAudio: true,
+    usesGlobalCuts: true,
+    usesGlobalTiming: true,
+    usesAnyGlobal: true,
+  };
+
   try {
     const absCompDir = path.resolve(compDir);
-    if (!fs.existsSync(absCompDir)) return false;
+    if (!fs.existsSync(absCompDir)) return allTrue;
     const entryPath = path.join(absCompDir, entryHtml || "index.html");
-    if (fs.existsSync(entryPath) && AUDIO_USAGE_REGEX.test(fs.readFileSync(entryPath, "utf8"))) {
-      return true;
-    }
-    const walkJsHtml = (dir: string, depth: number): boolean => {
-      if (depth > 3 || !fs.existsSync(dir)) return false;
+    if (!fs.existsSync(entryPath)) return allTrue;
+
+    const chunks: string[] = [];
+    const collectSources = (dir: string, depth: number): void => {
+      if (depth > 3 || !fs.existsSync(dir)) return;
       for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
         if (IGNORED_COMPOSITION_SUBDIRS.has(ent.name)) continue;
-        if (ent.name.startsWith("cuthol-") || ent.name === "gsap.min.js") continue;
+        if (
+          ent.name === "cuthol-data.js" ||
+          ent.name === "cuthol-data.json" ||
+          ent.name === "cuthol-runtime.js" ||
+          ent.name === "cuthol-vars.json" ||
+          ent.name === "cuthol-bbox.json" ||
+          ent.name.startsWith(".cuthol-") ||
+          ent.name === "gsap.min.js"
+        ) {
+          continue;
+        }
         const full = path.join(dir, ent.name);
         if (ent.isDirectory()) {
-          if (walkJsHtml(full, depth + 1)) return true;
+          collectSources(full, depth + 1);
         } else if (ent.isFile() && /\.(?:html|js|mjs)$/i.test(ent.name)) {
           try {
-            if (AUDIO_USAGE_REGEX.test(fs.readFileSync(full, "utf8"))) return true;
+            const raw = fs.readFileSync(full, "utf8");
+            if (/\.html$/i.test(ent.name)) {
+              const scripts = raw.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi) ?? [raw];
+              chunks.push(stripCommentsForUsageAnalysis(scripts.join("\n")));
+            } else {
+              chunks.push(stripCommentsForUsageAnalysis(raw));
+            }
           } catch {
             // ignore unreadable file
           }
         }
       }
-      return false;
     };
-    return walkJsHtml(absCompDir, 0);
+    collectSources(absCompDir, 0);
+
+    const combined = chunks.join("\n");
+    const preset = typeof props?.preset === "string" ? props.preset : "";
+
+    // Conservative fallback if dynamic property indexing, raw data access, or eval is present
+    const hasAmbiguousDynamicAccess =
+      /\beval\s*\(|\bnew\s+Function\b|\b__CUTHOL_DATA__\b|\.\s*data\b|\b(?:C|__cuthol)\s*\[/.test(
+        combined
+      );
+    if (hasAmbiguousDynamicAccess) {
+      return allTrue;
+    }
+
+    const mentionsGlobalProp = /\.\s*global\b|["']global["']/.test(combined);
+    const strippedDirectGlobalMembers = combined.replace(
+      /\.\s*global\s*\.\s*(?:word|words|pauses|sentences|beats|beatGrid|bpm|audio|cuts|segments|duration|cueStart|cueEnd|toLocal|toGlobal|drive|value)\b/g,
+      ""
+    );
+    const hasAliasedGlobalObj =
+      mentionsGlobalProp && /\.\s*global\b|["']global["']/.test(strippedDirectGlobalMembers);
+
+    const usesGlobalWords =
+      mentionsGlobalProp &&
+      (/\.\s*global\s*\.\s*(?:word|words|pauses|sentences)\b/.test(combined) ||
+        (hasAliasedGlobalObj && /\b(?:word|words|pauses|sentences)\b/.test(combined)));
+    const usesGlobalBeats =
+      mentionsGlobalProp &&
+      (/\.\s*global\s*\.\s*(?:beats|beatGrid|bpm)\b/.test(combined) ||
+        (hasAliasedGlobalObj && /\b(?:beats|beatGrid|bpm)\b/.test(combined)));
+    const usesGlobalAudio =
+      mentionsGlobalProp &&
+      (/\.\s*global\s*\.\s*audio\b/.test(combined) ||
+        (hasAliasedGlobalObj && /\baudio\b/.test(combined)));
+    const usesGlobalCuts =
+      mentionsGlobalProp &&
+      (/\.\s*global\s*\.\s*(?:cuts|segments)\b/.test(combined) ||
+        (hasAliasedGlobalObj && /\b(?:cuts|segments)\b/.test(combined)));
+    const usesGlobalTiming =
+      mentionsGlobalProp &&
+      (/\.\s*global\s*\.\s*(?:duration|cueStart|cueEnd|toLocal|toGlobal)\b/.test(combined) ||
+        hasAliasedGlobalObj);
+
+    const anySpecificGlobal =
+      usesGlobalWords || usesGlobalBeats || usesGlobalAudio || usesGlobalCuts || usesGlobalTiming;
+    const forceAllGlobal = mentionsGlobalProp && !anySpecificGlobal;
+
+    const usesLocalWords =
+      preset === "word" ||
+      /\.\s*(?:word\s*\(|words\b|sentences\b|pauses\b)/.test(combined);
+    const usesLocalBeats =
+      preset === "beat_cards" ||
+      /\.\s*(?:beats\s*\(|beatGrid\s*\(|beats\b|bpm\b)/.test(combined);
+    const usesLocalAudio =
+      preset === "audio_glow" ||
+      AUDIO_USAGE_REGEX.test(combined) ||
+      /\.\s*audio\s*\(/.test(combined);
+    const usesLocalCuts =
+      preset === "cut_phases" ||
+      /\.\s*(?:cuts\s*\(|cuts\b|segments\b)/.test(combined);
+    const usesSequenceTiming =
+      /\.\s*(?:sequenceStartSec|sequenceDuration|cueStart|cueEnd|toGlobal|toLocal)\b/.test(
+        combined
+      );
+
+    return {
+      usesLocalWords,
+      usesLocalBeats,
+      usesLocalAudio,
+      usesLocalCuts,
+      usesSequenceTiming,
+      usesGlobalWords: usesGlobalWords || forceAllGlobal,
+      usesGlobalBeats: usesGlobalBeats || forceAllGlobal,
+      usesGlobalAudio: usesGlobalAudio || forceAllGlobal,
+      usesGlobalCuts: usesGlobalCuts || forceAllGlobal,
+      usesGlobalTiming: usesGlobalTiming || forceAllGlobal,
+      usesAnyGlobal: mentionsGlobalProp,
+    };
   } catch {
-    return false;
+    return allTrue;
   }
 }
 
-function compositionUsesGlobal(compDir: string, entryHtml = "index.html"): boolean {
-  try {
-    const absCompDir = path.resolve(compDir);
-    const entryPath = path.join(absCompDir, entryHtml || "index.html");
-    if (!fs.existsSync(entryPath)) return false;
-    return /\bglobal\b/.test(fs.readFileSync(entryPath, "utf8"));
-  } catch {
-    return false;
+/**
+ * Hashes all files in a composition directory EXCEPT `assets/cuthol-data.json`,
+ * `assets/cuthol-data.js`, `assets/cuthol-bbox.json`, and `.cuthol-*` metadata sidecars.
+ */
+export function hashCompositionFilesExcludingBridgeData(rootDir: string): string {
+  const absRoot = path.resolve(rootDir);
+  const visitedDirs = new Set<string>([safeRealpath(absRoot)]);
+  const hash = crypto
+    .createHash("sha256")
+    .update(`cuthol-comp-files-v:${CUTHOL_RUNTIME_VERSION}\n`);
+
+  const walk = (currentDir: string, relPrefix: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of entries) {
+      if (
+        entry.name.startsWith(".tmp.") ||
+        entry.name.startsWith(".cuthol-") ||
+        entry.name.endsWith(".tmp.mp4") ||
+        entry.name.endsWith(".tmp.mov") ||
+        entry.name === "cuthol-bbox.json"
+      ) {
+        continue;
+      }
+      const relPath = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+      if (
+        relPath === "assets/cuthol-data.json" ||
+        relPath === "assets/cuthol-data.js" ||
+        relPath === "assets/cuthol-bbox.json"
+      ) {
+        continue;
+      }
+      const fullPath = path.join(currentDir, entry.name);
+
+      let isDir = entry.isDirectory();
+      let isFile = entry.isFile();
+      if (entry.isSymbolicLink()) {
+        try {
+          const targetStat = fs.statSync(fullPath);
+          isDir = targetStat.isDirectory();
+          isFile = targetStat.isFile();
+        } catch {
+          continue;
+        }
+      }
+
+      if (isDir) {
+        if (IGNORED_COMPOSITION_SUBDIRS.has(entry.name)) continue;
+        const realDir = safeRealpath(fullPath);
+        if (visitedDirs.has(realDir)) continue;
+        visitedDirs.add(realDir);
+        walk(fullPath, relPath);
+      } else if (isFile) {
+        try {
+          const fileBuf = fs.readFileSync(fullPath);
+          const fileDigest = crypto.createHash("sha256").update(fileBuf).digest("hex");
+          hash.update(`file:${relPath}:${fileBuf.length}:${fileDigest}\n`);
+        } catch {
+          // ignore unreadable transient file
+        }
+      }
+    }
+  };
+
+  walk(absRoot, "");
+  return hash.digest("hex");
+}
+
+export function computeUsedBridgePayloadHashes(
+  bridgeData: Partial<CutholBridgeV1> | null | undefined,
+  usage: CompositionDataUsage
+): { usedSliceHash: string; usedGlobalHash: string } {
+  const d = bridgeData ?? {};
+  const comp = d.composition ?? ({} as Partial<CutholBridgeV1["composition"]>);
+  const usedLocalPayload: Record<string, unknown> = {
+    schema: d.schema ?? CUTHOL_BRIDGE_SCHEMA,
+    composition: {
+      id: comp.id ?? "main",
+      duration: comp.duration ?? 0,
+      fps: comp.fps ?? 30,
+      width: comp.width ?? 1920,
+      height: comp.height ?? 1080,
+      ...(usage.usesSequenceTiming ? { sequenceStartSec: comp.sequenceStartSec ?? 0 } : {}),
+    },
+    props: d.props ?? {},
+    safeZone: d.safeZone ?? null,
+  };
+
+  if (usage.usesLocalWords) {
+    usedLocalPayload.words = d.words ?? [];
+    usedLocalPayload.sentences = d.sentences ?? [];
+    usedLocalPayload.pauses = d.pauses ?? [];
   }
+  if (usage.usesLocalBeats) {
+    usedLocalPayload.beats = d.beats ?? null;
+  }
+  if (usage.usesLocalAudio) {
+    usedLocalPayload.audio = d.audio ?? null;
+  }
+  if (usage.usesLocalCuts) {
+    usedLocalPayload.cuts = (d.cuts ?? []).map((c) => ({
+      t: c.t,
+      ...(c.kind ? { kind: c.kind } : {}),
+    }));
+    usedLocalPayload.segments = (d.segments ?? []).map((s) => ({
+      t0: s.t0,
+      t1: s.t1,
+      index: s.index,
+      duration: s.duration,
+    }));
+  }
+
+  const usedSliceHash =
+    "sha256:" +
+    crypto
+      .createHash("sha256")
+      .update(JSON.stringify(usedLocalPayload))
+      .digest("hex")
+      .slice(0, 16);
+
+  if (!usage.usesAnyGlobal || !d.global) {
+    return { usedSliceHash, usedGlobalHash: "unused" };
+  }
+
+  const g = d.global;
+  const usedGlobalPayload: Record<string, unknown> = {};
+  if (usage.usesGlobalTiming) {
+    usedGlobalPayload.duration = g.duration ?? 0;
+    usedGlobalPayload.sequenceStartSec = comp.sequenceStartSec ?? 0;
+  }
+  if (usage.usesGlobalWords) {
+    usedGlobalPayload.words = g.words ?? [];
+    usedGlobalPayload.pauses = g.pauses ?? [];
+    usedGlobalPayload.sentences = g.sentences ?? [];
+  }
+  if (usage.usesGlobalBeats) {
+    usedGlobalPayload.beats = g.beats ?? null;
+  }
+  if (usage.usesGlobalAudio) {
+    usedGlobalPayload.audio = g.audio ?? null;
+  }
+  if (usage.usesGlobalCuts) {
+    usedGlobalPayload.cuts = (g.cuts ?? []).map((c) => ({
+      t: c.t,
+      ...(c.kind ? { kind: c.kind } : {}),
+    }));
+    usedGlobalPayload.segments = (g.segments ?? []).map((s) => ({
+      t0: s.t0,
+      t1: s.t1,
+      index: s.index,
+      duration: s.duration,
+    }));
+  }
+
+  const usedGlobalHash =
+    "sha256:" +
+    crypto
+      .createHash("sha256")
+      .update(JSON.stringify(usedGlobalPayload))
+      .digest("hex")
+      .slice(0, 16);
+
+  return { usedSliceHash, usedGlobalHash };
+}
+
+/**
+ * Checks whether a HyperFrames composition directory (entry HTML or user JS files)
+ * references `C.audio` / `C.global.audio` / `data.audio`.
+ */
+export function compositionUsesAudio(compDir: string, entryHtml = "index.html"): boolean {
+  const usage = analyzeCompositionDataUsage(compDir, entryHtml);
+  return usage.usesLocalAudio || usage.usesGlobalAudio;
+}
+
+function compositionUsesGlobal(compDir: string, entryHtml = "index.html"): boolean {
+  return analyzeCompositionDataUsage(compDir, entryHtml).usesAnyGlobal;
 }
 
 /**
@@ -248,6 +555,8 @@ export function syncEnabledExtensionAssetsToComposition(
     for (const extRef of enabledRefs) {
       try {
         const ext = resolveExtension(extRef.name, paths.rootDir);
+        const isPinnedMatch =
+          ext.contentHash === extRef.content_hash && ext.version === extRef.version;
         if (ext.assetsRelDir) {
           const srcAssetsDir = path.join(ext.dir, ext.assetsRelDir);
           const destAssetsDir = path.join(assetsDir, "ext", ext.name);
@@ -263,7 +572,8 @@ export function syncEnabledExtensionAssetsToComposition(
               } else if (ent.isFile()) {
                 const sBuf = fs.readFileSync(sFull);
                 const dExists = fs.existsSync(dFull);
-                if (!dExists || Buffer.compare(sBuf, fs.readFileSync(dFull)) !== 0) {
+                // Only seed missing files during verification; never silently overwrite an existing composition copy
+                if (!dExists) {
                   fs.writeFileSync(dFull, sBuf);
                   updated = true;
                   updatedFiles.push(relFile);
@@ -287,7 +597,7 @@ export function syncEnabledExtensionAssetsToComposition(
             const existingHelper = fs.existsSync(destHelperPath)
               ? fs.readFileSync(destHelperPath, "utf8")
               : null;
-            if (existingHelper !== wrappedHelper) {
+            if (existingHelper === null) {
               fs.writeFileSync(destHelperPath, wrappedHelper, "utf8");
               updated = true;
               updatedFiles.push(`assets/cuthol-ext-${ext.name}.js`);
@@ -315,6 +625,83 @@ export function syncEnabledExtensionAssetsToComposition(
   }
 
   return { updated, updatedFiles };
+}
+
+/**
+ * Checks whether any mounted composition's local copy of an enabled extension (`assets/cuthol-ext-<name>.js`
+ * or `assets/ext/<name>/...`) differs from the extension's source files on disk.
+ */
+export function detectCompositionExtensionCopyDrift(
+  seq: CutholSequence,
+  extName: string,
+  paths: WorkspacePaths
+): { drifted: boolean; driftedCompositions: string[] } {
+  const driftedCompositions: string[] = [];
+  let ext;
+  try {
+    ext = resolveExtension(extName, paths.rootDir);
+  } catch {
+    return { drifted: false, driftedCompositions };
+  }
+
+  const wrappedHelper = (() => {
+    if (!ext.helperRelPath) return null;
+    const srcHelperPath = path.join(ext.dir, ext.helperRelPath);
+    if (!fs.existsSync(srcHelperPath)) return null;
+    const rawHelper = fs.readFileSync(srcHelperPath, "utf8");
+    return (
+      `if (typeof window !== "undefined") { window.__cuthol = window.__cuthol || {}; window.__cuthol.ext = window.__cuthol.ext || {}; }\n` +
+      rawHelper
+    );
+  })();
+
+  const checkDirEqual = (sDir: string, dDir: string): boolean => {
+    if (!fs.existsSync(sDir)) return true;
+    if (!fs.existsSync(dDir)) return false;
+    for (const ent of fs.readdirSync(sDir, { withFileTypes: true })) {
+      if (ent.name.startsWith(".tmp") || ent.name === ".DS_Store") continue;
+      const sFull = path.join(sDir, ent.name);
+      const dFull = path.join(dDir, ent.name);
+      if (ent.isDirectory()) {
+        if (!checkDirEqual(sFull, dFull)) return false;
+      } else if (ent.isFile()) {
+        if (!fs.existsSync(dFull)) return false;
+        if (Buffer.compare(fs.readFileSync(sFull), fs.readFileSync(dFull)) !== 0) return false;
+      }
+    }
+    return true;
+  };
+
+  for (const lane of seq.lanes) {
+    if (lane.muted) continue;
+    for (const cue of lane.cues) {
+      if (cue.kind !== "composition" || !cue.composition) continue;
+      const compDir = path.isAbsolute(cue.composition.composition_dir)
+        ? cue.composition.composition_dir
+        : path.resolve(paths.rootDir, cue.composition.composition_dir);
+      if (!fs.existsSync(compDir)) continue;
+      const assetsDir = path.join(compDir, "assets");
+      let compDrifted = false;
+      if (wrappedHelper !== null) {
+        const destHelperPath = path.join(assetsDir, `cuthol-ext-${ext.name}.js`);
+        if (!fs.existsSync(destHelperPath) || fs.readFileSync(destHelperPath, "utf8") !== wrappedHelper) {
+          compDrifted = true;
+        }
+      }
+      if (!compDrifted && ext.assetsRelDir) {
+        const srcAssetsDir = path.join(ext.dir, ext.assetsRelDir);
+        const destAssetsDir = path.join(assetsDir, "ext", ext.name);
+        if (!checkDirEqual(srcAssetsDir, destAssetsDir)) {
+          compDrifted = true;
+        }
+      }
+      if (compDrifted && !driftedCompositions.includes(cue.composition.composition_dir)) {
+        driftedCompositions.push(cue.composition.composition_dir);
+      }
+    }
+  }
+
+  return { drifted: driftedCompositions.length > 0, driftedCompositions };
 }
 
 function computeSafeZonePx(seq: CutholSequence): { x: number; y: number; w: number; h: number } {
@@ -1527,37 +1914,54 @@ export function syncCompositionBridgeFiles(
   const existingEntryHtml = fs.existsSync(entryHtmlPath)
     ? fs.readFileSync(entryHtmlPath, "utf8")
     : null;
-  const sequenceUsesGlobal =
-    (existingEntryHtml !== null && /\bglobal\b/.test(existingEntryHtml)) ||
-    seq.lanes.some((l) =>
-      l.cues.some((c) => {
-        if (c.kind !== "composition" || !c.composition) return false;
-        const cDir = path.isAbsolute(c.composition.composition_dir)
-          ? c.composition.composition_dir
-          : path.resolve(paths.rootDir, c.composition.composition_dir);
-        return compositionUsesGlobal(cDir, c.composition.entry_html);
-      })
-    );
+  const usage = analyzeCompositionDataUsage(compDir, entryRel, cue.composition.props);
+  const compUsesGlobal = usage.usesAnyGlobal;
 
   let existingHash: string | null = null;
   let existingGlobalHash: string | null = null;
   let existingWarningsJson = "[]";
   let existingDataJsonRaw: string | null = null;
+  let existingParsedBridge: Partial<CutholBridgeV1> | null = null;
   let hasExistingGlobal = false;
   if (fs.existsSync(dataJsonPath) && fs.existsSync(dataJsPath)) {
     try {
       existingDataJsonRaw = fs.readFileSync(dataJsonPath, "utf8");
-      const parsed = JSON.parse(existingDataJsonRaw) as {
+      const parsed = JSON.parse(existingDataJsonRaw) as Partial<CutholBridgeV1> & {
         hash?: string;
         global?: { hash?: string };
         warnings?: string[];
       };
+      existingParsedBridge = parsed;
       existingHash = parsed.hash ?? null;
       hasExistingGlobal = parsed.global !== undefined;
       existingGlobalHash = parsed.global?.hash ?? null;
       existingWarningsJson = JSON.stringify(parsed.warnings ?? []);
     } catch {
       existingHash = null;
+    }
+  }
+
+  const prevUsedHashes = existingParsedBridge
+    ? computeUsedBridgePayloadHashes(existingParsedBridge, usage)
+    : null;
+  const nextUsedHashes = computeUsedBridgePayloadHashes(bridgeData, usage);
+  const usedSliceChanged =
+    prevUsedHashes !== null && prevUsedHashes.usedSliceHash !== nextUsedHashes.usedSliceHash;
+  const usedGlobalChanged =
+    prevUsedHashes !== null && prevUsedHashes.usedGlobalHash !== nextUsedHashes.usedGlobalHash;
+
+  const metaSidecarPath = path.join(assetsDir, ".cuthol-bridge-meta.json");
+  let existingBridgeMeta: {
+    validLegacyDirHashes?: string[];
+    usedSliceHash?: string;
+    usedGlobalHash?: string;
+    lastDataChangeReason?: "slice_changed" | "global_used_changed" | null;
+  } = {};
+  if (fs.existsSync(metaSidecarPath)) {
+    try {
+      existingBridgeMeta = JSON.parse(fs.readFileSync(metaSidecarPath, "utf8"));
+    } catch {
+      existingBridgeMeta = {};
     }
   }
 
@@ -1572,8 +1976,27 @@ export function syncCompositionBridgeFiles(
     sliceChanged ||
     !hasExistingGlobal ||
     warningsChanged ||
-    (sequenceUsesGlobal && globalChanged) ||
+    (compUsesGlobal && globalChanged) ||
+    usedSliceChanged ||
+    usedGlobalChanged ||
     (options?.explicit === true && fullJsonChanged);
+
+  let validLegacyDirHashes = Array.isArray(existingBridgeMeta.validLegacyDirHashes)
+    ? [...existingBridgeMeta.validLegacyDirHashes]
+    : [];
+  let lastDataChangeReason = existingBridgeMeta.lastDataChangeReason ?? null;
+
+  if (usedSliceChanged || usedGlobalChanged) {
+    validLegacyDirHashes = [];
+    lastDataChangeReason = usedSliceChanged ? "slice_changed" : "global_used_changed";
+  } else if (needsDataWrite && existingHash !== null) {
+    // Capture the pre-write directory hash when only unused bridge fields changed on disk
+    // so existing `.cuthol/blobs/hf_comp_<legacyHash>` caches remain valid.
+    const preWriteLegacyHash = hashDirectoryRecursive(compDir);
+    if (!validLegacyDirHashes.includes(preWriteLegacyHash)) {
+      validLegacyDirHashes.push(preWriteLegacyHash);
+    }
+  }
 
   if (needsDataWrite) {
     const compactJsPayload = JSON.stringify(bridgeData);
@@ -1591,7 +2014,7 @@ export function syncCompositionBridgeFiles(
       if (sliceChanged) {
         updateReasons.push(`slice_hash_changed (${existingHash} -> ${bridgeData.hash})`);
       }
-      if (globalChanged && (sequenceUsesGlobal || options?.explicit)) {
+      if (globalChanged && (compUsesGlobal || options?.explicit)) {
         updateReasons.push(
           `global_hash_changed (${existingGlobalHash ?? "none"} -> ${bridgeData.global?.hash ?? "none"})`
         );
@@ -1603,6 +2026,25 @@ export function syncCompositionBridgeFiles(
         updateReasons.push("bridge_metadata_changed");
       }
     }
+  }
+
+  try {
+    fs.writeFileSync(
+      metaSidecarPath,
+      JSON.stringify(
+        {
+          usedSliceHash: nextUsedHashes.usedSliceHash,
+          usedGlobalHash: nextUsedHashes.usedGlobalHash,
+          validLegacyDirHashes,
+          lastDataChangeReason,
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+  } catch {
+    // ignore sidecar write error
   }
 
   // 2. Conditionally write `cuthol-runtime.js` only if missing or content differs
@@ -1676,12 +2118,17 @@ export function syncCompositionBridgeFiles(
 
     // 4b. Sync enabled project extensions (composition helpers & asset packs).
     // If no extensions are enabled and no stale cuthol-ext-* tags exist, `nextHtml` is untouched.
+    // When `options.explicit` is not set and an extension on disk drifted from its pinned sequence hash (G205),
+    // do not silently overwrite an already-copied helper/asset in the composition until `extension enable` runs.
     const activeHelperNames: string[] = [];
     const enabledRefs = seq.extensions ?? [];
     if (enabledRefs.length > 0) {
       for (const extRef of enabledRefs) {
         try {
           const ext = resolveExtension(extRef.name, paths.rootDir);
+          const isPinnedMatch =
+            ext.contentHash === extRef.content_hash && ext.version === extRef.version;
+          const allowOverwriteExistingCopy = isPinnedMatch && options?.explicit === true;
           if (ext.assetsRelDir) {
             const srcAssetsDir = path.join(ext.dir, ext.assetsRelDir);
             const destAssetsDir = path.join(assetsDir, "ext", ext.name);
@@ -1697,7 +2144,10 @@ export function syncCompositionBridgeFiles(
                 } else if (ent.isFile()) {
                   const sBuf = fs.readFileSync(sFull);
                   const dExists = fs.existsSync(dFull);
-                  if (!dExists || Buffer.compare(sBuf, fs.readFileSync(dFull)) !== 0) {
+                  if (
+                    !dExists ||
+                    (allowOverwriteExistingCopy && Buffer.compare(sBuf, fs.readFileSync(dFull)) !== 0)
+                  ) {
                     fs.writeFileSync(dFull, sBuf);
                     updated = true;
                     updatedFiles.push(relFile);
@@ -1724,7 +2174,10 @@ export function syncCompositionBridgeFiles(
               const existingHelper = fs.existsSync(destHelperPath)
                 ? fs.readFileSync(destHelperPath, "utf8")
                 : null;
-              if (existingHelper !== wrappedHelper) {
+              if (
+                existingHelper === null ||
+                (allowOverwriteExistingCopy && existingHelper !== wrappedHelper)
+              ) {
                 fs.writeFileSync(destHelperPath, wrappedHelper, "utf8");
                 updated = true;
                 updatedFiles.push(`assets/cuthol-ext-${ext.name}.js`);

@@ -86,7 +86,7 @@ export function compileEnvelopeToFfmpegExpr(options: {
     }
     const center = options.baseCenterPx ?? 0;
     const dim = options.canvasDimPx ?? 1000;
-    return Math.round(center + (v / 100) * dim);
+    return Number((center + (v / 100) * dim).toFixed(4));
   };
 
   const pts = env.points.map((p) => ({
@@ -135,6 +135,84 @@ export function compileEnvelopeToFfmpegExpr(options: {
   }
   expr = `if(lt(t,${pts[0].tSec}),${pts[0].val},${expr})`;
   return expr;
+}
+
+function buildSubpixelScaleOrPanFilters(options: {
+  hasDynamicScale: boolean;
+  sxPart: string;
+  syPart: string;
+  xEnv: ParameterEnvelope | undefined;
+  yEnv: ParameterEnvelope | undefined;
+  staticXPct: number;
+  staticYPct: number;
+  baseCenterX: number;
+  baseCenterY: number;
+  renderWidth: number;
+  renderHeight: number;
+  localTimeExpr: string;
+}): string[] {
+  if (options.hasDynamicScale) {
+    const sxP = options.sxPart.replace(/\bt\b/g, options.localTimeExpr);
+    const syP = options.syPart.replace(/\bt\b/g, options.localTimeExpr);
+    const xLocalRaw = compileEnvelopeToFfmpegExpr({
+      envelope: options.xEnv,
+      timeBaseOffsetMs: 0,
+      mode: "pixel_offset",
+      baseCenterPx: 0,
+      canvasDimPx: options.renderWidth,
+    });
+    const yLocalRaw = compileEnvelopeToFfmpegExpr({
+      envelope: options.yEnv,
+      timeBaseOffsetMs: 0,
+      mode: "pixel_offset",
+      baseCenterPx: 0,
+      canvasDimPx: options.renderHeight,
+    });
+    const dxP = xLocalRaw
+      ? xLocalRaw.replace(/\bt\b/g, options.localTimeExpr)
+      : String(Number(((options.staticXPct / 100) * options.renderWidth).toFixed(4)));
+    const dyP = yLocalRaw
+      ? yLocalRaw.replace(/\bt\b/g, options.localTimeExpr)
+      : String(Number(((options.staticYPct / 100) * options.renderHeight).toFixed(4)));
+
+    const x0 = `(W*(1-(${sxP}))/2)+(${dxP})`;
+    const x1 = `(W*(1+(${sxP}))/2)+(${dxP})`;
+    const y0 = `(H*(1-(${syP}))/2)+(${dyP})`;
+    const y2 = `(H*(1+(${syP}))/2)+(${dyP})`;
+    return [
+      `pad=w=iw+4:h=ih+4:x=2:y=2:color=black@0`,
+      `perspective=x0='${x0}':y0='${y0}':x1='${x1}':y1='${y0}':x2='${x0}':y2='${y2}':x3='${x1}':y3='${y2}':sense=destination:interpolation=linear:eval=frame`,
+      `crop=w=iw-4:h=ih-4:x=2:y=2`,
+    ];
+  }
+
+  if (options.xEnv || options.yEnv) {
+    const xLocalRaw = compileEnvelopeToFfmpegExpr({
+      envelope: options.xEnv,
+      timeBaseOffsetMs: 0,
+      mode: "pixel_offset",
+      baseCenterPx: options.baseCenterX,
+      canvasDimPx: options.renderWidth,
+    });
+    const yLocalRaw = compileEnvelopeToFfmpegExpr({
+      envelope: options.yEnv,
+      timeBaseOffsetMs: 0,
+      mode: "pixel_offset",
+      baseCenterPx: options.baseCenterY,
+      canvasDimPx: options.renderHeight,
+    });
+    const xLocalP = xLocalRaw ? xLocalRaw.replace(/\bt\b/g, options.localTimeExpr) : null;
+    const yLocalP = yLocalRaw ? yLocalRaw.replace(/\bt\b/g, options.localTimeExpr) : null;
+    const subDx = xLocalP ? `((${xLocalP})-trunc(${xLocalP}))` : "0";
+    const subDy = yLocalP ? `((${yLocalP})-trunc(${yLocalP}))` : "0";
+    return [
+      `pad=w=iw+4:h=ih+4:x=2:y=2:color=black@0`,
+      `perspective=x0='${subDx}':y0='${subDy}':x1='W+(${subDx})':y1='${subDy}':x2='${subDx}':y2='H+(${subDy})':x3='W+(${subDx})':y3='H+(${subDy})':sense=destination:interpolation=linear:eval=frame`,
+      `crop=w=iw-4:h=ih-4:x=2:y=2`,
+    ];
+  }
+
+  return [];
 }
 
 export interface CompileSequenceOptions {
@@ -215,7 +293,7 @@ function buildSingleAudioTrackFilterChain(options: {
   totalDurationSec: number;
   envelopeTimeBaseOffsetMs?: number;
   localSliceTrimSec?: [number, number];
-  windowClampEndSec?: number;
+  legacyPostAdelayClampEndSec?: number;
 }): string {
   const rateFilters =
     options.preservePitch === false && Math.abs(options.effectiveRate - 1.0) > 0.001
@@ -287,11 +365,14 @@ function buildSingleAudioTrackFilterChain(options: {
   }
 
   if (options.timelineStartMs > 0) {
-    aFilters.push(`adelay=${options.timelineStartMs}|${options.timelineStartMs}`);
+    const delayStr = Number.isInteger(options.timelineStartMs)
+      ? String(options.timelineStartMs)
+      : options.timelineStartMs.toFixed(3);
+    aFilters.push(`adelay=${delayStr}|${delayStr}`);
   }
-  if (options.windowClampEndSec !== undefined) {
+  if (options.legacyPostAdelayClampEndSec !== undefined) {
     aFilters.push(
-      `atrim=start=0:end=${options.windowClampEndSec.toFixed(6)}`,
+      `atrim=start=0:end=${options.legacyPostAdelayClampEndSec.toFixed(6)}`,
       `asetpts=PTS-STARTPTS`
     );
   }
@@ -321,7 +402,7 @@ export function buildMasterAudioFinalizeFilter(
         Math.min(0.98, Math.pow(10, Math.min(-0.1, masterAudio.true_peak_ceiling_dbtp - 0.55) / 20))
       ).toFixed(4)
     : "0.891";
-  return `${audioMixPads.join("")}amix=inputs=${audioMixPads.length}:duration=first:dropout_transition=0:normalize=0${gainStage},alimiter=limit=${limiterLimit}:level=disabled${finalAudioPad}`;
+  return `${audioMixPads.join("")}amix=inputs=${audioMixPads.length}:duration=first:dropout_transition=0:normalize=0${gainStage},alimiter=limit=${limiterLimit}:level=disabled:latency=1,apad=pad_dur=0.006${finalAudioPad}`;
 }
 
 export function compileSequenceAudioPlan(
@@ -388,27 +469,48 @@ export function compileSequenceAudioPlan(
     let relTimelineStartMs = item.timelineStartMs;
     let envOffsetMs = 0;
     let localSliceTrimSec: [number, number] | undefined;
-    let windowClampEndSec: number | undefined;
+    let legacyPostAdelayClampEndSec: number | undefined;
+    const forceLegacyClamp = process.env.CUTHOL_TEST_LEGACY_POST_ADELAY_TRIM === "1";
 
     if (activeWin) {
       if (itemStartMs >= winStartMs) {
-        relTimelineStartMs = Math.max(0, Math.round(itemStartMs - winStartMs));
+        relTimelineStartMs = Math.max(0, Number((itemStartMs - winStartMs).toFixed(3)));
         if (itemEndMs > winEndMs + 1e-3) {
-          const maxLocalPlayMs = Math.max(1, winEndMs - itemStartMs);
+          const maxLocalPlayMs = Math.max(0.001, winEndMs - itemStartMs);
           readSrcOutMs = Math.min(
             item.srcOutMs,
             item.srcInMs + Math.ceil((maxLocalPlayMs + 500) * item.effectiveRate)
           );
-          windowClampEndSec = totalDurationSec;
+          if (forceLegacyClamp) {
+            legacyPostAdelayClampEndSec = totalDurationSec;
+          } else {
+            const sliceEndSec = Math.max(
+              0.001,
+              (winEndMs - (winStartMs + relTimelineStartMs)) / 1000
+            );
+            localSliceTrimSec = [0, sliceEndSec];
+          }
         }
       } else {
         relTimelineStartMs = 0;
         const localWinStartMs = winStartMs - itemStartMs;
         const localWinEndMs = Math.min(item.postTrimDurationMs, winEndMs - itemStartMs);
         const hasStatefulFilter = Boolean(
-          item.audioChain?.denoise.enabled || item.audioChain?.voice_clarity.enabled
+          item.audioChain?.denoise.enabled ||
+            item.audioChain?.voice_clarity.enabled ||
+            Math.abs(item.effectiveRate - 1.0) > 1e-3
         );
-        const preRollMs = hasStatefulFilter ? Math.min(localWinStartMs, 500) : 0;
+        let preRollMs = hasStatefulFilter ? Math.min(localWinStartMs, 500) : 0;
+        const fadeInMs = item.audioChain?.fade_in_ms ?? 0;
+        const fadeOutMs = item.audioChain?.fade_out_ms ?? 0;
+        if (fadeInMs > 0 && localWinStartMs < fadeInMs) {
+          preRollMs = localWinStartMs;
+        }
+        if (fadeOutMs > 0 && localWinStartMs > item.postTrimDurationMs - fadeOutMs) {
+          const sinceFadeOutStartMs =
+            localWinStartMs - Math.max(0, item.postTrimDurationMs - fadeOutMs);
+          preRollMs = Math.max(preRollMs, sinceFadeOutStartMs);
+        }
         const readLocalStartMs = Math.max(0, localWinStartMs - preRollMs);
         readSrcInMs = Math.min(
           item.srcOutMs,
@@ -426,7 +528,6 @@ export function compileSequenceAudioPlan(
           (localWinEndMs - actualReadLocalStartMs) / 1000
         );
         localSliceTrimSec = [sliceStartSec, sliceEndSec];
-        windowClampEndSec = totalDurationSec;
       }
     }
 
@@ -455,7 +556,7 @@ export function compileSequenceAudioPlan(
         totalDurationSec,
         envelopeTimeBaseOffsetMs: envOffsetMs,
         localSliceTrimSec,
-        windowClampEndSec,
+        legacyPostAdelayClampEndSec,
       })
     );
     audioMixPads.push(aPad);
@@ -1074,8 +1175,31 @@ export function compileSequenceRenderPlan(
           });
         }
 
-        const targetW = Math.max(8, Math.round((renderWidth * Math.abs(cue.placement.scale_x)) / 2) * 2);
-        const targetH = Math.max(8, Math.round((renderHeight * Math.abs(cue.placement.scale_y)) / 2) * 2);
+        const hfSxEnv = cue.envelopes.find((e) => e.parameter === "placement.scale_x");
+        const hfSyEnv = cue.envelopes.find((e) => e.parameter === "placement.scale_y");
+        const hfSxExpr = compileEnvelopeToFfmpegExpr({ envelope: hfSxEnv, timeBaseOffsetMs: 0, mode: "raw" });
+        const hfSyExpr = compileEnvelopeToFfmpegExpr({ envelope: hfSyEnv, timeBaseOffsetMs: 0, mode: "raw" });
+        const hfHasDynScale = Boolean(hfSxExpr || hfSyExpr);
+        const xEnv = cue.envelopes.find((e) => e.parameter === "placement.x_pct");
+        const yEnv = cue.envelopes.find((e) => e.parameter === "placement.y_pct");
+
+        const targetW = hfHasDynScale
+          ? renderWidth
+          : Math.max(8, Math.round((renderWidth * Math.abs(cue.placement.scale_x)) / 2) * 2);
+        const targetH = hfHasDynScale
+          ? renderHeight
+          : Math.max(8, Math.round((renderHeight * Math.abs(cue.placement.scale_y)) / 2) * 2);
+        const hfRadAbs = (Math.abs(cue.placement.rotation_deg) * Math.PI) / 180;
+        const hfEffW =
+          Math.abs(cue.placement.rotation_deg) > 0.01
+            ? Math.round(targetW * Math.abs(Math.cos(hfRadAbs)) + targetH * Math.abs(Math.sin(hfRadAbs)))
+            : targetW;
+        const hfEffH =
+          Math.abs(cue.placement.rotation_deg) > 0.01
+            ? Math.round(targetW * Math.abs(Math.sin(hfRadAbs)) + targetH * Math.abs(Math.cos(hfRadAbs)))
+            : targetH;
+        const baseCenterX = Math.round((renderWidth - hfEffW) / 2);
+        const baseCenterY = Math.round((renderHeight - hfEffH) / 2);
 
         const hfFilters: string[] = [`scale=${targetW}:${targetH}`];
         if (cue.placement.mirror_x) hfFilters.push("hflip");
@@ -1108,17 +1232,32 @@ export function compileSequenceRenderPlan(
         } else if (cue.placement.opacity < 0.999) {
           hfFilters.push(`colorchannelmixer=aa=${cue.placement.opacity.toFixed(3)}`);
         }
-        const hfSxEnv = cue.envelopes.find((e) => e.parameter === "placement.scale_x");
-        const hfSyEnv = cue.envelopes.find((e) => e.parameter === "placement.scale_y");
-        const hfSxExpr = compileEnvelopeToFfmpegExpr({ envelope: hfSxEnv, timeBaseOffsetMs: 0, mode: "raw" });
-        const hfSyExpr = compileEnvelopeToFfmpegExpr({ envelope: hfSyEnv, timeBaseOffsetMs: 0, mode: "raw" });
-        if (hfSxExpr || hfSyExpr) {
-          const sxPart = hfSxExpr ? `abs(${hfSxExpr})` : String(Math.abs(cue.placement.scale_x));
-          const syPart = hfSyExpr ? `abs(${hfSyExpr})` : String(Math.abs(cue.placement.scale_y));
-          hfFilters.push(
-            `scale=w='max(8,trunc((${renderWidth}*${sxPart})/2)*2)':h='max(8,trunc((${renderHeight}*${syPart})/2)*2)':eval=frame`
-          );
-        }
+        const isSingleFrameHfPng =
+          compileOptions?.singleFrameAtMs !== undefined &&
+          compMode !== "scene_host" &&
+          compileOptions.singleFrameAtMs + frameDurMs >= cueStartMs &&
+          compileOptions.singleFrameAtMs <= cueEndMs;
+        const hfLocalTimeExpr = isSingleFrameHfPng
+          ? Math.max(0, (compileOptions!.singleFrameAtMs! - cueStartMs) / 1000).toFixed(6)
+          : `((in-1)/${fps})`;
+        const sxPart = hfSxExpr ? `abs(${hfSxExpr})` : String(Math.abs(cue.placement.scale_x));
+        const syPart = hfSyExpr ? `abs(${hfSyExpr})` : String(Math.abs(cue.placement.scale_y));
+        hfFilters.push(
+          ...buildSubpixelScaleOrPanFilters({
+            hasDynamicScale: hfHasDynScale,
+            sxPart,
+            syPart,
+            xEnv,
+            yEnv,
+            staticXPct: cue.placement.x_pct,
+            staticYPct: cue.placement.y_pct,
+            baseCenterX,
+            baseCenterY,
+            renderWidth,
+            renderHeight,
+            localTimeExpr: hfLocalTimeExpr,
+          })
+        );
         hfFilters.push(
           `tpad=stop_mode=clone:stop_duration=${(2 / fps).toFixed(3)}`,
           `settb=AVTB`,
@@ -1135,43 +1274,35 @@ export function compileSequenceRenderPlan(
         const hfPad = `[v_hf_${cue.id}]`;
         filterChains.push(`[${hfIdx}:v]${hfFilters.join(",")}${hfPad}`);
 
-        const hfRadAbs = (Math.abs(cue.placement.rotation_deg) * Math.PI) / 180;
-        const hfEffW =
-          Math.abs(cue.placement.rotation_deg) > 0.01
-            ? Math.round(targetW * Math.abs(Math.cos(hfRadAbs)) + targetH * Math.abs(Math.sin(hfRadAbs)))
-            : targetW;
-        const hfEffH =
-          Math.abs(cue.placement.rotation_deg) > 0.01
-            ? Math.round(targetW * Math.abs(Math.sin(hfRadAbs)) + targetH * Math.abs(Math.cos(hfRadAbs)))
-            : targetH;
-        const baseCenterX = Math.round((renderWidth - hfEffW) / 2);
-        const baseCenterY = Math.round((renderHeight - hfEffH) / 2);
-        const xEnv = cue.envelopes.find((e) => e.parameter === "placement.x_pct");
-        const yEnv = cue.envelopes.find((e) => e.parameter === "placement.y_pct");
+        const xExpr = hfHasDynScale
+          ? hfRotExpr
+            ? `(W-w)/2`
+            : String(baseCenterX)
+          : compileEnvelopeToFfmpegExpr({
+              envelope: xEnv,
+              timeBaseOffsetMs: cueStartMs,
+              mode: "pixel_offset",
+              baseCenterPx: baseCenterX,
+              canvasDimPx: renderWidth,
+            }) ??
+            (hfRotExpr
+              ? `(W-w)/2+${Math.round((cue.placement.x_pct / 100) * renderWidth)}`
+              : String(Math.round(baseCenterX + (cue.placement.x_pct / 100) * renderWidth)));
 
-        const xExpr =
-          compileEnvelopeToFfmpegExpr({
-            envelope: xEnv,
-            timeBaseOffsetMs: cueStartMs,
-            mode: "pixel_offset",
-            baseCenterPx: baseCenterX,
-            canvasDimPx: renderWidth,
-          }) ??
-          (hfSxExpr || hfSyExpr || hfRotExpr
-            ? `(W-w)/2+${Math.round((cue.placement.x_pct / 100) * renderWidth)}`
-            : String(Math.round(baseCenterX + (cue.placement.x_pct / 100) * renderWidth)));
-
-        const yExpr =
-          compileEnvelopeToFfmpegExpr({
-            envelope: yEnv,
-            timeBaseOffsetMs: cueStartMs,
-            mode: "pixel_offset",
-            baseCenterPx: baseCenterY,
-            canvasDimPx: renderHeight,
-          }) ??
-          (hfSxExpr || hfSyExpr || hfRotExpr
-            ? `(H-h)/2+${Math.round((cue.placement.y_pct / 100) * renderHeight)}`
-            : String(Math.round(baseCenterY + (cue.placement.y_pct / 100) * renderHeight)));
+        const yExpr = hfHasDynScale
+          ? hfRotExpr
+            ? `(H-h)/2`
+            : String(baseCenterY)
+          : compileEnvelopeToFfmpegExpr({
+              envelope: yEnv,
+              timeBaseOffsetMs: cueStartMs,
+              mode: "pixel_offset",
+              baseCenterPx: baseCenterY,
+              canvasDimPx: renderHeight,
+            }) ??
+            (hfRotExpr
+              ? `(H-h)/2+${Math.round((cue.placement.y_pct / 100) * renderHeight)}`
+              : String(Math.round(baseCenterY + (cue.placement.y_pct / 100) * renderHeight)));
 
         if (!effectiveTransparent && isFullFrameUnscaled && compileOptions?.singleFrameAtMs === undefined) {
           const nextPad = `[vc_${++vStepCounter}]`;
@@ -1273,9 +1404,32 @@ export function compileSequenceRenderPlan(
             asset.probe.width > 0 && asset.probe.height > 0
               ? (asset.probe.width * cropWRatio) / (asset.probe.height * cropHRatio)
               : renderWidth / renderHeight;
+          const cueSxEnv = cue.envelopes.find((e) => e.parameter === "placement.scale_x");
+          const cueSyEnv = cue.envelopes.find((e) => e.parameter === "placement.scale_y");
+          const cueSxExpr = compileEnvelopeToFfmpegExpr({ envelope: cueSxEnv, timeBaseOffsetMs: 0, mode: "raw" });
+          const cueSyExpr = compileEnvelopeToFfmpegExpr({ envelope: cueSyEnv, timeBaseOffsetMs: 0, mode: "raw" });
+          const cueHasDynScale = Boolean(cueSxExpr || cueSyExpr);
+          const xEnv = cue.envelopes.find((e) => e.parameter === "placement.x_pct");
+          const yEnv = cue.envelopes.find((e) => e.parameter === "placement.y_pct");
+
           // Compute targetH from cropped assetAr * scale_y
-          const targetW = Math.max(8, Math.round((renderWidth * Math.abs(cue.placement.scale_x)) / 2) * 2);
-          const targetH = Math.max(8, Math.round(((renderWidth / assetAr) * Math.abs(cue.placement.scale_y)) / 2) * 2);
+          const targetW = cueHasDynScale
+            ? renderWidth
+            : Math.max(8, Math.round((renderWidth * Math.abs(cue.placement.scale_x)) / 2) * 2);
+          const targetH = cueHasDynScale
+            ? Math.max(8, Math.round((renderWidth / assetAr) / 2) * 2)
+            : Math.max(8, Math.round(((renderWidth / assetAr) * Math.abs(cue.placement.scale_y)) / 2) * 2);
+          const cueRadAbs = (Math.abs(cue.placement.rotation_deg) * Math.PI) / 180;
+          const cueEffW =
+            Math.abs(cue.placement.rotation_deg) > 0.01
+              ? Math.round(targetW * Math.abs(Math.cos(cueRadAbs)) + targetH * Math.abs(Math.sin(cueRadAbs)))
+              : targetW;
+          const cueEffH =
+            Math.abs(cue.placement.rotation_deg) > 0.01
+              ? Math.round(targetW * Math.abs(Math.sin(cueRadAbs)) + targetH * Math.abs(Math.cos(cueRadAbs)))
+              : targetH;
+          const baseCenterX = Math.round((renderWidth - cueEffW) / 2);
+          const baseCenterY = Math.round((renderHeight - cueEffH) / 2);
 
           // Reset PTS to 0 right after `trim` (`setpts=PTS-STARTPTS`) so local keyframe
           // envelopes (`rotate`, `geq` opacity, `scale`) evaluate over `t = 0 .. cueDuration` even when `srcInMs > 0`.
@@ -1351,18 +1505,24 @@ export function compileSequenceRenderPlan(
           } else if (cue.placement.opacity < 0.999) {
             vFilters.push(`colorchannelmixer=aa=${cue.placement.opacity.toFixed(3)}`);
           }
-          const cueSxEnv = cue.envelopes.find((e) => e.parameter === "placement.scale_x");
-          const cueSyEnv = cue.envelopes.find((e) => e.parameter === "placement.scale_y");
-          const cueSxExpr = compileEnvelopeToFfmpegExpr({ envelope: cueSxEnv, timeBaseOffsetMs: 0, mode: "raw" });
-          const cueSyExpr = compileEnvelopeToFfmpegExpr({ envelope: cueSyEnv, timeBaseOffsetMs: 0, mode: "raw" });
-          if (cueSxExpr || cueSyExpr) {
-            const baseUnscaledH = Math.max(8, Math.round(renderWidth / assetAr));
-            const sxPart = cueSxExpr ? `abs(${cueSxExpr})` : String(Math.abs(cue.placement.scale_x));
-            const syPart = cueSyExpr ? `abs(${cueSyExpr})` : String(Math.abs(cue.placement.scale_y));
-            vFilters.push(
-              `scale=w='max(8,trunc((${renderWidth}*${sxPart})/2)*2)':h='max(8,trunc((${baseUnscaledH}*${syPart})/2)*2)':eval=frame`
-            );
-          }
+          const sxPart = cueSxExpr ? `abs(${cueSxExpr})` : String(Math.abs(cue.placement.scale_x));
+          const syPart = cueSyExpr ? `abs(${cueSyExpr})` : String(Math.abs(cue.placement.scale_y));
+          vFilters.push(
+            ...buildSubpixelScaleOrPanFilters({
+              hasDynamicScale: cueHasDynScale,
+              sxPart,
+              syPart,
+              xEnv,
+              yEnv,
+              staticXPct: cue.placement.x_pct,
+              staticYPct: cue.placement.y_pct,
+              baseCenterX,
+              baseCenterY,
+              renderWidth,
+              renderHeight,
+              localTimeExpr: `((in-1)/${fps})`,
+            })
+          );
           vFilters.push(`settb=AVTB`, `setpts=PTS-STARTPTS+${cueStartSec}/TB`);
           if (activeWin && (cueStartMs < winLeadStartMs - 1e-3 || cueEndMs > winEndMs + 1e-3)) {
             vFilters.push(`trim=start=${winLeadStartSec}:end=${winEndPadSec}`);
@@ -1371,43 +1531,35 @@ export function compileSequenceRenderPlan(
           const cuePad = `[v_cue_${cue.id}]`;
           filterChains.push(`[${inIdx}:v]${vFilters.join(",")}${cuePad}`);
 
-          const cueRadAbs = (Math.abs(cue.placement.rotation_deg) * Math.PI) / 180;
-          const cueEffW =
-            Math.abs(cue.placement.rotation_deg) > 0.01
-              ? Math.round(targetW * Math.abs(Math.cos(cueRadAbs)) + targetH * Math.abs(Math.sin(cueRadAbs)))
-              : targetW;
-          const cueEffH =
-            Math.abs(cue.placement.rotation_deg) > 0.01
-              ? Math.round(targetW * Math.abs(Math.sin(cueRadAbs)) + targetH * Math.abs(Math.cos(cueRadAbs)))
-              : targetH;
-          const baseCenterX = Math.round((renderWidth - cueEffW) / 2);
-          const baseCenterY = Math.round((renderHeight - cueEffH) / 2);
-          const xEnv = cue.envelopes.find((e) => e.parameter === "placement.x_pct");
-          const yEnv = cue.envelopes.find((e) => e.parameter === "placement.y_pct");
+          const xExpr = cueHasDynScale
+            ? cueRotExpr
+              ? `(W-w)/2`
+              : String(baseCenterX)
+            : compileEnvelopeToFfmpegExpr({
+                envelope: xEnv,
+                timeBaseOffsetMs: cueStartMs,
+                mode: "pixel_offset",
+                baseCenterPx: baseCenterX,
+                canvasDimPx: renderWidth,
+              }) ??
+              (cueRotExpr
+                ? `(W-w)/2+${Math.round((cue.placement.x_pct / 100) * renderWidth)}`
+                : String(Math.round(baseCenterX + (cue.placement.x_pct / 100) * renderWidth)));
 
-          const xExpr =
-            compileEnvelopeToFfmpegExpr({
-              envelope: xEnv,
-              timeBaseOffsetMs: cueStartMs,
-              mode: "pixel_offset",
-              baseCenterPx: baseCenterX,
-              canvasDimPx: renderWidth,
-            }) ??
-            (cueSxExpr || cueSyExpr || cueRotExpr
-              ? `(W-w)/2+${Math.round((cue.placement.x_pct / 100) * renderWidth)}`
-              : String(Math.round(baseCenterX + (cue.placement.x_pct / 100) * renderWidth)));
-
-          const yExpr =
-            compileEnvelopeToFfmpegExpr({
-              envelope: yEnv,
-              timeBaseOffsetMs: cueStartMs,
-              mode: "pixel_offset",
-              baseCenterPx: baseCenterY,
-              canvasDimPx: renderHeight,
-            }) ??
-            (cueSxExpr || cueSyExpr || cueRotExpr
-              ? `(H-h)/2+${Math.round((cue.placement.y_pct / 100) * renderHeight)}`
-              : String(Math.round(baseCenterY + (cue.placement.y_pct / 100) * renderHeight)));
+          const yExpr = cueHasDynScale
+            ? cueRotExpr
+              ? `(H-h)/2`
+              : String(baseCenterY)
+            : compileEnvelopeToFfmpegExpr({
+                envelope: yEnv,
+                timeBaseOffsetMs: cueStartMs,
+                mode: "pixel_offset",
+                baseCenterPx: baseCenterY,
+                canvasDimPx: renderHeight,
+              }) ??
+              (cueRotExpr
+                ? `(H-h)/2+${Math.round((cue.placement.y_pct / 100) * renderHeight)}`
+                : String(Math.round(baseCenterY + (cue.placement.y_pct / 100) * renderHeight)));
 
           const nextPad = `[vc_${++vStepCounter}]`;
           filterChains.push(
@@ -1552,8 +1704,35 @@ export function compileSequenceRenderPlan(
     );
 
     {
-      const targetW = Math.max(8, Math.round((renderWidth * Math.abs(clip.placement.scale_x)) / 2) * 2);
-      const targetH = Math.max(8, Math.round((renderHeight * Math.abs(clip.placement.scale_y)) / 2) * 2);
+      const spSxEnv = clip.envelopes.find((e) => e.parameter === "placement.scale_x");
+      const spSyEnv = clip.envelopes.find((e) => e.parameter === "placement.scale_y");
+      const spSxExpr = compileEnvelopeToFfmpegExpr({ envelope: spSxEnv, timeBaseOffsetMs: 0, mode: "raw" });
+      const spSyExpr = compileEnvelopeToFfmpegExpr({ envelope: spSyEnv, timeBaseOffsetMs: 0, mode: "raw" });
+      const isZoomInIncoming =
+        incomingTransition !== null &&
+        incomingTransition.duration_ms > 0 &&
+        incomingTransition.kind === "zoom_in";
+      const spHasDynScale = Boolean(spSxExpr || spSyExpr || isZoomInIncoming);
+      const xEnv = clip.envelopes.find((e) => e.parameter === "placement.x_pct");
+      const yEnv = clip.envelopes.find((e) => e.parameter === "placement.y_pct");
+
+      const targetW = spHasDynScale
+        ? renderWidth
+        : Math.max(8, Math.round((renderWidth * Math.abs(clip.placement.scale_x)) / 2) * 2);
+      const targetH = spHasDynScale
+        ? renderHeight
+        : Math.max(8, Math.round((renderHeight * Math.abs(clip.placement.scale_y)) / 2) * 2);
+      const spRadAbs = (Math.abs(clip.placement.rotation_deg) * Math.PI) / 180;
+      const spEffW =
+        Math.abs(clip.placement.rotation_deg) > 0.01
+          ? Math.round(targetW * Math.abs(Math.cos(spRadAbs)) + targetH * Math.abs(Math.sin(spRadAbs)))
+          : targetW;
+      const spEffH =
+        Math.abs(clip.placement.rotation_deg) > 0.01
+          ? Math.round(targetW * Math.abs(Math.sin(spRadAbs)) + targetH * Math.abs(Math.cos(spRadAbs)))
+          : targetH;
+      const baseCenterX = Math.round((renderWidth - spEffW) / 2);
+      const baseCenterY = Math.round((renderHeight - spEffH) / 2);
 
       const srcFps = Math.max(1, asset.probe.fps || fps);
       const rawSrcSpanSec = Math.max(0, (clip.source_out_ms - clip.source_in_ms) / 1000);
@@ -1690,11 +1869,6 @@ export function compileSequenceRenderPlan(
         }
       }
 
-      const isZoomInIncoming =
-        incomingTransition !== null &&
-        incomingTransition.duration_ms > 0 &&
-        incomingTransition.kind === "zoom_in";
-
       if (incomingTransition && incomingTransition.duration_ms > 0) {
         const inDurSec = (incomingTransition.duration_ms / 1000).toFixed(3);
         if (
@@ -1706,22 +1880,41 @@ export function compileSequenceRenderPlan(
         }
       }
 
-      const spSxEnv = clip.envelopes.find((e) => e.parameter === "placement.scale_x");
-      const spSyEnv = clip.envelopes.find((e) => e.parameter === "placement.scale_y");
-      const spSxExpr = compileEnvelopeToFfmpegExpr({ envelope: spSxEnv, timeBaseOffsetMs: 0, mode: "raw" });
-      const spSyExpr = compileEnvelopeToFfmpegExpr({ envelope: spSyEnv, timeBaseOffsetMs: 0, mode: "raw" });
+      const inDurSec = incomingTransition ? (incomingTransition.duration_ms / 1000).toFixed(3) : "0.001";
+      const zoomFactor = isZoomInIncoming
+        ? `if(lt(t,${inDurSec}),0.88+0.12*(t/${inDurSec}),1)`
+        : "1";
+      const sxPart = spSxExpr
+        ? isZoomInIncoming
+          ? `abs(${spSxExpr})*(${zoomFactor})`
+          : `abs(${spSxExpr})`
+        : isZoomInIncoming
+          ? `${Math.abs(clip.placement.scale_x)}*(${zoomFactor})`
+          : String(Math.abs(clip.placement.scale_x));
+      const syPart = spSyExpr
+        ? isZoomInIncoming
+          ? `abs(${spSyExpr})*(${zoomFactor})`
+          : `abs(${spSyExpr})`
+        : isZoomInIncoming
+          ? `${Math.abs(clip.placement.scale_y)}*(${zoomFactor})`
+          : String(Math.abs(clip.placement.scale_y));
 
-      if (spSxExpr || spSyExpr || isZoomInIncoming) {
-        const inDurSec = incomingTransition ? (incomingTransition.duration_ms / 1000).toFixed(3) : "0.001";
-        const zoomFactor = isZoomInIncoming
-          ? `if(lt(t,${inDurSec}),0.88+0.12*(t/${inDurSec}),1)`
-          : "1";
-        const sxPart = spSxExpr ? `abs(${spSxExpr})*(${zoomFactor})` : `${Math.abs(clip.placement.scale_x)}*(${zoomFactor})`;
-        const syPart = spSyExpr ? `abs(${spSyExpr})*(${zoomFactor})` : `${Math.abs(clip.placement.scale_y)}*(${zoomFactor})`;
-        vFilters.push(
-          `scale=w='max(8,trunc((${renderWidth}*${sxPart})/2)*2)':h='max(8,trunc((${renderHeight}*${syPart})/2)*2)':eval=frame`
-        );
-      }
+      vFilters.push(
+        ...buildSubpixelScaleOrPanFilters({
+          hasDynamicScale: spHasDynScale,
+          sxPart,
+          syPart,
+          xEnv,
+          yEnv,
+          staticXPct: clip.placement.x_pct,
+          staticYPct: clip.placement.y_pct,
+          baseCenterX,
+          baseCenterY,
+          renderWidth,
+          renderHeight,
+          localTimeExpr: `((in-1)/${fps})`,
+        })
+      );
 
       vFilters.push(`settb=AVTB`, `setpts=PTS+${tlInSec}/TB`);
       if (activeWin && (clipStartMs < winLeadStartMs - 1e-3 || clipEndMs > winEndMs + 1e-3)) {
@@ -1731,43 +1924,35 @@ export function compileSequenceRenderPlan(
       const clipPad = `[v_sp_${i}]`;
       filterChains.push(`[${inIdx}:v]${vFilters.join(",")}${clipPad}`);
 
-      const spRadAbs = (Math.abs(clip.placement.rotation_deg) * Math.PI) / 180;
-      const spEffW =
-        Math.abs(clip.placement.rotation_deg) > 0.01
-          ? Math.round(targetW * Math.abs(Math.cos(spRadAbs)) + targetH * Math.abs(Math.sin(spRadAbs)))
-          : targetW;
-      const spEffH =
-        Math.abs(clip.placement.rotation_deg) > 0.01
-          ? Math.round(targetW * Math.abs(Math.sin(spRadAbs)) + targetH * Math.abs(Math.cos(spRadAbs)))
-          : targetH;
-      const baseCenterX = Math.round((renderWidth - spEffW) / 2);
-      const baseCenterY = Math.round((renderHeight - spEffH) / 2);
-      const xEnv = clip.envelopes.find((e) => e.parameter === "placement.x_pct");
-      const yEnv = clip.envelopes.find((e) => e.parameter === "placement.y_pct");
+      let xExpr = spHasDynScale
+        ? spRotExpr
+          ? `(W-w)/2`
+          : String(baseCenterX)
+        : compileEnvelopeToFfmpegExpr({
+            envelope: xEnv,
+            timeBaseOffsetMs: clip.timeline_in_ms,
+            mode: "pixel_offset",
+            baseCenterPx: baseCenterX,
+            canvasDimPx: renderWidth,
+          }) ??
+          (spRotExpr
+            ? `(W-w)/2+${Math.round((clip.placement.x_pct / 100) * renderWidth)}`
+            : String(Math.round(baseCenterX + (clip.placement.x_pct / 100) * renderWidth)));
 
-      let xExpr =
-        compileEnvelopeToFfmpegExpr({
-          envelope: xEnv,
-          timeBaseOffsetMs: clip.timeline_in_ms,
-          mode: "pixel_offset",
-          baseCenterPx: baseCenterX,
-          canvasDimPx: renderWidth,
-        }) ??
-        (spSxExpr || spSyExpr || spRotExpr || isZoomInIncoming
-          ? `(W-w)/2+${Math.round((clip.placement.x_pct / 100) * renderWidth)}`
-          : String(Math.round(baseCenterX + (clip.placement.x_pct / 100) * renderWidth)));
-
-      let yExpr =
-        compileEnvelopeToFfmpegExpr({
-          envelope: yEnv,
-          timeBaseOffsetMs: clip.timeline_in_ms,
-          mode: "pixel_offset",
-          baseCenterPx: baseCenterY,
-          canvasDimPx: renderHeight,
-        }) ??
-        (spSxExpr || spSyExpr || spRotExpr || isZoomInIncoming
-          ? `(H-h)/2+${Math.round((clip.placement.y_pct / 100) * renderHeight)}`
-          : String(Math.round(baseCenterY + (clip.placement.y_pct / 100) * renderHeight)));
+      let yExpr = spHasDynScale
+        ? spRotExpr
+          ? `(H-h)/2`
+          : String(baseCenterY)
+        : compileEnvelopeToFfmpegExpr({
+            envelope: yEnv,
+            timeBaseOffsetMs: clip.timeline_in_ms,
+            mode: "pixel_offset",
+            baseCenterPx: baseCenterY,
+            canvasDimPx: renderHeight,
+          }) ??
+          (spRotExpr
+            ? `(H-h)/2+${Math.round((clip.placement.y_pct / 100) * renderHeight)}`
+            : String(Math.round(baseCenterY + (clip.placement.y_pct / 100) * renderHeight)));
 
       // Animate incoming wipe_left / wipe_right / slide_up transitions
       if (incomingTransition && incomingTransition.duration_ms > 0) {

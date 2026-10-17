@@ -224,6 +224,7 @@ export interface LaneCue {
   kind: LaneKind;
   asset_handle?: string;
   anchor: CueAnchor | null;
+  cue_anchor?: CueAnchor | null;
   at_ms: number;
   duration_ms: number;
   source_in_ms?: number;

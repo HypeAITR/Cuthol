@@ -86,7 +86,21 @@ Use the stage size from `brief` (16:9 → 1920x1080, 9:16 → 1080x1920) for `#r
 - Keep `html, body, #root` transparent. Don't paint a full-frame background unless you want to hide the video (G505 warns about an opaque overlay).
 - No network: no CDN scripts, web fonts or remote images. Put files in `assets/` and reference them relatively. System fonts are safe.
 - Never tween `visibility`, `display` or `autoAlpha` on `.clip` elements, and never tween layout/reflow properties (`left`, `top`, `width`, `height`, `fontSize`) with GSAP (`gsap_non_transform_motion` — use transforms `x`, `y`, `scale`, `scaleX`, `scaleY`, `opacity` instead).
-- `verify` runs HyperFrames lint on every mounted composition (cached by content hash) after syncing any enabled extension asset packs (`assets/ext/<name>/`) into the composition, and surfaces real lint issues as `CUTHOL-G407` warnings; size/splitting advisories (`composition_file_too_large`, `nested_structure_needs_subcomposition`, `timeline_track_too_dense`) are treated as info, not warnings.
+- `verify` runs HyperFrames lint on every mounted composition (cached by content hash) after syncing any missing enabled extension asset packs (`assets/ext/<name>/`) into the composition, and surfaces real lint issues as `CUTHOL-G407` warnings; `duplicate_media_discovery_risk` is downgraded to `INFO` (`CUTHOL-G407`) when it only involves `<img>` elements (remaining `WARN` for `<video>`/`<audio>`), and size/splitting advisories (`composition_file_too_large`, `nested_structure_needs_subcomposition`, `timeline_track_too_dense`) are treated as info, not warnings.
+
+## Overlay cache & what triggers a re-render
+
+Each composition overlay is cached in `.cuthol/blobs/` keyed only by what affects its rendered pixels:
+- **Composition files (`html_changed`):** `index.html`, user `.js`/`.css`, local media/font assets, `assets/cuthol-vars.json`, `assets/cuthol-runtime.js`, and enabled extension helper/asset copies (`assets/cuthol-ext-<name>.js`, `assets/ext/<name>/…`).
+- **Used window-local slice (`slice_changed`):** Cuthol inspects the composition's HTML/JS (and enabled extension helpers) to see which local `window.__cuthol` (`C`) slices are referenced:
+  - `C.word` / `words` / `sentences` / `pauses` → re-renders when words inside `[cueStart, cueEnd]` change.
+  - `C.audio` → re-renders when the mixed audio envelope inside `[cueStart, cueEnd]` changes.
+  - `C.beats` / `C.beatGrid` / `C.bpm` → re-renders when beats inside `[cueStart, cueEnd]` change.
+  - `C.cuts` / `segments` → re-renders when spine/scene cuts inside `[cueStart, cueEnd]` change.
+  - `C.sequenceStartSec` / `C.cueStart` / `C.cueEnd` / `C.toGlobal` / `C.toLocal` → re-renders when the cue's timeline start shifts.
+- **Used global slice (`global_used_changed`):** Only the specific `C.global.*` slices (`C.global.word`/`words`, `C.global.audio`, `C.global.beats`/`beatGrid`, `C.global.cuts`, `C.global.duration`) actually referenced by the composition are included in its cache key. If a composition does not use `C.global.audio` or `C.audio`, adding an SFX cue elsewhere does not invalidate its cache; if it does not use `C.cuts` or `C.global.cuts`, spine edits that do not change its underlying backdrop do not invalidate its cache. When dynamic property access (`C[...]`, `C.data`, `__CUTHOL_DATA__`, `eval`) is present, Cuthol errs on the safe side and treats all slices as used.
+- **Backdrop (`backdrop_changed`):** An opaque overlay is captured over the stage backdrop under it (by content hash), so a spine edit that changes what lies underneath re-renders it. If your composition paints its own opaque full-frame surface for its whole duration, put `data-cuthol-opaque="true"` on the root element (next to `data-composition-id`); its cache then ignores the backdrop. Do not declare it if any part of the frame is transparent, masked, or fades in.
+- **Render summary (`overlays`):** Every `render` reports `overlays: { total, cached, rendered, reasons, elapsed_ms, rerendered, summary }` showing how many overlays came from cache, how many were re-rendered, why (`new`, `html_changed`, `slice_changed`, `global_used_changed`, `props_changed`, `backdrop_changed`), and total overlay time. When a `master_1080p` native blob is already cached for the exact same state, `draft_480p` reuses and downscales it instead of launching a new browser render.
 
 ## `window.__cuthol` API
 

@@ -30,6 +30,8 @@ import {
   LibraryItem,
   MountedExtensionRef,
 } from "../core/schema.js";
+import { parseTimeMs } from "../core/time.js";
+import { resolveCueStartMs } from "../core/timeline.js";
 import {
   ensureWorkspaceDirectories,
   JournalEntry,
@@ -38,9 +40,20 @@ import {
   resolveWorkspacePaths,
   WorkspacePaths,
 } from "../core/workspace.js";
+import { exportBridgeDataForCue } from "../compositor/bridge_exporter.js";
+import { normTurkish } from "../compositor/cuthol_runtime.js";
 import { MediaLedger } from "../library/ledger.js";
 import { probeLocalMediaFile, resolveLibraryItemPath } from "../library/probe.js";
-import { commitVerifiedMutation, verifySequence } from "../verify/gates.js";
+import {
+  CueSheetCueEntry,
+  CueSheetDiff,
+  CutholCueSheet,
+  mergeCueSheetIntoSequence,
+} from "../sequence/cuesheet.js";
+import { projectTranscriptAcrossSequence } from "../sequence/spine.js";
+import { TranscriptDocument } from "../speech/providers.js";
+import { commitVerifiedMutation, VerificationReport, verifySequence } from "../verify/gates.js";
+import { syncAllCompositionBridges } from "../compositor/bridge_exporter.js";
 
 export const EXTENSION_MANIFEST_FILENAME = "cuthol-extension.json";
 const EXTENSION_NAME_RE = /^[a-z][a-z0-9_-]{0,63}$/;
@@ -85,6 +98,13 @@ export interface ExtensionRecipeSpec {
   steps: ExtensionRecipeStepSpec[];
 }
 
+export interface ExtensionPlannerSpec {
+  kind?: "node" | "planner";
+  description?: string;
+  script: string;
+  params?: Record<string, ExtensionParamDef>;
+}
+
 export interface ExtensionManifest {
   schema_version?: "1.0.0";
   name: string;
@@ -94,6 +114,7 @@ export interface ExtensionManifest {
   helper?: string | { entry: string };
   assets?: string | { dir: string };
   processors?: Record<string, ExtensionProcessorSpec>;
+  planners?: Record<string, ExtensionPlannerSpec>;
   recipes?: Record<string, ExtensionRecipeSpec>;
   guide?: string;
 }
@@ -132,6 +153,7 @@ export interface ExtensionListItem {
     helper: string | null;
     assets: string | null;
     processors: string[];
+    planners: string[];
     recipes: string[];
     guide: string | null;
   };
@@ -146,9 +168,12 @@ const ALLOWED_MANIFEST_KEYS = new Set([
   "helper",
   "assets",
   "processors",
+  "planners",
   "recipes",
   "guide",
 ]);
+
+const ALLOWED_PLANNER_KEYS = new Set(["kind", "description", "script", "params"]);
 
 const ALLOWED_PROCESSOR_KEYS = new Set([
   "kind",
@@ -202,6 +227,44 @@ export function assertStayInsideDir(parentDir: string, targetPath: string, extNa
     );
   }
   return absTarget;
+}
+
+export function assertScriptRespectsNetworkPolicy(
+  scriptAbsPath: string,
+  ext: ResolvedExtension
+): void {
+  if (ext.network) return;
+  let source = "";
+  try {
+    source = fs.readFileSync(scriptAbsPath, "utf8");
+  } catch {
+    return;
+  }
+  const stripped = source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\r\n]*/g, "");
+  const forbiddenPatterns: Array<{ re: RegExp; label: string }> = [
+    { re: /\bfetch\s*\(/, label: "fetch()" },
+    { re: /\bnew\s+WebSocket\s*\(/, label: "WebSocket" },
+    {
+      re: /(?:require|import)\s*\(?[\s'"]*(?:node:)?(?:http|https|http2|net|tls|dns|dgram)\b/,
+      label: "node:http/https/net/tls/dns",
+    },
+    {
+      re: /\b(?:http|https|net|tls)\s*\.\s*(?:request|get|connect|createConnection|createServer)\s*\(/,
+      label: "http/https/net.request/connect",
+    },
+  ];
+  for (const pat of forbiddenPatterns) {
+    if (pat.re.test(stripped)) {
+      throw new CutholError(
+        DIAGNOSTICS.EXTENSION_SECURITY_VIOLATION(
+          ext.name,
+          `Eklenti manifestinde 'network: true' bildirmediği halde ağ erişimi ('${pat.label}') kullanıyor.`
+        )
+      );
+    }
+  }
 }
 
 function validateParamsMap(
@@ -475,6 +538,63 @@ export function validateExtensionManifest(
     }
   }
 
+  let plannersSpec: Record<string, ExtensionPlannerSpec> | undefined;
+  if (obj.planners !== undefined) {
+    if (!obj.planners || typeof obj.planners !== "object" || Array.isArray(obj.planners)) {
+      throw new CutholError(
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'planners' alanı bir nesne olmalıdır.`)
+      );
+    }
+    plannersSpec = {};
+    for (const [planName, rawPlan] of Object.entries(obj.planners as Record<string, unknown>)) {
+      if (!EXTENSION_NAME_RE.test(planName)) {
+        throw new CutholError(
+          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `Geçersiz planlayıcı adı '${planName}'.`)
+        );
+      }
+      if (!rawPlan || typeof rawPlan !== "object" || Array.isArray(rawPlan)) {
+        throw new CutholError(
+          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'planners.${planName}' bir nesne olmalıdır.`)
+        );
+      }
+      const plObj = rawPlan as Record<string, unknown>;
+      for (const k of Object.keys(plObj)) {
+        if (!ALLOWED_PLANNER_KEYS.has(k)) {
+          throw new CutholError(
+            DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
+              name,
+              `'planners.${planName}' içinde bilinmeyen alan '${k}' (izin verilenler: ${[...ALLOWED_PLANNER_KEYS].join(", ")}).`
+            )
+          );
+        }
+      }
+      if (plObj.kind !== undefined && plObj.kind !== "node" && plObj.kind !== "planner") {
+        throw new CutholError(
+          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
+            name,
+            `'planners.${planName}.kind' değeri 'node' veya 'planner' olmalıdır.`
+          )
+        );
+      }
+      const script = typeof plObj.script === "string" ? plObj.script.trim() : "";
+      if (!isSafeRelativeSubpath(script) || !/\.(c|m)?js$/i.test(script)) {
+        throw new CutholError(
+          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
+            name,
+            `'planners.${planName}.script' eklenti klasörü içinde göreli bir '.js' dosyası olmalıdır.`
+          )
+        );
+      }
+      const params = validateParamsMap(plObj.params, name, `planners.${planName}`);
+      plannersSpec[planName] = {
+        ...(typeof plObj.kind === "string" ? { kind: plObj.kind as "node" | "planner" } : {}),
+        ...(typeof plObj.description === "string" ? { description: plObj.description } : {}),
+        script,
+        ...(Object.keys(params).length > 0 ? { params } : {}),
+      };
+    }
+  }
+
   let recipesSpec: Record<string, ExtensionRecipeSpec> | undefined;
   if (obj.recipes !== undefined) {
     if (!obj.recipes || typeof obj.recipes !== "object" || Array.isArray(obj.recipes)) {
@@ -589,6 +709,7 @@ export function validateExtensionManifest(
     ...(helperSpec !== undefined ? { helper: helperSpec } : {}),
     ...(assetsSpec !== undefined ? { assets: assetsSpec } : {}),
     ...(processorsSpec !== undefined ? { processors: processorsSpec } : {}),
+    ...(plannersSpec !== undefined ? { planners: plannersSpec } : {}),
     ...(recipesSpec !== undefined ? { recipes: recipesSpec } : {}),
     ...(guideSpec !== undefined ? { guide: guideSpec } : {}),
   };
@@ -719,6 +840,20 @@ export function loadExtensionFromDir(
             )
           );
         }
+      }
+    }
+  }
+
+  if (manifest.planners) {
+    for (const [planName, planner] of Object.entries(manifest.planners)) {
+      const absScript = assertStayInsideDir(absDir, planner.script, manifest.name);
+      if (!fs.existsSync(absScript)) {
+        throw new CutholError(
+          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
+            manifest.name,
+            `'planners.${planName}.script' dosyası ('${planner.script}') bulunamadı.`
+          )
+        );
       }
     }
   }
@@ -891,6 +1026,7 @@ export function listExtensions(workspaceDir?: string | null): {
           helper: ext.helperRelPath,
           assets: ext.assetsRelDir,
           processors: Object.keys(ext.manifest.processors ?? {}),
+          planners: Object.keys(ext.manifest.planners ?? {}),
           recipes: Object.keys(ext.manifest.recipes ?? {}),
           guide: ext.guideRelPath,
         },
@@ -999,7 +1135,8 @@ export type ExtensionTemplateKind =
   | "processor_ffmpeg"
   | "processor_node"
   | "assets"
-  | "recipe";
+  | "recipe"
+  | "planner";
 
 export function createExtension(options: {
   name: string;
@@ -1193,6 +1330,60 @@ export function createExtension(options: {
     };
   }
 
+  if (tpl === "planner") {
+    manifest.planners = {
+      ...(manifest.planners ?? {}),
+      event_sfx: {
+        description: "Reads composition declared events and word timings, and proposes SFX cues.",
+        script: "planner.js",
+        params: {
+          asset_handle: {
+            type: "string",
+            required: false,
+            description: "SFX library handle to place at matching events.",
+          },
+          lane_id: {
+            type: "string",
+            default: "ln_sfx",
+            description: "Target audio lane for generated SFX cues.",
+          },
+          gain_db: {
+            type: "number",
+            default: -6,
+            description: "Gain in dB for generated SFX cues.",
+          },
+        },
+      },
+    };
+    const plannerScript = [
+      `#!/usr/bin/env node`,
+      `const fs = require("node:fs");`,
+      `const [snapshotPath, outputPath, rawParams] = process.argv.slice(2);`,
+      `const snapshot = JSON.parse(fs.readFileSync(snapshotPath, "utf8"));`,
+      `const params = rawParams ? JSON.parse(rawParams) : (snapshot.params || {});`,
+      `const laneId = params.lane_id || "ln_sfx";`,
+      `const gainDb = typeof params.gain_db === "number" ? params.gain_db : -6;`,
+      `const defaultAsset = params.asset_handle || (snapshot.sequence.library.find((a) => a.kind === "audio")?.handle);`,
+      `const cues = [];`,
+      `for (const ev of snapshot.events || []) {`,
+      `  const assetHandle = (ev.meta && ev.meta.asset_handle) || defaultAsset;`,
+      `  if (!assetHandle) continue;`,
+      `  cues.push({`,
+      `    lane_id: laneId,`,
+      `    kind: "sfx",`,
+      `    asset_handle: assetHandle,`,
+      `    at_ms: ev.sequence_ms,`,
+      `    duration_ms: (ev.meta && ev.meta.duration_ms) || 500,`,
+      `    gain_db: (ev.meta && typeof ev.meta.gain_db === "number") ? ev.meta.gain_db : gainDb,`,
+      `  });`,
+      `}`,
+      `fs.writeFileSync(outputPath, JSON.stringify({ cues }, null, 2), "utf8");`,
+      ``,
+    ].join("\n");
+    fs.writeFileSync(path.join(extDir, "planner.js"), plannerScript, "utf8");
+    filesCreated.push("planner.js");
+  }
+
   const readmeContent = [
     `# ${cleanName} (v${version})`,
     ``,
@@ -1203,6 +1394,9 @@ export function createExtension(options: {
     manifest.assets ? `- **Asset pack:** \`assets/ext/${cleanName}/...\`` : null,
     manifest.processors
       ? `- **Processors:** ${Object.keys(manifest.processors).map((k) => `\`${k}\``).join(", ")}`
+      : null,
+    manifest.planners
+      ? `- **Planners:** ${Object.keys(manifest.planners).map((k) => `\`${k}\``).join(", ")}`
       : null,
     manifest.recipes
       ? `- **Recipes:** ${Object.keys(manifest.recipes).map((k) => `\`${k}\``).join(", ")}`
@@ -1334,7 +1528,7 @@ export function enableExtensionInWorkspace(options: {
     };
   }
 
-  commitVerifiedMutation(options.workspaceDir, "extension.enable", (seq) => {
+  commitVerifiedMutation(options.workspaceDir, "extension.enable", (seq, paths) => {
     if (!seq.extensions) seq.extensions = [];
     const idx = seq.extensions.findIndex((e) => e.name === ext.name);
     if (idx >= 0) {
@@ -1343,6 +1537,11 @@ export function enableExtensionInWorkspace(options: {
       seq.extensions.push(newRef);
     }
     seq.extensions.sort((a, b) => a.name.localeCompare(b.name));
+    try {
+      syncAllCompositionBridges(seq, paths, { explicit: true });
+    } catch {
+      // non-blocking bridge sync
+    }
   });
 
   return {
@@ -1760,6 +1959,7 @@ export function runExtensionProcessor(options: {
         }
       } else {
         // Node processor in isolated child process
+        assertScriptRespectsNetworkPolicy(scriptAbsPath!, ext);
         const extFilesBefore = new Map(
           listFilesRecursiveRelative(ext.dir).map((f) => [
             f.path,
@@ -2144,11 +2344,37 @@ export function runExtensionRecipe(options: {
         const targetExt = String(resolvedArgs.name ?? ext.name);
         const procName =
           typeof resolvedArgs.processor === "string" ? resolvedArgs.processor : undefined;
+        const planName =
+          typeof resolvedArgs.planner === "string" ? resolvedArgs.planner : undefined;
         const inputVal = String(resolvedArgs.input ?? resolvedArgs.handle ?? "");
         const stepParams =
           resolvedArgs.params && typeof resolvedArgs.params === "object"
             ? (resolvedArgs.params as Record<string, unknown>)
             : {};
+        if (planName) {
+          const planRes = runExtensionPlanner({
+            workspaceDir: options.workspaceDir,
+            extensionName: targetExt,
+            plannerName: planName,
+            params: stepParams,
+          });
+          const firstAdded = planRes.cues_added[0] ?? null;
+          if (firstAdded) lastHandle = firstAdded;
+          stepOutputs.set(stepId, {
+            handle: firstAdded,
+            id: firstAdded,
+            cues_added: planRes.cues_added,
+          });
+          stepsExecuted.push({
+            index: i + 1,
+            id: stepId,
+            tool: "extension",
+            action: "run",
+            handle: firstAdded,
+            summary: `${targetExt}.${planRes.planner} -> +${planRes.cues_added.length} cue(s)`,
+          });
+          continue;
+        }
         const procRes = runExtensionProcessor({
           workspaceDir: options.workspaceDir,
           extensionName: targetExt,
@@ -2312,6 +2538,1106 @@ export function runExtensionRecipe(options: {
     params: resolvedParams,
     steps_executed: stepsExecuted,
     last_handle: lastHandle,
+    security_notice: securityNotice,
+  };
+}
+
+export interface CompositionDeclaredEvent {
+  id: string;
+  name: string;
+  kind?: string;
+  cue_id: string;
+  lane_id: string;
+  composition_dir: string;
+  local_ms: number;
+  local_sec: number;
+  sequence_ms: number;
+  sequence_sec: number;
+  meta?: Record<string, unknown>;
+  source: "events_json" | "html_script" | "html_attr" | "js_call";
+}
+
+export interface PlannerCompositionSnapshot {
+  cue_id: string;
+  lane_id: string;
+  composition_dir: string;
+  entry_html: string;
+  at_ms: number;
+  duration_ms: number;
+  end_ms: number;
+  props: Record<string, unknown>;
+  words: Array<{
+    word: string;
+    norm: string;
+    local_ms: number;
+    local_end_ms: number;
+    local_sec: number;
+    local_end_sec: number;
+    sequence_ms: number;
+    sequence_end_ms: number;
+    sequence_sec: number;
+    sequence_end_sec: number;
+  }>;
+  events: CompositionDeclaredEvent[];
+  cuts: Array<{
+    local_ms: number;
+    local_sec: number;
+    sequence_ms: number;
+    sequence_sec: number;
+    kind: string;
+  }>;
+}
+
+export interface CutholPlannerSnapshot {
+  schema: "cuthol.planner.snapshot/1";
+  workspace_dir: string;
+  extension_dir: string;
+  params: Record<string, number | string | boolean>;
+  sequence: CutholSequence;
+  words: Array<{
+    word: string;
+    norm: string;
+    source_start_ms: number;
+    source_end_ms: number;
+    sequence_start_ms: number;
+    sequence_end_ms: number;
+    sequence_start_sec: number;
+    sequence_end_sec: number;
+    owner_id: string;
+    asset_handle: string;
+  }>;
+  compositions: PlannerCompositionSnapshot[];
+  events: CompositionDeclaredEvent[];
+}
+
+function parseFlexibleLocalMs(rawVal: unknown, treatPlainNumberAsSec = false): number | null {
+  if (typeof rawVal === "number" && Number.isFinite(rawVal)) {
+    return Math.max(0, Math.round(treatPlainNumberAsSec ? rawVal * 1000 : rawVal));
+  }
+  if (typeof rawVal === "string") {
+    const trimmed = rawVal.trim();
+    if (!trimmed) return null;
+    if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) {
+      const n = Number(trimmed);
+      if (!Number.isFinite(n)) return null;
+      return Math.max(0, Math.round(treatPlainNumberAsSec ? n * 1000 : n));
+    }
+    try {
+      return Math.max(0, parseTimeMs(trimmed));
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function parseRawEventObject(
+  raw: unknown,
+  cueId: string,
+  laneId: string,
+  compDirRel: string,
+  cueStartMs: number,
+  source: CompositionDeclaredEvent["source"],
+  index: number
+): CompositionDeclaredEvent | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+  const rawName = obj.name ?? obj.event ?? obj.type ?? obj.label ?? obj.id;
+  if (typeof rawName !== "string" || !rawName.trim()) return null;
+  const name = rawName.trim();
+
+  let localMs: number | null = null;
+  if (obj.at_ms !== undefined) localMs = parseFlexibleLocalMs(obj.at_ms, false);
+  else if (obj.offset_ms !== undefined) localMs = parseFlexibleLocalMs(obj.offset_ms, false);
+  else if (obj.local_ms !== undefined) localMs = parseFlexibleLocalMs(obj.local_ms, false);
+  else if (obj.time_ms !== undefined) localMs = parseFlexibleLocalMs(obj.time_ms, false);
+  else if (obj.at_sec !== undefined) localMs = parseFlexibleLocalMs(obj.at_sec, true);
+  else if (obj.local_sec !== undefined) localMs = parseFlexibleLocalMs(obj.local_sec, true);
+  else if (obj.t !== undefined) localMs = parseFlexibleLocalMs(obj.t, true);
+  else if (obj.sec !== undefined) localMs = parseFlexibleLocalMs(obj.sec, true);
+  else if (obj.time !== undefined) {
+    localMs =
+      typeof obj.time === "number"
+        ? parseFlexibleLocalMs(obj.time, true)
+        : parseFlexibleLocalMs(obj.time, false);
+  } else if (obj.at !== undefined) {
+    localMs =
+      typeof obj.at === "number" && !Number.isInteger(obj.at) && obj.at < 600
+        ? parseFlexibleLocalMs(obj.at, true)
+        : parseFlexibleLocalMs(obj.at, false);
+  }
+
+  if (localMs === null || !Number.isFinite(localMs)) return null;
+
+  const meta: Record<string, unknown> = {};
+  if (obj.meta && typeof obj.meta === "object" && !Array.isArray(obj.meta)) {
+    Object.assign(meta, obj.meta as Record<string, unknown>);
+  }
+  for (const [k, v] of Object.entries(obj)) {
+    if (
+      ![
+        "id",
+        "name",
+        "event",
+        "kind",
+        "type",
+        "label",
+        "at",
+        "at_ms",
+        "offset_ms",
+        "local_ms",
+        "time_ms",
+        "at_sec",
+        "local_sec",
+        "t",
+        "sec",
+        "time",
+        "meta",
+      ].includes(k)
+    ) {
+      meta[k] = v;
+    }
+  }
+
+  const kindStr =
+    typeof obj.kind === "string" && obj.kind.trim()
+      ? obj.kind.trim()
+      : typeof obj.type === "string" && obj.type.trim() && obj.type !== rawName
+        ? obj.type.trim()
+        : undefined;
+
+  return {
+    id:
+      typeof obj.id === "string" && obj.id.trim() && obj.id !== rawName
+        ? obj.id.trim()
+        : `${cueId}_ev_${index}`,
+    name,
+    ...(kindStr ? { kind: kindStr } : {}),
+    cue_id: cueId,
+    lane_id: laneId,
+    composition_dir: compDirRel,
+    local_ms: localMs,
+    local_sec: Number((localMs / 1000).toFixed(4)),
+    sequence_ms: cueStartMs + localMs,
+    sequence_sec: Number(((cueStartMs + localMs) / 1000).toFixed(4)),
+    ...(Object.keys(meta).length > 0 ? { meta } : {}),
+    source,
+  };
+}
+
+/**
+ * Extracts composition-declared events without opening a browser:
+ * 1. `events.json`, `cuthol-events.json`, `assets/events.json`, or `assets/cuthol-events.json`
+ * 2. `<script id="cuthol-events" type="application/json">` (or `data-cuthol-events`) in entry HTML
+ * 3. HTML elements with `data-cuthol-event="<name>"` (or `data-event="<name>"`) and `data-cuthol-at` / `data-at` / `data-start`
+ * 4. Static JS calls `C.event("name", timeSecOrMs, meta)` or `/* @cuthol-event name 800ms * /` comments
+ */
+export function extractCompositionDeclaredEvents(options: {
+  absCompDir: string;
+  compDirRel: string;
+  entryHtml: string;
+  cueId: string;
+  laneId: string;
+  cueStartMs: number;
+  cueDurationMs: number;
+}): CompositionDeclaredEvent[] {
+  const { absCompDir, compDirRel, entryHtml, cueId, laneId, cueStartMs } = options;
+  if (!fs.existsSync(absCompDir)) return [];
+
+  const events: CompositionDeclaredEvent[] = [];
+  let seqIdx = 1;
+
+  // 1. JSON files in composition folder
+  const jsonCandidates = [
+    path.join(absCompDir, "events.json"),
+    path.join(absCompDir, "cuthol-events.json"),
+    path.join(absCompDir, "assets", "events.json"),
+    path.join(absCompDir, "assets", "cuthol-events.json"),
+  ];
+  for (const candidate of jsonCandidates) {
+    if (!fs.existsSync(candidate)) continue;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(candidate, "utf8")) as unknown;
+      const list = Array.isArray(parsed)
+        ? parsed
+        : parsed &&
+            typeof parsed === "object" &&
+            Array.isArray((parsed as { events?: unknown }).events)
+          ? ((parsed as { events: unknown[] }).events)
+          : [];
+      for (const rawEv of list) {
+        const ev = parseRawEventObject(
+          rawEv,
+          cueId,
+          laneId,
+          compDirRel,
+          cueStartMs,
+          "events_json",
+          seqIdx
+        );
+        if (ev) {
+          events.push(ev);
+          seqIdx++;
+        }
+      }
+    } catch {
+      // ignore malformed optional event file
+    }
+  }
+
+  // 2 & 3 & 4. Entry HTML (script JSON blocks, data-cuthol-event attributes, JS C.event calls)
+  const entryPath = path.join(absCompDir, entryHtml || "index.html");
+  if (fs.existsSync(entryPath)) {
+    let html = "";
+    try {
+      html = fs.readFileSync(entryPath, "utf8");
+    } catch {
+      html = "";
+    }
+
+    if (html) {
+      // 2a. <script id="cuthol-events" type="application/json">...</script>
+      const scriptBlockRe =
+        /<script\b[^>]*(?:\bid=["']cuthol-events["']|\bdata-cuthol-events\b)[^>]*>([\s\S]*?)<\/script>/gi;
+      let sm: RegExpExecArray | null;
+      while ((sm = scriptBlockRe.exec(html)) !== null) {
+        try {
+          const parsed = JSON.parse(sm[1].trim()) as unknown;
+          const list = Array.isArray(parsed)
+            ? parsed
+            : parsed &&
+                typeof parsed === "object" &&
+                Array.isArray((parsed as { events?: unknown }).events)
+              ? ((parsed as { events: unknown[] }).events)
+              : [];
+          for (const rawEv of list) {
+            const ev = parseRawEventObject(
+              rawEv,
+              cueId,
+              laneId,
+              compDirRel,
+              cueStartMs,
+              "html_script",
+              seqIdx
+            );
+            if (ev) {
+              events.push(ev);
+              seqIdx++;
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // 3. HTML elements with data-cuthol-event="..."
+      const tagRe = /<([a-zA-Z0-9_-]+)\b([^>]*?\bdata-(?:cuthol-)?event\s*=\s*["'][^"']+["'][^>]*)>/gi;
+      let tm: RegExpExecArray | null;
+      while ((tm = tagRe.exec(html)) !== null) {
+        const attrs = tm[2];
+        const getAttr = (attrName: string): string | null => {
+          const r = new RegExp(`\\b${attrName}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i");
+          const m = r.exec(attrs);
+          return m ? (m[1] ?? m[2] ?? null) : null;
+        };
+        const evName = getAttr("data-cuthol-event") ?? getAttr("data-event");
+        if (!evName || !evName.trim()) continue;
+        const rawAt =
+          getAttr("data-cuthol-at") ??
+          getAttr("data-event-at") ??
+          getAttr("data-at") ??
+          getAttr("data-time");
+        const rawStart = getAttr("data-start");
+        let localMs: number | null = null;
+        if (rawAt !== null) {
+          localMs = parseFlexibleLocalMs(rawAt, false);
+        } else if (rawStart !== null) {
+          localMs = parseFlexibleLocalMs(
+            rawStart,
+            /^-?\d+(?:\.\d+)?$/.test(rawStart.trim())
+          );
+        }
+        if (localMs === null) continue;
+
+        let meta: Record<string, unknown> | undefined;
+        const rawMeta = getAttr("data-cuthol-meta") ?? getAttr("data-event-meta");
+        if (rawMeta) {
+          try {
+            const parsedMeta = JSON.parse(rawMeta);
+            if (parsedMeta && typeof parsedMeta === "object" && !Array.isArray(parsedMeta)) {
+              meta = parsedMeta as Record<string, unknown>;
+            }
+          } catch {
+            // ignore
+          }
+        }
+        const rawAsset = getAttr("data-cuthol-asset") ?? getAttr("data-event-asset");
+        if (rawAsset) {
+          meta = { ...(meta ?? {}), asset_handle: rawAsset };
+        }
+        const rawKind = getAttr("data-cuthol-kind") ?? getAttr("data-event-kind");
+
+        events.push({
+          id: `${cueId}_ev_${seqIdx++}`,
+          name: evName.trim(),
+          ...(rawKind ? { kind: rawKind.trim() } : {}),
+          cue_id: cueId,
+          lane_id: laneId,
+          composition_dir: compDirRel,
+          local_ms: localMs,
+          local_sec: Number((localMs / 1000).toFixed(4)),
+          sequence_ms: cueStartMs + localMs,
+          sequence_sec: Number(((cueStartMs + localMs) / 1000).toFixed(4)),
+          ...(meta ? { meta } : {}),
+          source: "html_attr",
+        });
+      }
+
+      // 4. Static JS calls: C.event("paper_drop", 0.8, { ... }) or window.__cuthol.event("paper_drop", "800ms")
+      const jsCallRe =
+        /\b(?:C|__cuthol)\s*\.\s*event\s*\(\s*["']([^"']+)["']\s*,\s*([0-9]+(?:\.[0-9]+)?|["'][^"']+["'])(?:\s*,\s*(\{[^{}]*\}))?\s*\)/g;
+      let jm: RegExpExecArray | null;
+      while ((jm = jsCallRe.exec(html)) !== null) {
+        const evName = jm[1].trim();
+        const rawTimeToken = jm[2].trim();
+        let localMs: number | null = null;
+        if (rawTimeToken.startsWith('"') || rawTimeToken.startsWith("'")) {
+          localMs = parseFlexibleLocalMs(rawTimeToken.slice(1, -1), false);
+        } else {
+          const num = Number(rawTimeToken);
+          localMs = Number.isFinite(num)
+            ? Math.max(0, Math.round(num <= 120 && !rawTimeToken.endsWith("00") ? num * 1000 : num))
+            : null;
+        }
+        if (localMs === null) continue;
+        let meta: Record<string, unknown> | undefined;
+        if (jm[3]) {
+          try {
+            meta = JSON.parse(jm[3]) as Record<string, unknown>;
+          } catch {
+            // ignore
+          }
+        }
+        events.push({
+          id: `${cueId}_ev_${seqIdx++}`,
+          name: evName,
+          cue_id: cueId,
+          lane_id: laneId,
+          composition_dir: compDirRel,
+          local_ms: localMs,
+          local_sec: Number((localMs / 1000).toFixed(4)),
+          sequence_ms: cueStartMs + localMs,
+          sequence_sec: Number(((cueStartMs + localMs) / 1000).toFixed(4)),
+          ...(meta ? { meta } : {}),
+          source: "js_call",
+        });
+      }
+    }
+  }
+
+  // Deduplicate identical (name, local_ms) entries within the same composition cue
+  const deduped: CompositionDeclaredEvent[] = [];
+  const seen = new Set<string>();
+  for (const ev of events) {
+    const key = `${ev.name}@${ev.local_ms}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(ev);
+  }
+  deduped.sort((a, b) => a.sequence_ms - b.sequence_ms || a.name.localeCompare(b.name));
+  return deduped;
+}
+
+export function buildPlannerSnapshot(
+  seq: CutholSequence,
+  paths: WorkspacePaths,
+  ext: ResolvedExtension,
+  params: Record<string, number | string | boolean>
+): CutholPlannerSnapshot {
+  const ledger = fs.existsSync(paths.ledgerFile) ? new MediaLedger(paths.ledgerFile) : null;
+  const projectedWords: CutholPlannerSnapshot["words"] = [];
+
+  try {
+    if (ledger) {
+      const seenHandles = new Set<string>();
+      const candidateHandles: string[] = [];
+      for (const clip of seq.spine.clips) {
+        if (!clip.audio_chain.muted && !seenHandles.has(clip.asset_handle)) {
+          seenHandles.add(clip.asset_handle);
+          candidateHandles.push(clip.asset_handle);
+        }
+      }
+      for (const lane of seq.lanes) {
+        if (lane.muted) continue;
+        for (const cue of lane.cues) {
+          if (cue.asset_handle && !cue.audio_chain?.muted && !seenHandles.has(cue.asset_handle)) {
+            seenHandles.add(cue.asset_handle);
+            candidateHandles.push(cue.asset_handle);
+          }
+        }
+      }
+
+      for (const handle of candidateHandles) {
+        const asset = seq.library.find((a) => a.handle === handle);
+        if (!asset) continue;
+        const doc = ledger.getLatestTranscript<TranscriptDocument>(asset.digest_sha256);
+        if (!doc?.words?.length) continue;
+        const rawWords = doc.words.map((w) => ({
+          word: w.punctuated_word || w.word,
+          source_start_ms: w.source_start_ms,
+          source_end_ms: w.source_end_ms,
+          confidence: w.confidence,
+        }));
+        const projected = projectTranscriptAcrossSequence(seq, handle, rawWords);
+        for (const pw of projected) {
+          if (pw.excised || pw.sequence_start_ms === null || pw.sequence_end_ms === null) continue;
+          projectedWords.push({
+            word: pw.word,
+            norm: normTurkish(pw.word),
+            source_start_ms: pw.source_start_ms,
+            source_end_ms: pw.source_end_ms,
+            sequence_start_ms: pw.sequence_start_ms,
+            sequence_end_ms: pw.sequence_end_ms,
+            sequence_start_sec: Number((pw.sequence_start_ms / 1000).toFixed(4)),
+            sequence_end_sec: Number((pw.sequence_end_ms / 1000).toFixed(4)),
+            owner_id: pw.clip_id ?? handle,
+            asset_handle: handle,
+          });
+        }
+      }
+    }
+
+    // Also include embedded words on caption cues if not already covered
+    if (projectedWords.length === 0) {
+      for (const lane of seq.lanes) {
+        if (lane.muted) continue;
+        for (const cue of lane.cues) {
+          if (!cue.typography?.words?.length) continue;
+          for (const tw of cue.typography.words) {
+            if (tw.excised || tw.sequence_start_ms === null || tw.sequence_end_ms === null) continue;
+            projectedWords.push({
+              word: tw.word,
+              norm: normTurkish(tw.word),
+              source_start_ms: tw.source_start_ms,
+              source_end_ms: tw.source_end_ms,
+              sequence_start_ms: tw.sequence_start_ms,
+              sequence_end_ms: tw.sequence_end_ms,
+              sequence_start_sec: Number((tw.sequence_start_ms / 1000).toFixed(4)),
+              sequence_end_sec: Number((tw.sequence_end_ms / 1000).toFixed(4)),
+              owner_id: tw.clip_id ?? cue.id,
+              asset_handle: cue.asset_handle ?? cue.id,
+            });
+          }
+        }
+      }
+    }
+  } finally {
+    ledger?.close();
+  }
+
+  projectedWords.sort((a, b) => a.sequence_start_ms - b.sequence_start_ms);
+
+  const compositions: PlannerCompositionSnapshot[] = [];
+  const allEvents: CompositionDeclaredEvent[] = [];
+
+  for (const lane of seq.lanes) {
+    if (lane.muted) continue;
+    for (const cue of lane.cues) {
+      if (!cue.composition && cue.kind !== "composition") continue;
+      const compDirRel = cue.composition?.composition_dir ?? "";
+      if (!compDirRel) continue;
+      const absCompDir = path.isAbsolute(compDirRel)
+        ? compDirRel
+        : path.resolve(paths.rootDir, compDirRel);
+      const entryHtml = cue.composition?.entry_html || "index.html";
+      const cueStartMs = resolveCueStartMs(seq, cue);
+      const cueEndMs = cueStartMs + cue.duration_ms;
+
+      const bridge = exportBridgeDataForCue(seq, cue, paths);
+      const compWords = bridge.words.map((bw) => {
+        const localMs = Math.round(bw.t0 * 1000);
+        const localEndMs = Math.round(bw.t1 * 1000);
+        const seqMs = cueStartMs + localMs;
+        const seqEndMs = cueStartMs + localEndMs;
+        return {
+          word: bw.text,
+          norm: normTurkish(bw.text),
+          local_ms: localMs,
+          local_end_ms: localEndMs,
+          local_sec: bw.t0,
+          local_end_sec: bw.t1,
+          sequence_ms: seqMs,
+          sequence_end_ms: seqEndMs,
+          sequence_sec: Number((seqMs / 1000).toFixed(4)),
+          sequence_end_sec: Number((seqEndMs / 1000).toFixed(4)),
+        };
+      });
+
+      const compCuts = (bridge.cuts ?? []).map((bc) => {
+        const localMs = Math.round(bc.t * 1000);
+        const seqMs = cueStartMs + localMs;
+        return {
+          local_ms: localMs,
+          local_sec: bc.t,
+          sequence_ms: seqMs,
+          sequence_sec: Number((seqMs / 1000).toFixed(4)),
+          kind: bc.kind ?? "spine_cut",
+        };
+      });
+
+      const declaredEvents = extractCompositionDeclaredEvents({
+        absCompDir,
+        compDirRel,
+        entryHtml,
+        cueId: cue.id,
+        laneId: lane.id,
+        cueStartMs,
+        cueDurationMs: cue.duration_ms,
+      });
+      allEvents.push(...declaredEvents);
+
+      compositions.push({
+        cue_id: cue.id,
+        lane_id: lane.id,
+        composition_dir: compDirRel,
+        entry_html: entryHtml,
+        at_ms: cueStartMs,
+        duration_ms: cue.duration_ms,
+        end_ms: cueEndMs,
+        props: cue.composition?.props ?? {},
+        words: compWords,
+        events: declaredEvents,
+        cuts: compCuts,
+      });
+    }
+  }
+
+  allEvents.sort((a, b) => a.sequence_ms - b.sequence_ms || a.name.localeCompare(b.name));
+
+  return {
+    schema: "cuthol.planner.snapshot/1",
+    workspace_dir: paths.rootDir,
+    extension_dir: ext.dir,
+    params,
+    sequence: structuredClone(seq),
+    words: projectedWords,
+    compositions,
+    events: allEvents,
+  };
+}
+
+const ALLOWED_PATCH_ROOT_KEYS = new Set([
+  "title",
+  "stage",
+  "spine",
+  "cues",
+  "notes",
+  "summary",
+  "ok",
+]);
+
+function normalizeAndValidatePlannerPatch(
+  rawPatch: unknown,
+  extName: string,
+  plannerName: string
+): { sheet: CutholCueSheet; notes: string[] } {
+  if (!rawPatch || typeof rawPatch !== "object" || Array.isArray(rawPatch)) {
+    throw new CutholError(
+      DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+        extName,
+        `planner:${plannerName}`,
+        `Planlayıcı çıktısı bir Cue Sheet JSON nesnesi olmalıdır.`
+      )
+    );
+  }
+  const topObj = rawPatch as Record<string, unknown>;
+  const rootObj =
+    topObj.patch && typeof topObj.patch === "object" && !Array.isArray(topObj.patch)
+      ? (topObj.patch as Record<string, unknown>)
+      : topObj;
+
+  for (const k of Object.keys(rootObj)) {
+    if (!ALLOWED_PATCH_ROOT_KEYS.has(k)) {
+      throw new CutholError(
+        DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+          extName,
+          `planner:${plannerName}`,
+          `Planlayıcı yamasında bilinmeyen alan '${k}' (izin verilenler: title, stage, spine, cues, notes).`
+        )
+      );
+    }
+  }
+
+  const notes: string[] = [];
+  if (Array.isArray(rootObj.notes)) {
+    for (const n of rootObj.notes) notes.push(String(n));
+  } else if (typeof topObj.summary === "string" && topObj.summary.trim()) {
+    notes.push(topObj.summary.trim());
+  }
+
+  const sheet: CutholCueSheet = {};
+  if (typeof rootObj.title === "string") sheet.title = rootObj.title;
+  if (rootObj.stage !== undefined) {
+    if (!rootObj.stage || typeof rootObj.stage !== "object" || Array.isArray(rootObj.stage)) {
+      throw new CutholError(
+        DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+          extName,
+          `planner:${plannerName}`,
+          `Planlayıcı yamasındaki 'stage' alanı bir nesne olmalıdır.`
+        )
+      );
+    }
+    sheet.stage = rootObj.stage as CutholCueSheet["stage"];
+  }
+
+  if (rootObj.spine !== undefined) {
+    if (!Array.isArray(rootObj.spine)) {
+      throw new CutholError(
+        DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+          extName,
+          `planner:${plannerName}`,
+          `Planlayıcı yamasındaki 'spine' alanı bir dizi olmalıdır.`
+        )
+      );
+    }
+    sheet.spine = rootObj.spine as CutholCueSheet["spine"];
+  }
+
+  if (rootObj.cues !== undefined) {
+    if (!Array.isArray(rootObj.cues)) {
+      throw new CutholError(
+        DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+          extName,
+          `planner:${plannerName}`,
+          `Planlayıcı yamasındaki 'cues' alanı bir dizi olmalıdır.`
+        )
+      );
+    }
+    const normalizedCues: CueSheetCueEntry[] = [];
+    for (let i = 0; i < rootObj.cues.length; i++) {
+      const rawCue = rootObj.cues[i];
+      if (!rawCue || typeof rawCue !== "object" || Array.isArray(rawCue)) {
+        throw new CutholError(
+          DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+            extName,
+            `planner:${plannerName}`,
+            `'cues[${i}]' bir nesne olmalıdır.`
+          )
+        );
+      }
+      const cObj = { ...(rawCue as Record<string, unknown>) };
+      const laneId = typeof cObj.lane_id === "string" ? cObj.lane_id.trim() : typeof cObj.lane === "string" ? cObj.lane.trim() : "";
+      if (!laneId && cObj.op !== "delete") {
+        throw new CutholError(
+          DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+            extName,
+            `planner:${plannerName}`,
+            `'cues[${i}].lane_id' alanı zorunludur.`
+          )
+        );
+      }
+      cObj.lane_id = laneId || "ln_sfx";
+      delete cObj.lane;
+
+      if (cObj.asset !== undefined && cObj.asset_handle === undefined) {
+        cObj.asset_handle = cObj.asset;
+        delete cObj.asset;
+      }
+
+      if (cObj.at !== undefined && cObj.at_ms === undefined) {
+        cObj.at_ms = typeof cObj.at === "number" ? cObj.at : parseTimeMs(String(cObj.at));
+        delete cObj.at;
+      } else if (typeof cObj.at_ms === "string") {
+        cObj.at_ms = parseTimeMs(cObj.at_ms);
+      }
+
+      if (cObj.duration !== undefined && cObj.duration_ms === undefined) {
+        cObj.duration_ms =
+          typeof cObj.duration === "number" ? cObj.duration : parseTimeMs(String(cObj.duration));
+        delete cObj.duration;
+      } else if (typeof cObj.duration_ms === "string") {
+        cObj.duration_ms = parseTimeMs(cObj.duration_ms);
+      }
+
+      if (cObj.in !== undefined && cObj.source_in_ms === undefined) {
+        cObj.source_in_ms = typeof cObj.in === "number" ? cObj.in : parseTimeMs(String(cObj.in));
+        delete cObj.in;
+      }
+      if (cObj.out !== undefined && cObj.source_out_ms === undefined) {
+        cObj.source_out_ms = typeof cObj.out === "number" ? cObj.out : parseTimeMs(String(cObj.out));
+        delete cObj.out;
+      }
+
+      if (
+        cObj.at_ms !== undefined &&
+        (typeof cObj.at_ms !== "number" || !Number.isFinite(cObj.at_ms) || cObj.at_ms < 0)
+      ) {
+        throw new CutholError(
+          DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+            extName,
+            `planner:${plannerName}`,
+            `'cues[${i}].at_ms' negatif olmayan geçerli bir milisaniye değeri olmalıdır (verilen: ${String(cObj.at_ms)}).`
+          )
+        );
+      }
+      if (
+        cObj.duration_ms !== undefined &&
+        (typeof cObj.duration_ms !== "number" || !Number.isFinite(cObj.duration_ms) || cObj.duration_ms <= 0)
+      ) {
+        throw new CutholError(
+          DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+            extName,
+            `planner:${plannerName}`,
+            `'cues[${i}].duration_ms' pozitif bir milisaniye değeri olmalıdır (verilen: ${String(cObj.duration_ms)}).`
+          )
+        );
+      }
+
+      normalizedCues.push(cObj as unknown as CueSheetCueEntry);
+    }
+    sheet.cues = normalizedCues;
+  }
+
+  return { sheet, notes };
+}
+
+/**
+ * Runs an extension planner script in an isolated child process:
+ * - Passes a read-only `CutholPlannerSnapshot` (sequence + sequence-projected words + composition-declared events).
+ * - Enforces file-write and network security rules (`CUTHOL-G206`).
+ * - Validates the returned Cue Sheet patch via `mergeCueSheetIntoSequence` + `verifySequence` (`planCueSheet`).
+ * - On `dryRun: true`, returns the plan without mutating the sequence.
+ * - On `dryRun: false`, applies the patch in a single atomic revision (`rN -> r(N+1)`) so `undo` reverts all added/updated cues at once.
+ */
+export function runExtensionPlanner(options: {
+  workspaceDir: string;
+  extensionName: string;
+  plannerName?: string;
+  params?: Record<string, unknown>;
+  scope?: ExtensionScope;
+  dryRun?: boolean;
+}): {
+  extension: string;
+  version: string;
+  planner: string;
+  kind: "planner";
+  undo_policy: "single_atomic_revision";
+  params: Record<string, number | string | boolean>;
+  snapshot_summary: {
+    compositions_count: number;
+    declared_events_count: number;
+    projected_words_count: number;
+  };
+  diff: CueSheetDiff;
+  would_commit: boolean;
+  cues_added: string[];
+  cues_updated: string[];
+  cues_removed: string[];
+  notes?: string[];
+  revision: number;
+  verification: VerificationReport;
+  security_notice: {
+    manifest_path: string;
+    script_path: string;
+    network_declared: boolean;
+  };
+  dry_run?: boolean;
+} {
+  const ext = resolveExtension(options.extensionName, options.workspaceDir, options.scope);
+  const planners = ext.manifest.planners ?? {};
+  const planNames = Object.keys(planners);
+  if (planNames.length === 0) {
+    throw new CutholError(
+      DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+        ext.name,
+        options.plannerName || "planner",
+        `'${ext.name}' eklentisinde tanımlı hiçbir planlayıcı ('planners') yok.`
+      )
+    );
+  }
+
+  const planName =
+    options.plannerName?.trim() || (planNames.length === 1 ? planNames[0] : "");
+  if (!planName || !planners[planName]) {
+    throw new CutholError(
+      DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+        ext.name,
+        planName || "(belirtilmedi)",
+        `Planlayıcı bulunamadı. Mevcut planlayıcılar: ${planNames.join(", ")}.`
+      )
+    );
+  }
+
+  const planner = planners[planName];
+  const resolvedParams = resolveValidatedParams(
+    planner.params,
+    options.params,
+    ext.name,
+    `planner:${planName}`
+  );
+  const scriptAbsPath = assertStayInsideDir(ext.dir, planner.script, ext.name);
+  assertScriptRespectsNetworkPolicy(scriptAbsPath, ext);
+
+  const securityNotice = {
+    manifest_path: ext.manifestPath,
+    script_path: scriptAbsPath,
+    network_declared: ext.network,
+  };
+
+  const { paths, sequence: initialSeq } = loadSequence(options.workspaceDir);
+  const preSeqRaw = fs.readFileSync(paths.sequenceFile, "utf8");
+  const snapshot = buildPlannerSnapshot(initialSeq, paths, ext, resolvedParams);
+
+  const extFilesBefore = new Map(
+    listFilesRecursiveRelative(ext.dir).map((f) => [
+      f.path,
+      crypto
+        .createHash("sha256")
+        .update(fs.readFileSync(path.join(ext.dir, f.path)))
+        .digest("hex"),
+    ])
+  );
+  const extHashBefore = hashExtensionDirectory(ext.dir);
+  const rootEntriesBefore = new Set(fs.readdirSync(paths.rootDir));
+
+  const isolatedTmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), `cuthol-ext-planner-${ext.name}-`)
+  );
+  const snapshotPath = path.join(isolatedTmpDir, "snapshot.json");
+  const patchOutPath = path.join(isolatedTmpDir, "patch.json");
+
+  let rawPatchObj: unknown;
+  try {
+    fs.writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2), "utf8");
+    const nodeProc = spawnSync(
+      process.execPath,
+      [scriptAbsPath, snapshotPath, patchOutPath, JSON.stringify(resolvedParams)],
+      {
+        cwd: isolatedTmpDir,
+        env: {
+          ...process.env,
+          CUTHOL_EXT_NAME: ext.name,
+          CUTHOL_EXT_VERSION: ext.version,
+          CUTHOL_EXT_DIR: ext.dir,
+          CUTHOL_EXT_SNAPSHOT: snapshotPath,
+          CUTHOL_EXT_OUTPUT: patchOutPath,
+          CUTHOL_EXT_PARAMS: JSON.stringify(resolvedParams),
+        },
+        encoding: "utf8",
+        timeout: 120_000,
+        maxBuffer: 8 * 1024 * 1024,
+        windowsHide: true,
+      }
+    );
+
+    // 1. Check extension folder write violation
+    const extHashAfter = hashExtensionDirectory(ext.dir);
+    if (extHashAfter !== extHashBefore) {
+      for (const f of listFilesRecursiveRelative(ext.dir)) {
+        if (!extFilesBefore.has(f.path)) {
+          try {
+            fs.unlinkSync(path.join(ext.dir, f.path));
+          } catch {
+            // ignore
+          }
+        }
+      }
+      throw new CutholError(
+        DIAGNOSTICS.EXTENSION_SECURITY_VIOLATION(
+          ext.name,
+          `Planlayıcı betiği eklenti klasörünün içine yazma girişiminde bulundu.`
+        )
+      );
+    }
+
+    // 2. Check workspace folder write violation
+    const postSeqRaw = fs.existsSync(paths.sequenceFile)
+      ? fs.readFileSync(paths.sequenceFile, "utf8")
+      : "";
+    const rootEntriesAfter = fs.readdirSync(paths.rootDir);
+    const extraRootEntries = rootEntriesAfter.filter((e) => !rootEntriesBefore.has(e));
+    if (postSeqRaw !== preSeqRaw || extraRootEntries.length > 0) {
+      fs.writeFileSync(paths.sequenceFile, preSeqRaw, "utf8");
+      for (const extra of extraRootEntries) {
+        try {
+          fs.rmSync(path.join(paths.rootDir, extra), { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
+      throw new CutholError(
+        DIAGNOSTICS.EXTENSION_SECURITY_VIOLATION(
+          ext.name,
+          `Planlayıcı betiği doğrudan çalışma alanı klasörüne ('${extraRootEntries.join(", ") || "cuthol.sequence.json"}') yazma girişiminde bulundu.`
+        )
+      );
+    }
+
+    // 3. Check sandbox extra files violation
+    const sandboxEntries = fs.readdirSync(isolatedTmpDir);
+    const extraSandbox = sandboxEntries.filter(
+      (e) => e !== "snapshot.json" && e !== "patch.json"
+    );
+    if (extraSandbox.length > 0) {
+      throw new CutholError(
+        DIAGNOSTICS.EXTENSION_SECURITY_VIOLATION(
+          ext.name,
+          `Planlayıcı betiği Cuthol'un verdiği çıktı yolu dışına ('${extraSandbox.join(", ")}') dosya yazdı.`
+        )
+      );
+    }
+
+    if (nodeProc.status !== 0) {
+      throw new CutholError(
+        DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+          ext.name,
+          `planner:${planName}`,
+          `Planlayıcı betiği çıkış kodu ${nodeProc.status}: ${(nodeProc.stderr || nodeProc.stdout || "").trim()}`
+        )
+      );
+    }
+
+    if (fs.existsSync(patchOutPath)) {
+      const patchRaw = fs.readFileSync(patchOutPath, "utf8").trim();
+      try {
+        rawPatchObj = JSON.parse(patchRaw);
+      } catch (err) {
+        throw new CutholError(
+          DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+            ext.name,
+            `planner:${planName}`,
+            `Planlayıcı çıktı dosyası geçerli bir JSON değil: ${err instanceof Error ? err.message : String(err)}`
+          )
+        );
+      }
+    } else {
+      const stdoutTrimmed = (nodeProc.stdout || "").trim();
+      if (!stdoutTrimmed) {
+        throw new CutholError(
+          DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+            ext.name,
+            `planner:${planName}`,
+            `Planlayıcı betiği ne çıktı dosyası ('patch.json') üretti ne de stdout üzerinde JSON döndürdü.`
+          )
+        );
+      }
+      const lastLine = stdoutTrimmed.split(/\r?\n/).pop()!.trim();
+      try {
+        rawPatchObj = JSON.parse(lastLine);
+      } catch {
+        try {
+          rawPatchObj = JSON.parse(stdoutTrimmed);
+        } catch {
+          throw new CutholError(
+            DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+              ext.name,
+              `planner:${planName}`,
+              `Planlayıcı betiği geçerli bir JSON döndürmedi: '${lastLine.slice(0, 120)}'`
+            )
+          );
+        }
+      }
+    }
+  } finally {
+    fs.rmSync(isolatedTmpDir, { recursive: true, force: true });
+  }
+
+  const { sheet, notes } = normalizeAndValidatePlannerPatch(rawPatchObj, ext.name, planName);
+
+  // Plan & validate via the Cue Sheet engine first (guarantees zero partial application on invalid patch)
+  const { nextSeq: plannedSeq, diff: plannedDiff } = mergeCueSheetIntoSequence(initialSeq, sheet);
+  const plannedVer = verifySequence(plannedSeq, paths);
+
+  if (!plannedVer.ok) {
+    const firstErr = plannedVer.diagnostics.find((d) => d.severity === "ERROR")!;
+    throw new CutholError(firstErr, plannedVer.diagnostics);
+  }
+
+  const snapshotSummary = {
+    compositions_count: snapshot.compositions.length,
+    declared_events_count: snapshot.events.length,
+    projected_words_count: snapshot.words.length,
+  };
+
+  if (options.dryRun) {
+    return {
+      extension: ext.name,
+      version: ext.version,
+      planner: planName,
+      kind: "planner",
+      undo_policy: "single_atomic_revision",
+      params: resolvedParams,
+      snapshot_summary: snapshotSummary,
+      diff: plannedDiff,
+      would_commit: plannedVer.ok,
+      cues_added: plannedDiff.cues_added,
+      cues_updated: plannedDiff.cues_updated,
+      cues_removed: plannedDiff.cues_removed,
+      ...(notes.length > 0 ? { notes } : {}),
+      revision: initialSeq.meta.revision,
+      verification: plannedVer,
+      security_notice: securityNotice,
+      dry_run: true,
+    };
+  }
+
+  const hasChanges =
+    plannedDiff.stage_changed ||
+    plannedDiff.spine_added.length > 0 ||
+    plannedDiff.spine_updated.length > 0 ||
+    plannedDiff.spine_removed.length > 0 ||
+    plannedDiff.cues_added.length > 0 ||
+    plannedDiff.cues_updated.length > 0 ||
+    plannedDiff.cues_removed.length > 0;
+
+  if (!hasChanges) {
+    return {
+      extension: ext.name,
+      version: ext.version,
+      planner: planName,
+      kind: "planner",
+      undo_policy: "single_atomic_revision",
+      params: resolvedParams,
+      snapshot_summary: snapshotSummary,
+      diff: plannedDiff,
+      would_commit: true,
+      cues_added: [],
+      cues_updated: [],
+      cues_removed: [],
+      ...(notes.length > 0 ? { notes } : {}),
+      revision: initialSeq.meta.revision,
+      verification: plannedVer,
+      security_notice: securityNotice,
+    };
+  }
+
+  let appliedDiff: CueSheetDiff = plannedDiff;
+  const { revision, verification } = commitVerifiedMutation(
+    options.workspaceDir,
+    `extension.run:${ext.name}.${planName}`,
+    (seq) => {
+      const { nextSeq, diff } = mergeCueSheetIntoSequence(seq, sheet);
+      appliedDiff = diff;
+      Object.assign(seq, nextSeq);
+    }
+  );
+
+  return {
+    extension: ext.name,
+    version: ext.version,
+    planner: planName,
+    kind: "planner",
+    undo_policy: "single_atomic_revision",
+    params: resolvedParams,
+    snapshot_summary: snapshotSummary,
+    diff: appliedDiff,
+    would_commit: true,
+    cues_added: appliedDiff.cues_added,
+    cues_updated: appliedDiff.cues_updated,
+    cues_removed: appliedDiff.cues_removed,
+    ...(notes.length > 0 ? { notes } : {}),
+    revision,
+    verification,
     security_notice: securityNotice,
   };
 }

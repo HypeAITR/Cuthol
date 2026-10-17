@@ -38,6 +38,7 @@ import {
   initWorkspace,
   loadJournalManifest,
   loadSequence,
+  openWorkspaceSummary,
   setLaneLockStatus,
   stepJournal,
   tagCurrentRevision,
@@ -80,7 +81,13 @@ import {
   mergeCueSheetIntoSequence,
   planCueSheet,
 } from "./sequence/cuesheet.js";
-import { addLaneCue, removeLaneCues, updateLaneCue } from "./sequence/lanes.js";
+import {
+  addLaneCue,
+  exciseLaneCueRanges,
+  LaneExciseRippleAcross,
+  removeLaneCues,
+  updateLaneCue,
+} from "./sequence/lanes.js";
 import { setStageBackdropColor } from "./sequence/stage.js";
 import {
   appendSpineClip,
@@ -89,6 +96,7 @@ import {
   removeSpineClips,
   reorderSpineClip,
   setItemEnvelope,
+  setSpineMute,
   setSpineSpeed,
   setSpineTransition,
   splitSpineClip,
@@ -110,7 +118,8 @@ import {
   listExtensions,
   promoteExtension,
   removeExtension,
-   resolveExtension,
+  resolveExtension,
+  runExtensionPlanner,
   runExtensionProcessor,
   runExtensionRecipe,
   showExtension,
@@ -146,6 +155,8 @@ const BOOLEAN_FLAGS = new Set([
   "preserve-duration",
   "network",
   "overwrite",
+  "muted",
+  "ripple",
 ]);
 
 const KNOWN_CLI_FLAGS = new Set([
@@ -254,12 +265,14 @@ const KNOWN_CLI_FLAGS = new Set([
   "description",
   "version",
   "processor",
+  "planner",
   "recipe",
   "input",
   "params",
   "topic",
   "workers",
   "encoder",
+  "across",
 ]);
 
 function levenshtein(a: string, b: string): number {
@@ -548,6 +561,18 @@ async function main(): Promise<void> {
           ledger_file: paths.ledgerFile,
           project_id: sequence.meta.project_id,
           stage: sequence.stage,
+        });
+        return;
+      }
+
+      if (action === "open") {
+        const targetDir = rest[0] ?? workspaceDir;
+        const res = openWorkspaceSummary(targetDir, {
+          verbose: boolFlag(flags, "verbose", false),
+        });
+        emitEnvelopeJson(targetDir, "workspace.open", {
+          action: "workspace.open",
+          ...res,
         });
         return;
       }
@@ -962,6 +987,30 @@ async function main(): Promise<void> {
         emitEnvelopeJson(workspaceDir, "spine.reframe", { action: "spine.reframe", ...res });
         return;
       }
+
+      if (action === "mute" || action === "unmute") {
+        const clipsRaw = strFlag(flags, "clips") ?? strFlag(flags, "clip") ?? rest[0];
+        const allSpineFlag = boolFlag(flags, "all-spine", false) || !clipsRaw;
+        const clipIds = allSpineFlag
+          ? undefined
+          : clipsRaw
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean);
+        const mutedVal =
+          action === "unmute"
+            ? false
+            : boolFlag(flags, "muted", true) ?? true;
+        const res = setSpineMute({
+          workspaceDir,
+          clipIds,
+          allSpine: allSpineFlag,
+          muted: mutedVal,
+        });
+        const cmdName = mutedVal ? "spine.mute" : "spine.unmute";
+        emitEnvelopeJson(workspaceDir, cmdName, { action: cmdName, ...res });
+        return;
+      }
       break;
     }
 
@@ -1015,6 +1064,8 @@ async function main(): Promise<void> {
           scale: numFlag(flags, "scale"),
           rotationDeg: strFlag(flags, "rotation") ?? strFlag(flags, "rotate"),
           opacity: numFlag(flags, "opacity"),
+          gainDb: numFlag(flags, "gain-db"),
+          muted: boolFlag(flags, "muted"),
         });
         emitEnvelopeJson(workspaceDir, "lane.add-cue", { action: "lane.add-cue", ...res });
         return;
@@ -1108,6 +1159,14 @@ async function main(): Promise<void> {
         const outRaw = strFlag(flags, "out");
         const rateRaw = strFlag(flags, "rate");
         const rate = rateRaw !== undefined ? Number(rateRaw.replace(/x$/i, "")) : undefined;
+        const anchorRef = strFlag(flags, "anchor");
+        const offsetRaw = strFlag(flags, "offset", "0ms")!;
+        const anchorOpt =
+          anchorRef !== undefined
+            ? anchorRef === "none" || anchorRef === "null" || anchorRef === ""
+              ? null
+              : { ref: anchorRef, offset_ms: parseTimeMs(offsetRaw) }
+            : undefined;
         const res = updateLaneCue({
           workspaceDir,
           cueId,
@@ -1118,6 +1177,7 @@ async function main(): Promise<void> {
           rate,
           preservePitch: boolFlag(flags, "preserve-pitch"),
           zIndex: numFlag(flags, "z-index"),
+          anchor: anchorOpt,
           xPct: strFlag(flags, "x"),
           yPct: strFlag(flags, "y"),
           scale: strFlag(flags, "scale"),
@@ -1127,8 +1187,41 @@ async function main(): Promise<void> {
           fontSizePx: numFlag(flags, "size"),
           maxWidthPct: numFlag(flags, "max-width"),
           gainDb: numFlag(flags, "gain-db"),
+          muted: boolFlag(flags, "muted"),
         });
         emitEnvelopeJson(workspaceDir, "lane.update-cue", { action: "lane.update-cue", ...res });
+        return;
+      }
+
+      if (action === "excise") {
+        const cueId =
+          strFlag(flags, "cue") ?? strFlag(flags, "id") ?? strFlag(flags, "clip") ?? rest[0];
+        const rangesRaw = strFlag(flags, "ranges");
+        if (!cueId || !rangesRaw) {
+          throw new Error("Provide --cue <cue_XX> --ranges <a..b,c..d>.");
+        }
+        const ranges = rangesRaw.split(",").map((pair) => {
+          const [a, b] = pair.trim().split("..");
+          return { start_ms: parseTimeMs(a), end_ms: parseTimeMs(b) };
+        });
+        const coordFlag = strFlag(flags, "coord") as
+          | "source"
+          | "sequence"
+          | "clip_local"
+          | "cue_local"
+          | undefined;
+        const acrossFlag = strFlag(flags, "across") as LaneExciseRippleAcross | undefined;
+        const res = exciseLaneCueRanges({
+          workspaceDir,
+          cueId,
+          ranges,
+          coordinateSpace: coordFlag,
+          isSourceTime:
+            flags["source-time"] !== undefined ? boolFlag(flags, "source-time") : undefined,
+          ripple: boolFlag(flags, "ripple", true),
+          across: acrossFlag,
+        });
+        emitEnvelopeJson(workspaceDir, "lane.excise", { action: "lane.excise", ...res });
         return;
       }
 
@@ -1675,6 +1768,7 @@ async function main(): Promise<void> {
           );
         }
         const processorName = strFlag(flags, "processor");
+        const plannerName = strFlag(flags, "planner");
         const recipeName = strFlag(flags, "recipe");
         const inputVal = strFlag(flags, "input") ?? strFlag(flags, "handle");
         const rawParams = strFlag(flags, "params");
@@ -1683,7 +1777,25 @@ async function main(): Promise<void> {
 
         const ext = resolveExtension(name, workspaceDir, scopeRaw);
         const hasProcs = Object.keys(ext.manifest.processors ?? {}).length > 0;
+        const hasPlanners = Object.keys(ext.manifest.planners ?? {}).length > 0;
         const hasRecipes = Object.keys(ext.manifest.recipes ?? {}).length > 0;
+
+        const shouldRunPlanner =
+          Boolean(plannerName) ||
+          (!processorName && !recipeName && !inputVal && hasPlanners && !hasRecipes);
+
+        if (shouldRunPlanner) {
+          const res = runExtensionPlanner({
+            workspaceDir,
+            extensionName: name,
+            plannerName,
+            params: paramsObj,
+            scope: scopeRaw,
+            dryRun,
+          });
+          emitEnvelopeJson(workspaceDir, "extension.run", { ...res });
+          return;
+        }
 
         const shouldRunRecipe =
           Boolean(recipeName) || (!processorName && !inputVal && hasRecipes && !hasProcs);

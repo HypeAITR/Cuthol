@@ -6,7 +6,7 @@
  *   `[CUTHOL-<CODE>] <What Happened> | Öneri: <Next Action Hint for the Agent>`
  */
 
-export type DiagnosticSeverity = "ERROR" | "WARN";
+export type DiagnosticSeverity = "ERROR" | "WARN" | "INFO";
 
 export type VerificationGateId =
   | "G1_SCHEMA"
@@ -196,6 +196,28 @@ export const DIAGNOSTICS = {
       `Ses analizi veya ses ayırma işlemlerini yalnızca 'has_audio: true' olan kaynaklar üzerinde çalıştırın.`,
       handle
     ),
+
+  VARIABLE_FRAME_RATE_SOURCE: (
+    handle: string,
+    avgFps: number,
+    stageFps: number,
+    rFrameRate?: string | null,
+    avgFrameRate?: string | null
+  ) => {
+    const rateDetail =
+      rFrameRate && avgFrameRate
+        ? `, avg=${avgFps} fps [${avgFrameRate}], r_frame_rate=${rFrameRate}`
+        : `, ort. ${avgFps} fps`;
+    const frameStepMs = Math.round((1000 / Math.max(1, stageFps)) * 10) / 10;
+    return createDiagnostic(
+      "CUTHOL-G207",
+      "G2_ASSETS",
+      "INFO",
+      `'${handle}' kaynağı değişken kare hızlı (VFR${rateDetail}); Cuthol derleme sırasında görüntüyü sahne kare hızına (${stageFps} fps CFR, 'settb=AVTB,fps=${stageFps}:eof_action=pass') ve sesi 'aresample=async=1:first_pts=0' ile dönüştürür. Kaynakta ani kare hızı düşüşleri varsa o anlarda kare çoğaltma/atlama ve kesim sınırlarında ±${frameStepMs}ms (1 kare) yuvarlama görülebilir.`,
+      `Sabit kare hızına dönüştürme otomatik uygulanır; kritik kesim veya ekran kaydı geçişlerini 'cuthol monitor frame' ile kontrol edin.`,
+      handle
+    );
+  },
 
   // --- Gate 3: Temporal Continuity & Frame Budget (G3_TIMING) ---
   SUB_FRAME_DURATION: (itemId: string, durationMs: number, minMs: number) =>
@@ -422,6 +444,16 @@ export const DIAGNOSTICS = {
       "WARN",
       `'${cueId}' şeffaf (transparent) overlay kompozisyonunda arka plan sızıntısı tespit edildi (tam opak oran=%${(opaqueRatio * 100).toFixed(1)}, köşe alfa=${cornerAlphaMax}/255).`,
       `Kompozisyon HTML/CSS içinde 'body, #root { background: transparent; }' olduğundan ve '[data-cuthol-preview]' elemanının kalmadığından emin olun.`,
+      cueId
+    ),
+
+  COMPOSITION_AUDIO_UNAVAILABLE: (cueId: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G507",
+      "G5_SIGNAL",
+      "WARN",
+      `'${cueId}' kompozisyonu 'C.audio' kullanıyor ancak penceresinde ses enerjisi zarfı üretilemedi (${detail}); 'C.audio' her karede 0 döner.`,
+      `Kompozisyon penceresinde aktif bir ses kaynağı (omurga, seslendirme, efekt veya müzik) bulunduğundan ve medya dosyasının okunabilir olduğundan emin olun ('cuthol library waveform --handle <aud_XX|vid_XX>').`,
       cueId
     ),
 

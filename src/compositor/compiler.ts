@@ -1291,8 +1291,9 @@ export function compileSequenceRenderPlan(
             !isStill &&
             asset.probe.duration_ms > 0 &&
             srcOutMs >= Math.max(0, asset.probe.duration_ms - 5000);
+          const cueStillPadSec = (cueDurSec + 2 / fps).toFixed(3);
           const vFilters: string[] = isStill
-            ? [`fps=${fps}:eof_action=pass`, `tpad=stop_mode=clone:stop_duration=${cueTailPadSec}`]
+            ? [`fps=${fps}:eof_action=pass`, `tpad=stop_mode=clone:stop_duration=${cueStillPadSec}`]
             : [
                 `settb=AVTB`,
                 ...(needsPreTrimEofPad ? [`tpad=stop_mode=clone:stop_duration=3.000`] : []),
@@ -1431,6 +1432,36 @@ export function compileSequenceRenderPlan(
       );
       const assResult = compileTypographyAssFile(seq, assOutFile, new Set([lane.id]));
       if (assResult.hasTypographyCues) {
+        const rotatedTypoCues = lane.cues.filter(
+          (c) => Boolean(c.typography) && Math.abs(c.placement.rotation_deg) > 0.01
+        );
+        if (rotatedTypoCues.length > 0 && fs.existsSync(assResult.filePath)) {
+          let assContent = fs.readFileSync(assResult.filePath, "utf8");
+          for (const rc of rotatedTypoCues) {
+            const assAngle = Number((-rc.placement.rotation_deg).toFixed(2));
+            const stylePrefix = `Style: Style_${rc.id},`;
+            assContent = assContent
+              .split(/\r?\n/)
+              .map((line) => {
+                if (line.startsWith(stylePrefix)) {
+                  const parts = line.split(",");
+                  if (parts.length >= 14) {
+                    parts[13] = String(assAngle);
+                    return parts.join(",");
+                  }
+                }
+                if (line.includes(`,Style_${rc.id},`) && line.includes("{\\an5\\pos(")) {
+                  return line.replace(
+                    /\{\\an5\\pos\(([^)]+)\)\}/g,
+                    `{\\an5\\pos($1)\\frz${assAngle}}`
+                  );
+                }
+                return line;
+              })
+              .join("\r\n");
+          }
+          fs.writeFileSync(assResult.filePath, assContent, "utf8");
+        }
         assFilePaths.push(assResult.filePath);
         const relAssPath = path.relative(paths.rootDir, assResult.filePath);
         const escapedAssPath = escapeFfmpegFilterPath(relAssPath);
@@ -1528,10 +1559,12 @@ export function compileSequenceRenderPlan(
       const rawSrcSpanSec = Math.max(0, (clip.source_out_ms - clip.source_in_ms) / 1000);
       const scaledSrcSpanSec = rawSrcSpanSec / effectiveRate;
       const clipDurSec = clip.duration_ms / 1000;
-      const tailPadSec = Math.max(
-        0.1,
-        Math.max(0, clipDurSec - scaledSrcSpanSec) + 3 / (srcFps * effectiveRate) + 2 / fps
-      ).toFixed(3);
+      const tailPadSec = isStill
+        ? (clipDurSec + 2 / fps).toFixed(3)
+        : Math.max(
+            0.1,
+            Math.max(0, clipDurSec - scaledSrcSpanSec) + 3 / (srcFps * effectiveRate) + 2 / fps
+          ).toFixed(3);
 
       const needsPreTrimEofPad =
         !isStill &&

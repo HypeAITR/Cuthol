@@ -7,7 +7,7 @@ You cannot watch video; these tools are how you see. MCP returns the images inli
 | Call | What you get | Cost |
 |---|---|---|
 | `monitor.frame(at="4.2s", boxes=true)` | One composited frame from the same pipeline as the final render (compiling only the clips and cues active at `at`), plus luma stats and blank-frame check. Boxes show safe areas and each visible cue (overlays are measured from their alpha). | seconds |
-| `monitor.sheet(start, end, grid="4x3")` | A grid of frames across `[start, end]`, each rendered through the same windowed single-frame pipeline as `monitor.frame` (only clips/cues active at each cell timestamp are compiled; composition frames are captured in one batched `snapshot` call and cached per frame). | ~10–20 s cold, <5 s warm |
+| `monitor.sheet(start, end, grid="4x3", at=[…])` | A grid of frames across `[start, end]` — or at explicit `at` timestamps (e.g. `at=["3s","12.5s","40s"]`, CLI `--at 3s,12.5s,40s`) — each rendered through the same windowed single-frame pipeline as `monitor.frame` (only clips/cues active at each cell timestamp are compiled; composition frames are captured in one batched `snapshot` call and cached per frame). | ~10–20 s cold, <5 s warm |
 | `monitor.timeline()` | Lane diagram: spine clips and transitions, every cue, music beats and the ducking curve. Best for spotting gaps, overlaps and lanes outlasting the spine. | ~1 s |
 | `composition.preview(cue, at=[…])` | An overlay alone: checkerboard / over footage (over the stage backdrop when nothing visual plays underneath) / alpha mask. | Chrome render |
 
@@ -36,6 +36,7 @@ What to check, concretely:
 | G201 | G2 ERROR | File missing on disk. |
 | G202 | G2 ERROR | Source range beyond the media length. |
 | G203 | G2 ERROR | Audio operation on an asset without audio. |
+| G207 | G2 INFO | Variable-frame-rate (VFR) video source detected (`probe.is_vfr=true`); Cuthol converts video to the stage's constant frame rate (`settb=AVTB,fps=<stage.fps>:eof_action=pass`) and resamples audio (`aresample=async=1:first_pts=0`), noting potential 1-frame rounding or frame duplication during sudden VFR drops. |
 | G301 | G3 ERROR | Clip shorter than 2 frames. |
 | G302 | G3 ERROR | Gap/overlap on the spine. |
 | G303 | G3 ERROR | Transition longer than half of a neighbouring clip. |
@@ -55,6 +56,7 @@ What to check, concretely:
 | G504 | G5 WARN | Ducking ignored clips without transcripts. |
 | G505 | G5 WARN | Overlay is (almost) fully opaque and hides moving footage playing under it. Not raised when only the stage backdrop or a still image is underneath (a full-frame graphic is then deliberate). |
 | G506 | G5 WARN | The render has an 8 px black strip on its right or bottom edge (a known ffmpeg conversion bug at widths like 1080). Check the HyperFrames/ffmpeg version and render again. |
+| G507 | G5 WARN | A composition uses `C.audio`, but no audio energy envelope could be extracted for its window (no active audio source or waveform extraction failed), so `C.audio` returns 0. |
 | SYS01–08 | — | Project not found, bad time literal, journal entry unavailable, external tool spawn/exit failure (`SYS04`, reporting OS spawn errors such as `ENOENT`), missing API key, transcript missing, invalid colour (`workspace.backdrop`), extension execution failure (`SYS08`). |
 | SYS09 | SYS ERROR | Subprocess command line exceeds the operating system limit (`ENAMETOOLONG` / `E2BIG`); reports the command length, OS character limit, and clip count. |
 

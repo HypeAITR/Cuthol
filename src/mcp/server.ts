@@ -597,7 +597,12 @@ function compactPayload(
           kind: it.kind,
           uri: it.uri,
           duration_ms: probe.duration_ms,
-          ...(probe.has_video ? { size: `${probe.width}x${probe.height}@${probe.fps}` } : {}),
+          ...(probe.has_video
+            ? {
+                size: `${probe.width}x${probe.height}@${probe.fps}`,
+                ...(probe.is_vfr ? { is_vfr: true, r_frame_rate: probe.r_frame_rate } : {}),
+              }
+            : {}),
           has_audio: probe.has_audio,
         };
       });
@@ -827,13 +832,28 @@ export function formatEnvelopeCompact(options: FormatEnvelopeCompactOptions): {
     lines.push(`WARN [DURATION_CHANGED] ${translateCliHint(env.duration_warning)}`);
   }
 
-  const verification = env.verification as { ok?: boolean; error_count?: number; warning_count?: number } | undefined;
+  const verification = env.verification as {
+    ok?: boolean;
+    error_count?: number;
+    warning_count?: number;
+    info_count?: number;
+  } | undefined;
   if (verification && typeof verification.error_count === "number") {
-    lines.push(`Verify: ${verification.error_count} error(s), ${verification.warning_count ?? 0} warning(s)`);
+    const infoSuffix =
+      typeof verification.info_count === "number" && verification.info_count > 0
+        ? `, ${verification.info_count} info`
+        : "";
+    lines.push(
+      `Verify: ${verification.error_count} error(s), ${verification.warning_count ?? 0} warning(s)${infoSuffix}`
+    );
   }
   const diags = collectDiagnostics(env);
   for (const d of diags.slice(0, 12)) {
-    lines.push(`${d.severity === "ERROR" ? "ERROR" : "WARN"} [${d.code}] ${d.what}${d.suggestion ? ` | Öneri: ${translateCliHint(d.suggestion)}` : ""}`);
+    const sevLabel =
+      d.severity === "ERROR" ? "ERROR" : d.severity === "INFO" ? "INFO" : "WARN";
+    lines.push(
+      `${sevLabel} [${d.code}] ${d.what}${d.suggestion ? ` | Öneri: ${translateCliHint(d.suggestion)}` : ""}`
+    );
   }
   if (diags.length > 12) lines.push(`… ${diags.length - 12} more diagnostic(s); run verify.`);
 

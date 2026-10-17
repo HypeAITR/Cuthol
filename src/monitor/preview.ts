@@ -587,14 +587,13 @@ export function captureMonitorSheet(options: {
   workspaceDir: string;
   startMs?: number;
   endMs?: number;
+  atMs?: number[];
   cols?: number;
   rows?: number;
   showBoxes?: boolean;
   outputPath?: string;
 }): MonitorSheetResult {
   const { paths, sequence } = loadSequence(options.workspaceDir);
-  const cols = Math.max(1, Math.min(6, options.cols ?? 3));
-  const rows = Math.max(1, Math.min(6, options.rows ?? 3));
   const showBoxes = options.showBoxes ?? true;
 
   const durationMs = computeRenderDurationMs(sequence);
@@ -604,18 +603,53 @@ export function captureMonitorSheet(options: {
 
   const actualSeqDurMs = computeSequenceDurationMs(sequence);
   const defaultEndMs = actualSeqDurMs > 0 ? Math.min(durationMs, actualSeqDurMs) : durationMs;
-  const winStart = Math.max(0, Math.min(Math.max(0, defaultEndMs - 1), options.startMs ?? 0));
-  const winEnd = Math.max(winStart + 1, Math.min(durationMs, options.endMs ?? defaultEndMs));
-  const span = Math.max(1, winEnd - winStart);
 
-  const totalCells = cols * rows;
+  const explicitTimestamps =
+    options.atMs && options.atMs.length > 0
+      ? options.atMs.map((t) =>
+          Math.min(Math.max(0, durationMs - 1), Math.max(0, Math.round(t)))
+        )
+      : null;
+
+  let cols: number;
+  let rows: number;
+  let winStart: number;
+  let winEnd: number;
   const cellTimestampsMs: number[] = [];
-  for (let idx = 0; idx < totalCells; idx++) {
-    // Sample midpoints of each equal sub-interval so we don't hit exact 0ms/endMs boundary transitions
-    const sampleRatio = (idx + 0.5) / totalCells;
-    const tMs = Math.min(winEnd - 1, Math.max(winStart, Math.round(winStart + span * sampleRatio)));
-    cellTimestampsMs.push(tMs);
+
+  if (explicitTimestamps && explicitTimestamps.length > 0) {
+    for (const tMs of explicitTimestamps) {
+      cellTimestampsMs.push(tMs);
+    }
+    const count = cellTimestampsMs.length;
+    if (options.cols !== undefined && options.rows !== undefined && options.cols * options.rows >= count) {
+      cols = Math.max(1, Math.min(6, options.cols));
+      rows = Math.max(1, Math.min(6, options.rows));
+    } else if (options.cols !== undefined) {
+      cols = Math.max(1, Math.min(6, options.cols));
+      rows = Math.max(1, Math.ceil(count / cols));
+    } else {
+      cols = Math.max(1, Math.min(4, Math.ceil(Math.sqrt(count))));
+      rows = Math.max(1, Math.ceil(count / cols));
+    }
+    winStart = Math.min(...cellTimestampsMs);
+    winEnd = Math.max(...cellTimestampsMs);
+  } else {
+    cols = Math.max(1, Math.min(6, options.cols ?? 3));
+    rows = Math.max(1, Math.min(6, options.rows ?? 3));
+    winStart = Math.max(0, Math.min(Math.max(0, defaultEndMs - 1), options.startMs ?? 0));
+    winEnd = Math.max(winStart + 1, Math.min(durationMs, options.endMs ?? defaultEndMs));
+    const span = Math.max(1, winEnd - winStart);
+    const gridCells = cols * rows;
+    for (let idx = 0; idx < gridCells; idx++) {
+      // Sample midpoints of each equal sub-interval so we don't hit exact 0ms/endMs boundary transitions
+      const sampleRatio = (idx + 0.5) / gridCells;
+      const tMs = Math.min(winEnd - 1, Math.max(winStart, Math.round(winStart + span * sampleRatio)));
+      cellTimestampsMs.push(tMs);
+    }
   }
+
+  const totalCells = cellTimestampsMs.length;
 
   prefetchCompositeFramesForTimestamps(sequence, paths, cellTimestampsMs, "draft_480p");
 

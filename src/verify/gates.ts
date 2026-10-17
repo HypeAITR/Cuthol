@@ -25,8 +25,17 @@ import { minClipDurationMs } from "../core/time.js";
 import { commitSequenceMutation, loadSequence, WorkspacePaths } from "../core/workspace.js";
 import { MediaLedger } from "../library/ledger.js";
 import { LoudnessMetrics } from "../library/loudness.js";
-import { resolveLibraryItemPath } from "../library/probe.js";
-import { syncAllCompositionBridges } from "../compositor/bridge_exporter.js";
+import {
+  isVariableFrameRate,
+  probeLocalMediaFile,
+  resolveLibraryItemPath,
+} from "../library/probe.js";
+import {
+  compositionUsesAudio,
+  exportBridgeDataForCue,
+  syncAllCompositionBridges,
+  syncEnabledExtensionAssetsToComposition,
+} from "../compositor/bridge_exporter.js";
 import { resolveExtension } from "../extensions/manager.js";
 import {
   detectSceneHostFeaturesInComposition,
@@ -51,6 +60,7 @@ export interface VerificationReport {
   gates_run: VerificationGateId[];
   error_count: number;
   warning_count: number;
+  info_count?: number;
   diagnostics: CutholDiagnostic[];
 }
 
@@ -300,71 +310,137 @@ export function verifySequence(
 
   // --- Gate 2: Physical Asset & Boundary Integrity (G2_ASSETS) ---
   if (gateSet.has("G2_ASSETS")) {
-    if (paths) {
-      for (const item of seq.library) {
-        const absPath = resolveLibraryItemPath(paths.rootDir, item);
-        if (!fs.existsSync(absPath)) {
-          diagnostics.push(DIAGNOSTICS.MISSING_FILE_ON_DISK(item.handle, item.uri));
-        }
-      }
-      for (const lane of seq.lanes) {
-        for (const cue of lane.cues) {
-          if (cue.composition) {
-            const compDir = path.isAbsolute(cue.composition.composition_dir)
-              ? cue.composition.composition_dir
-              : path.resolve(paths.rootDir, cue.composition.composition_dir);
-            const entryPath = path.join(compDir, cue.composition.entry_html);
-            if (!fs.existsSync(entryPath)) {
-              diagnostics.push(DIAGNOSTICS.MISSING_FILE_ON_DISK(cue.id, entryPath));
-            } else {
-              // Verify HyperFrames contract during sequence verification
-              const contract = validateHyperFramesCompositionContract(
-                compDir,
-                cue.composition.entry_html,
-                false,
-                false
-              );
-              if (!contract.ok) {
-                diagnostics.push(
-                  DIAGNOSTICS.INVALID_COMPOSITION_CONTRACT(cue.id, contract.findings.join("; "))
+    let g2Ledger: MediaLedger | null = null;
+    try {
+      if (paths) {
+        for (const item of seq.library) {
+          const absPath = resolveLibraryItemPath(paths.rootDir, item);
+          if (!fs.existsSync(absPath)) {
+            diagnostics.push(DIAGNOSTICS.MISSING_FILE_ON_DISK(item.handle, item.uri));
+            continue;
+          }
+          if (item.probe.has_video && item.probe.fps > 0 && !isStillGraphic(item)) {
+            if (item.probe.is_vfr === undefined) {
+              if (item.probe.r_frame_rate || item.probe.avg_frame_rate) {
+                item.probe.is_vfr = isVariableFrameRate(
+                  item.probe.r_frame_rate,
+                  item.probe.avg_frame_rate
                 );
+              } else {
+                try {
+                  if (!g2Ledger) g2Ledger = new MediaLedger(paths.ledgerFile);
+                  const refreshed = probeLocalMediaFile(absPath, g2Ledger).probe;
+                  item.probe.is_vfr = refreshed.is_vfr;
+                  item.probe.r_frame_rate = refreshed.r_frame_rate;
+                  item.probe.avg_frame_rate = refreshed.avg_frame_rate;
+                } catch {
+                  // ignore probe failure
+                }
+              }
+            }
+            if (item.probe.is_vfr) {
+              diagnostics.push(
+                DIAGNOSTICS.VARIABLE_FRAME_RATE_SOURCE(
+                  item.handle,
+                  item.probe.fps,
+                  seq.stage.fps,
+                  item.probe.r_frame_rate,
+                  item.probe.avg_frame_rate
+                )
+              );
+            }
+          }
+        }
+        for (const lane of seq.lanes) {
+          for (const cue of lane.cues) {
+            if (cue.composition) {
+              const compDir = path.isAbsolute(cue.composition.composition_dir)
+                ? cue.composition.composition_dir
+                : path.resolve(paths.rootDir, cue.composition.composition_dir);
+              const entryPath = path.join(compDir, cue.composition.entry_html);
+              if (!fs.existsSync(entryPath)) {
+                diagnostics.push(DIAGNOSTICS.MISSING_FILE_ON_DISK(cue.id, entryPath));
+              } else {
+                try {
+                  syncEnabledExtensionAssetsToComposition(
+                    seq,
+                    compDir,
+                    cue.composition.entry_html,
+                    paths
+                  );
+                } catch {
+                  // ignore pre-contract asset sync error
+                }
+                // Verify HyperFrames contract during sequence verification
+                const contract = validateHyperFramesCompositionContract(
+                  compDir,
+                  cue.composition.entry_html,
+                  false,
+                  false
+                );
+                if (!contract.ok) {
+                  diagnostics.push(
+                    DIAGNOSTICS.INVALID_COMPOSITION_CONTRACT(cue.id, contract.findings.join("; "))
+                  );
+                }
               }
             }
           }
         }
-      }
 
-      if (seq.extensions && seq.extensions.length > 0) {
-        for (const extRef of seq.extensions) {
-          try {
-            const currentExt = resolveExtension(extRef.name, paths.rootDir);
-            if (
-              currentExt.contentHash !== extRef.content_hash ||
-              currentExt.version !== extRef.version
-            ) {
+        if (seq.extensions && seq.extensions.length > 0) {
+          for (const extRef of seq.extensions) {
+            try {
+              const currentExt = resolveExtension(extRef.name, paths.rootDir);
+              if (
+                currentExt.contentHash !== extRef.content_hash ||
+                currentExt.version !== extRef.version
+              ) {
+                diagnostics.push(
+                  DIAGNOSTICS.EXTENSION_HASH_MISMATCH(
+                    extRef.name,
+                    extRef.version,
+                    extRef.content_hash,
+                    currentExt.version,
+                    currentExt.contentHash
+                  )
+                );
+              }
+            } catch {
               diagnostics.push(
                 DIAGNOSTICS.EXTENSION_HASH_MISMATCH(
                   extRef.name,
                   extRef.version,
                   extRef.content_hash,
-                  currentExt.version,
-                  currentExt.contentHash
+                  "missing",
+                  "missing"
                 )
               );
             }
-          } catch {
-            diagnostics.push(
-              DIAGNOSTICS.EXTENSION_HASH_MISMATCH(
-                extRef.name,
-                extRef.version,
-                extRef.content_hash,
-                "missing",
-                "missing"
-              )
-            );
+          }
+        }
+      } else {
+        for (const item of seq.library) {
+          if (item.probe.has_video && item.probe.fps > 0 && !isStillGraphic(item)) {
+            const vfr =
+              item.probe.is_vfr ??
+              isVariableFrameRate(item.probe.r_frame_rate, item.probe.avg_frame_rate);
+            if (vfr) {
+              diagnostics.push(
+                DIAGNOSTICS.VARIABLE_FRAME_RATE_SOURCE(
+                  item.handle,
+                  item.probe.fps,
+                  seq.stage.fps,
+                  item.probe.r_frame_rate,
+                  item.probe.avg_frame_rate
+                )
+              );
+            }
           }
         }
       }
+    } finally {
+      g2Ledger?.close();
     }
 
     for (const clip of seq.spine.clips) {
@@ -679,6 +755,16 @@ export function verifySequence(
               diagnostics.push(DIAGNOSTICS.SCENE_HOST_RECOMMENDED(cue.id, shFeatures));
             }
           }
+          try {
+            syncEnabledExtensionAssetsToComposition(
+              seq,
+              compDir,
+              cue.composition.entry_html,
+              paths
+            );
+          } catch {
+            // ignore pre-lint asset sync error
+          }
           const lintRes = lintHyperFramesComposition(
             compDir,
             cue.composition.entry_html,
@@ -877,6 +963,38 @@ export function verifySequence(
           }
         }
       }
+
+      // Check compositions that use `C.audio` in G5_SIGNAL: ensure audio envelope is available and non-empty
+      if (paths) {
+        for (const lane of seq.lanes) {
+          if (lane.muted) continue;
+          for (const cue of lane.cues) {
+            if (cue.kind !== "composition" || !cue.composition) continue;
+            const compDir = path.isAbsolute(cue.composition.composition_dir)
+              ? cue.composition.composition_dir
+              : path.resolve(paths.rootDir, cue.composition.composition_dir);
+            const usesAudio =
+              cue.composition.props?.preset === "audio_glow" ||
+              compositionUsesAudio(compDir, cue.composition.entry_html);
+            if (!usesAudio) continue;
+
+            const bridgeData = exportBridgeDataForCue(seq, cue, paths) as {
+              audio?: { mid?: number[] };
+              warnings?: string[];
+            };
+            const hasMid = Boolean(bridgeData.audio?.mid && bridgeData.audio.mid.length > 0);
+            const warnMsg = bridgeData.warnings?.[0];
+            if (!hasMid || warnMsg) {
+              diagnostics.push(
+                DIAGNOSTICS.COMPOSITION_AUDIO_UNAVAILABLE(
+                  cue.id,
+                  warnMsg ?? "kompozisyon penceresinde ses enerjisi verisi yok"
+                )
+              );
+            }
+          }
+        }
+      }
     } finally {
       ledger?.close();
     }
@@ -884,6 +1002,7 @@ export function verifySequence(
 
   const errorCount = diagnostics.filter((d) => d.severity === "ERROR").length;
   const warningCount = diagnostics.filter((d) => d.severity === "WARN").length;
+  const infoCount = diagnostics.filter((d) => d.severity === "INFO").length;
 
   return {
     ok: errorCount === 0,
@@ -891,6 +1010,7 @@ export function verifySequence(
     gates_run: gatesToRun,
     error_count: errorCount,
     warning_count: warningCount,
+    ...(infoCount > 0 ? { info_count: infoCount } : {}),
     diagnostics,
   };
 }
@@ -912,15 +1032,20 @@ export function commitVerifiedMutation<T>(
     operation,
     (seq, paths) => {
       const out = mutator(seq, paths);
-      verificationReport = verifySequence(seq, paths);
-      if (!verificationReport.ok) {
-        const firstError = verificationReport.diagnostics.find((d) => d.severity === "ERROR")!;
-        throw new CutholError(firstError, verificationReport.diagnostics);
+      const preCheck = verifySequence(seq, paths, ["G1_SCHEMA", "G2_ASSETS", "G3_TIMING"]);
+      if (!preCheck.ok) {
+        const firstError = preCheck.diagnostics.find((d) => d.severity === "ERROR")!;
+        throw new CutholError(firstError, preCheck.diagnostics);
       }
       try {
         syncAllCompositionBridges(seq, paths);
       } catch {
         // non-blocking bridge sync
+      }
+      verificationReport = verifySequence(seq, paths);
+      if (!verificationReport.ok) {
+        const firstError = verificationReport.diagnostics.find((d) => d.severity === "ERROR")!;
+        throw new CutholError(firstError, verificationReport.diagnostics);
       }
       return out;
     }

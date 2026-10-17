@@ -10,7 +10,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { BriefLens, renderSequenceBrief } from "./brief/inspector.js";
-import { syncAllCompositionBridges } from "./compositor/bridge_exporter.js";
+import {
+  syncAllCompositionBridges,
+  syncEnabledExtensionAssetsToComposition,
+} from "./compositor/bridge_exporter.js";
 import { RenderPreset } from "./compositor/compiler.js";
 import { previewAndCheckComposition } from "./compositor/composition_preview.js";
 import {
@@ -190,6 +193,7 @@ const KNOWN_CLI_FLAGS = new Set([
   "scale-x",
   "scale-y",
   "rotation",
+  "rotate",
   "opacity",
   "fit",
   "rate",
@@ -1009,6 +1013,7 @@ async function main(): Promise<void> {
           xPct: numFlag(flags, "x"),
           yPct: numFlag(flags, "y"),
           scale: numFlag(flags, "scale"),
+          rotationDeg: strFlag(flags, "rotation") ?? strFlag(flags, "rotate"),
           opacity: numFlag(flags, "opacity"),
         });
         emitEnvelopeJson(workspaceDir, "lane.add-cue", { action: "lane.add-cue", ...res });
@@ -1043,7 +1048,7 @@ async function main(): Promise<void> {
         const durationMs = parseTimeMs(durRaw);
 
         // If `--scaffold <preset>` is passed or the composition dir does not exist yet, scaffold it deterministically
-        const { sequence } = loadSequence(workspaceDir);
+        const { paths, sequence } = loadSequence(workspaceDir);
         const absCompDir = path.isAbsolute(compDir) ? compDir : path.resolve(workspaceDir, compDir);
         if (flags["scaffold"] || !fs.existsSync(path.join(absCompDir, entryHtml))) {
           const preset = (strFlag(flags, "scaffold", "lower_third") as HyperFramesPresetKind) ?? "lower_third";
@@ -1057,6 +1062,12 @@ async function main(): Promise<void> {
             props,
             transparent,
           });
+        }
+
+        try {
+          syncEnabledExtensionAssetsToComposition(sequence, absCompDir, entryHtml, paths);
+        } catch {
+          // non-blocking extension asset pre-sync
         }
 
         const contract = validateHyperFramesCompositionContract(absCompDir, entryHtml);
@@ -1110,6 +1121,7 @@ async function main(): Promise<void> {
           xPct: strFlag(flags, "x"),
           yPct: strFlag(flags, "y"),
           scale: strFlag(flags, "scale"),
+          rotationDeg: strFlag(flags, "rotation") ?? strFlag(flags, "rotate"),
           opacity: strFlag(flags, "opacity"),
           text: strFlag(flags, "text"),
           fontSizePx: numFlag(flags, "size"),
@@ -1165,9 +1177,15 @@ async function main(): Promise<void> {
 
       if (action === "sync") {
         const { paths, sequence } = loadSequence(workspaceDir);
-        const synced = syncAllCompositionBridges(sequence, paths);
+        const synced = syncAllCompositionBridges(sequence, paths, { explicit: true });
+        const updatedCount = synced.filter((s) => s.updated).length;
         emitEnvelopeJson(workspaceDir, "composition.sync", {
           action: "composition.sync",
+          updated: updatedCount > 0,
+          updated_count: updatedCount,
+          total_count: synced.length,
+          auto_sync_policy:
+            "Bridge files (cuthol-data.json, cuthol-data.js, cuthol-vars.json, cuthol-runtime.js, extension assets) are automatically synced after sequence edits and media analysis; updated=true means files were written during this call, updated=false means disk files already matched the current sequence state.",
           synced,
         });
         return;
@@ -1441,18 +1459,28 @@ async function main(): Promise<void> {
       }
 
       if (action === "sheet") {
+        const hasExplicitGrid = flags["grid"] !== undefined;
         const gridRaw = strFlag(flags, "grid", "3x3")!;
         const [cStr, rStr] = gridRaw.toLowerCase().split("x");
         const cols = Number(cStr) || 3;
         const rows = Number(rStr) || 3;
         const startRaw = strFlag(flags, "start");
         const endRaw = strFlag(flags, "end");
+        const atRaw = strFlag(flags, "at");
+        const atMs = atRaw
+          ? atRaw
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .map((s) => parseTimeMs(s))
+          : undefined;
         const res = captureMonitorSheet({
           workspaceDir,
           startMs: startRaw ? parseTimeMs(startRaw) : undefined,
           endMs: endRaw ? parseTimeMs(endRaw) : undefined,
-          cols,
-          rows,
+          atMs,
+          cols: atMs && !hasExplicitGrid ? undefined : cols,
+          rows: atMs && !hasExplicitGrid ? undefined : rows,
           showBoxes: boolFlag(flags, "boxes", true),
           outputPath: strFlag(flags, "out"),
         });

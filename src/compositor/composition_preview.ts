@@ -24,7 +24,11 @@ import { CutholDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.
 import { PngCanvas } from "../core/png_canvas.js";
 import { CutholSequence, isStillGraphic } from "../core/schema.js";
 import { loadSequence } from "../core/workspace.js";
-import { syncCompositionBridgeFiles } from "./bridge_exporter.js";
+import {
+  compositionUsesAudio,
+  syncCompositionBridgeFiles,
+  syncEnabledExtensionAssetsToComposition,
+} from "./bridge_exporter.js";
 import { compileSequenceRenderPlan } from "./compiler.js";
 import {
   detectSceneHostFeaturesInComposition,
@@ -177,13 +181,35 @@ export function previewAndCheckComposition(options: {
     throw new CutholError(DIAGNOSTICS.MISSING_FILE_ON_DISK("composition", entryPath));
   }
 
+  const cueIdLabel = targetCue?.id ?? path.basename(absCompDir);
+
   if (targetCue) {
-    syncCompositionBridgeFiles(sequence, targetCue, paths);
+    const syncRes = syncCompositionBridgeFiles(sequence, targetCue, paths);
+    const usesAudio =
+      targetCue.composition?.props?.preset === "audio_glow" ||
+      compositionUsesAudio(absCompDir, entryHtml);
+    if (usesAudio && syncRes) {
+      const bData = syncRes.bridgeData as {
+        audio?: { mid?: number[] };
+        warnings?: string[];
+      };
+      const hasMid = Boolean(bData.audio?.mid && bData.audio.mid.length > 0);
+      const warnMsg = bData.warnings?.[0];
+      if (!hasMid || warnMsg) {
+        diagnostics.push(
+          DIAGNOSTICS.COMPOSITION_AUDIO_UNAVAILABLE(
+            cueIdLabel,
+            warnMsg ?? "kompozisyon penceresinde ses enerjisi verisi yok"
+          )
+        );
+      }
+    }
+  } else {
+    syncEnabledExtensionAssetsToComposition(sequence, absCompDir, entryHtml, paths);
   }
 
   const mode = targetCue?.composition?.mode ?? "overlay_alpha";
   const expectTransparent = targetCue?.composition ? targetCue.composition.transparent : true;
-  const cueIdLabel = targetCue?.id ?? path.basename(absCompDir);
 
   // 1. Validate contract & check for scene_host features (`CUTHOL-G406`)
   const contractRes = validateHyperFramesCompositionContract(absCompDir, entryHtml, true);

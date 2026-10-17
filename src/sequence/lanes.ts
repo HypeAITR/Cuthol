@@ -88,6 +88,7 @@ export function addLaneCue(options: {
   xPct?: number;
   yPct?: number;
   scale?: number;
+  rotationDeg?: number | string;
   opacity?: number;
   text?: string;
   fontSizePx?: number;
@@ -119,6 +120,12 @@ export function addLaneCue(options: {
       if (options.scale !== undefined) {
         placement.scale_x = options.scale;
         placement.scale_y = options.scale;
+      }
+      if (options.rotationDeg !== undefined) {
+        placement.rotation_deg = applyNumericDeltaOrValue(
+          placement.rotation_deg,
+          options.rotationDeg
+        );
       }
       if (options.opacity !== undefined) placement.opacity = options.opacity;
 
@@ -224,6 +231,7 @@ export function updateLaneCue(options: {
   xPct?: string | number;
   yPct?: string | number;
   scale?: string | number;
+  rotationDeg?: string | number;
   opacity?: string | number;
   text?: string;
   fontSizePx?: number;
@@ -338,6 +346,12 @@ export function updateLaneCue(options: {
       if (options.scale !== undefined) {
         targetCue.placement.scale_x = applyNumericDeltaOrValue(targetCue.placement.scale_x, options.scale);
         targetCue.placement.scale_y = applyNumericDeltaOrValue(targetCue.placement.scale_y, options.scale);
+      }
+      if (options.rotationDeg !== undefined) {
+        targetCue.placement.rotation_deg = applyNumericDeltaOrValue(
+          targetCue.placement.rotation_deg,
+          options.rotationDeg
+        );
       }
       if (options.opacity !== undefined) {
         targetCue.placement.opacity = applyOpacityDeltaOrValue(

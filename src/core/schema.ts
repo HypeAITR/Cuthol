@@ -19,6 +19,9 @@ export interface ProbeMetadata {
   width: number;
   height: number;
   fps: number;
+  is_vfr?: boolean;
+  r_frame_rate?: string | null;
+  avg_frame_rate?: string | null;
   has_video: boolean;
   has_audio: boolean;
   video_codec: string | null;

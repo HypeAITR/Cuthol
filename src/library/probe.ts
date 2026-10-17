@@ -16,18 +16,39 @@ import {
 import { commitSequenceMutation, loadSequence } from "../core/workspace.js";
 import { MediaLedger } from "./ledger.js";
 
-function parseRationalFps(raw?: string): number {
-  if (!raw || raw === "0/0") return 30;
+function parseRationalFpsExact(raw?: string | null): number | null {
+  if (!raw || raw === "0/0") return null;
   const parts = raw.split("/");
   if (parts.length === 2) {
     const num = Number(parts[0]);
     const den = Number(parts[1]);
-    if (den > 0 && Number.isFinite(num)) {
-      return Math.round((num / den) * 100) / 100;
+    if (den > 0 && Number.isFinite(num) && num > 0) {
+      return num / den;
     }
+    return null;
   }
   const direct = Number(raw);
-  return Number.isFinite(direct) && direct > 0 ? direct : 30;
+  return Number.isFinite(direct) && direct > 0 ? direct : null;
+}
+
+function parseRationalFps(raw?: string): number {
+  const exact = parseRationalFpsExact(raw);
+  if (exact === null || exact > 240) return 30;
+  return Math.round(exact * 100) / 100;
+}
+
+export function isVariableFrameRate(
+  rFrameRateRaw?: string | null,
+  avgFrameRateRaw?: string | null
+): boolean {
+  const rExact = parseRationalFpsExact(rFrameRateRaw);
+  const avgExact = parseRationalFpsExact(avgFrameRateRaw);
+  if (avgExact === null || avgExact <= 0) return false;
+  if (rExact !== null && rExact > 240) return true;
+  if (rExact !== null && Math.abs(rExact - avgExact) > Math.max(0.4, avgExact * 0.02)) {
+    return true;
+  }
+  return false;
 }
 
 export function probeLocalMediaFile(filePath: string, ledger: MediaLedger): {
@@ -44,7 +65,7 @@ export function probeLocalMediaFile(filePath: string, ledger: MediaLedger): {
 
   const { sha256, sizeBytes } = ledger.resolveFileSha256(absPath);
   const cached = ledger.getProbe<ProbeMetadata>(sha256);
-  if (cached) {
+  if (cached && (!cached.has_video || cached.fps === 0 || cached.is_vfr !== undefined)) {
     return {
       sha256,
       probe: cached,
@@ -78,8 +99,12 @@ export function probeLocalMediaFile(filePath: string, ledger: MediaLedger): {
 
   const width = Number(videoStream?.width ?? 0);
   const height = Number(videoStream?.height ?? 0);
+  const rawAvgRate = videoStream?.avg_frame_rate ? String(videoStream.avg_frame_rate) : null;
+  const rawRRate = videoStream?.r_frame_rate ? String(videoStream.r_frame_rate) : null;
   const fps = videoStream
-    ? parseRationalFps(String(videoStream.avg_frame_rate ?? videoStream.r_frame_rate ?? "30/1"))
+    ? parseRationalFps(
+        rawAvgRate && rawAvgRate !== "0/0" ? rawAvgRate : (rawRRate ?? "30/1")
+      )
     : 0;
 
   const ext = path.extname(absPath).toLowerCase();
@@ -100,11 +125,21 @@ export function probeLocalMediaFile(filePath: string, ledger: MediaLedger): {
       isImage2Demuxer ||
       (duration_ms === 0 && nbFrames <= 1 && ["png", "mjpeg", "webp", "bmp", "gif"].includes(codecName)));
 
+  const isVfr =
+    Boolean(videoStream) && !isStillImage ? isVariableFrameRate(rawRRate, rawAvgRate) : false;
+
   const probe: ProbeMetadata = {
     duration_ms: isStillImage ? 5000 : duration_ms,
     width,
     height,
     fps: isStillImage ? 0 : fps,
+    ...(videoStream && !isStillImage
+      ? {
+          is_vfr: isVfr,
+          r_frame_rate: rawRRate,
+          avg_frame_rate: rawAvgRate,
+        }
+      : {}),
     has_video: Boolean(videoStream),
     has_audio: Boolean(audioStream),
     video_codec: videoStream ? String(videoStream.codec_name ?? null) : null,
@@ -174,6 +209,9 @@ export function ingestAssetsIntoWorkspace(options: {
           (item) => item.digest_sha256 === sha256 && (!options.explicitKind || item.kind === kind)
         );
         if (existing && (!requestedHandle || existing.handle === requestedHandle)) {
+          if (existing.probe.has_video && existing.probe.fps > 0 && existing.probe.is_vfr === undefined) {
+            existing.probe = probe;
+          }
           added.push(existing);
           continue;
         }

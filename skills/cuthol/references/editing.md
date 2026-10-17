@@ -11,7 +11,7 @@ Notation: `tool.action(args)` is an MCP call; the CLI form is `cuthol <tool> <ac
 
 ## Library
 
-- `library.ingest(files=[...], handle?)` probes and hashes files. Handles: `vid_XX`, `aud_XX`, `img_XX`. Re-ingesting the same file is cached.
+- `library.ingest(files=[...], handle?)` probes and hashes files. Handles: `vid_XX`, `aud_XX`, `img_XX`. Re-ingesting the same file is cached. Variable-frame-rate (VFR) video sources are recorded (`probe.is_vfr`, `r_frame_rate`, `avg_frame_rate`) and reported as `INFO [CUTHOL-G207]` during `verify`.
 - Still images (`img_XX`) have no length of their own: hold one on the spine or a lane for any duration (`spine.append(asset="img_01", in="0s", out="34s")`). Without an out point it defaults to 5 s. For a video that is all motion graphics you do not need a background clip at all: leave the spine empty (see *Graphics-only projects*).
 - `library.detach_audio(handle="vid_01")` turns a video's audio into a separate `aud_XX` asset (for example to use a recording as music).
 - Analyzers are cached by file content: `loudness`, `waveform` (silences, 3-band spectrum, optional PNG), `beats` (regular tempo/phase `grid` + spectral-flux `onsets`), `scenes` (cut points), `subject` (horizontal/vertical subject trajectory and confidence). They return digests; read slices with `library.query(handle, kind, range="2s..6s" | text="word", format="default"|"compact", limit, cursor)`. For transcripts, `format="compact"` returns `i:word@sec` strings (up to 600 words per page by default) so an entire multi-minute narration fits in one call.
@@ -70,7 +70,7 @@ Default lanes (z order: higher is on top; negative = audio-only lanes under the 
 | `ln_sfx` | sfx | −5 | sound effects |
 | `ln_bgm` | music | −10 | music bed |
 
-- `lane.add_cue(lane, kind?, asset?, text?, at | anchor+offset, duration, in?, out?, rate?, preserve_pitch?, z_index?, size, color, max_width, x, y, scale, opacity)`.
+- `lane.add_cue(lane, kind?, asset?, text?, at | anchor+offset, duration, in?, out?, rate?, preserve_pitch?, z_index?, size, color, max_width, x, y, scale, rotation?, opacity)`.
   - Text title: `lane.add_cue(lane="ln_titles", text="Başlık", at="0.5s", duration="2.5s", y=-30, size=72)`.
   - Default typography sizes scale with stage orientation: on vertical `9:16` (`1080x1920`), titles default to `size=76` px (`max_width=70`%) and lane captions to `size=64` px (`max_width=70`%); on landscape `16:9` (`1920x1080`), titles default to `size=56` px (`max_width=76`%) and lane captions to `size=44` px (`max_width=76`%, auto-captions `42` px / `80`%).
   - Music bed: `lane.add_cue(lane="ln_bgm", kind="music", asset="aud_02", at="0s", duration="14s")`.
@@ -78,7 +78,7 @@ Default lanes (z order: higher is on top; negative = audio-only lanes under the 
   - B-roll over a clip: `lane.add_cue(lane="ln_broll", kind="broll", asset="vid_03", anchor="sp_02", offset="1s", duration="2s")`.
 - `x`/`y` are % of the stage measured from the centre: `x=0,y=0` is centred, `y=-35` near the top, `y=30` near the bottom. Keep text inside the title-safe area (G401 tells you by how many px it overflows).
 - **Anchor** cues that belong to a particular shot. Absolute (`at`) cues stay at their time when the spine changes — good for music and narration, bad for shot-specific titles.
-- `lane.update_cue(cue, at, duration, in, out, rate, preserve_pitch, z_index, x, y, scale, opacity, text, size, max_width, gain_db)` — placement accepts `+=`/`-=`.
+- `lane.update_cue(cue, at, duration, in, out, rate, preserve_pitch, z_index, x, y, scale, rotation, opacity, text, size, max_width, gain_db)` — placement (`x`, `y`, `scale`, `rotation`, `opacity`) accepts `+=`/`-=`; `rotation` is in clockwise degrees and applies to both visual (`broll`/graphic/composition) and typography (`title`/`caption`) cues in `monitor` and `render`.
 - **Speed on lane audio/media cues (`rate`, `preserve_pitch`):** Set `rate` (0.1..16.0, e.g. `lane.update_cue(cue="cue_01", rate=1.3)`) on `ln_vo`, `ln_sfx`, `ln_bgm`, or `ln_broll` cues. Unless you also pass an explicit `duration`, Cuthol locks `[source_in_ms, source_out_ms]` to the asset range and updates `duration_ms = round((source_out_ms - source_in_ms) / rate)` (and scales any envelopes on the cue). Audio compilation (`compileSequenceAudioPlan`, shared by `render` and `mix.normalize`) applies `atempo` when `preserve_pitch=true` (default), and transcript words on `ln_vo` cues are projected at the sped-up times into `C.word`, `C.global.words`, and `speech.captions`.
 - **Simultaneous / layered compositions:** Multiple composition cues can overlap in time — for example, a single 90+ second composition carrying the scenes while a second composition (a continuous mascot or corner badge) runs on top for the entire duration. Stacking order is deterministic: across lanes, higher `lane.z_index` renders on top; within the same lane (`ln_motion`), cues with higher `z_index` (or later cues when `z_index` is equal/omitted) render on top.
 - `lane.remove_cue(cues=[...])`, `lane.lock(lane)`, `lane.unlock(lane)`.

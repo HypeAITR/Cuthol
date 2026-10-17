@@ -6,9 +6,9 @@
  * Source: FFmpeg 8.1 official `scdet` documentation (default threshold = 10.0 on [0..100] MAFD scale).
  */
 
-import { spawnSync } from "node:child_process";
-import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
+import { createSubprocessFailureDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
+import { spawnWatchedSync } from "../core/subprocess.js";
 import { loadSequence, updateSequenceInPlace } from "../core/workspace.js";
 import { MediaLedger } from "./ledger.js";
 import { resolveLibraryItemPath } from "./probe.js";
@@ -62,15 +62,22 @@ export function analyzeAssetScenes(options: {
 
     if (!cached) {
       const absFile = resolveLibraryItemPath(paths.rootDir, item);
-      const proc = spawnSync(
-        "ffmpeg",
-        ["-nostats", "-i", absFile, "-vf", `scdet=threshold=${threshold}`, "-an", "-f", "null", "-"],
-        { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 }
-      );
+      const scdetArgs = ["-nostats", "-i", absFile, "-vf", `scdet=threshold=${threshold}`, "-an", "-f", "null", "-"];
+      const proc = spawnWatchedSync("ffmpeg", scdetArgs, {
+        encoding: "utf8",
+        maxBuffer: 32 * 1024 * 1024,
+        step: "ffmpeg scdet",
+      });
 
-      if (proc.status !== 0) {
+      if (proc.status !== 0 || proc.error) {
         throw new CutholError(
-          DIAGNOSTICS.EXTERNAL_TOOL_FAILED("ffmpeg scdet", (proc.stderr || "scdet failed").slice(-400))
+          createSubprocessFailureDiagnostic({
+            tool: "ffmpeg scdet",
+            executable: "ffmpeg",
+            args: scdetArgs,
+            proc,
+            fallbackDetail: (proc.stderr || "scdet failed").slice(-400),
+          })
         );
       }
 

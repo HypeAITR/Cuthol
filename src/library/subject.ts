@@ -23,11 +23,11 @@
  *      produce zero unnecessary pan keyframes.
  */
 
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
+import { createSubprocessFailureDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { ParameterEnvelopePoint, SpineClip } from "../core/schema.js";
+import { spawnWatchedSync } from "../core/subprocess.js";
 import { loadSequence, updateSequenceInPlace } from "../core/workspace.js";
 import { resolveLibraryItemPath } from "./probe.js";
 
@@ -223,30 +223,33 @@ export function analyzeAssetSubjectTrack(options: {
   // The whole clip is sampled at `sampleFps`; size the buffer from its duration (long recordings run for
   // hours) instead of a fixed cap, and do not impose a wall-clock limit.
   const expectedFrames = Math.ceil((durMs / 1000) * sampleFps) + 8;
-  const proc = spawnSync(
-    "ffmpeg",
-    [
-      "-v",
-      "error",
-      "-i",
-      absFile,
-      "-vf",
-      `fps=${sampleFps},scale=${W}:${H}`,
-      "-f",
-      "rawvideo",
-      "-pix_fmt",
-      "rgb24",
-      "pipe:1",
-    ],
-    { maxBuffer: expectedFrames * W * H * 3 + 16 * 1024 * 1024 }
-  );
+  const subjectArgs = [
+    "-v",
+    "error",
+    "-i",
+    absFile,
+    "-vf",
+    `fps=${sampleFps},scale=${W}:${H}`,
+    "-f",
+    "rawvideo",
+    "-pix_fmt",
+    "rgb24",
+    "pipe:1",
+  ];
+  const proc = spawnWatchedSync("ffmpeg", subjectArgs, {
+    maxBuffer: expectedFrames * W * H * 3 + 16 * 1024 * 1024,
+    step: "ffmpeg subject extract",
+  });
 
-  if (proc.status !== 0) {
+  if (proc.status !== 0 || proc.error) {
     throw new CutholError(
-      DIAGNOSTICS.EXTERNAL_TOOL_FAILED(
-        "ffmpeg subject extract",
-        (proc.stderr?.toString("utf8") || "rawvideo extract failed").slice(-400)
-      )
+      createSubprocessFailureDiagnostic({
+        tool: "ffmpeg subject extract",
+        executable: "ffmpeg",
+        args: subjectArgs,
+        proc,
+        fallbackDetail: (proc.stderr?.toString("utf8") || "rawvideo extract failed").slice(-400),
+      })
     );
   }
 

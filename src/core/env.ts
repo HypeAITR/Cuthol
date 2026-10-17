@@ -45,8 +45,91 @@ export interface SharedExtensionsConfig {
 
 export type VideoEncoderPreference = "auto" | "nvenc" | "libx264";
 
+export interface StallWatchdogConfig {
+  enabled: boolean;
+  stallTimeoutMs: number;
+  startupTimeoutMs: number;
+  pollIntervalMs: number;
+}
+
 const DISABLED_TOKENS = new Set(["0", "false", "off", "none", "no", "disable", "disabled"]);
 const ENABLED_TOKENS = new Set(["1", "true", "on", "yes", "enable", "enabled"]);
+
+/**
+ * Resolves the progress watchdog configuration for long-running child processes.
+ * - Controlled via `CUTHOL_STALL_TIMEOUT_SEC` (default: 300 seconds = 5 minutes; `0` disables the watchdog).
+ * - Optional `CUTHOL_STALL_STARTUP_TIMEOUT_SEC` overrides the initial wait before first progress/output
+ *   (defaults to `stallTimeoutMs`).
+ * - Progress-based only: advancing processes are never interrupted regardless of total wall-clock duration.
+ */
+export function resolveStallWatchdogConfig(overrides?: {
+  stallTimeoutMs?: number | null;
+  startupTimeoutMs?: number | null;
+}): StallWatchdogConfig {
+  if (typeof overrides?.stallTimeoutMs === "number") {
+    if (!Number.isFinite(overrides.stallTimeoutMs) || overrides.stallTimeoutMs <= 0) {
+      return { enabled: false, stallTimeoutMs: 0, startupTimeoutMs: 0, pollIntervalMs: 250 };
+    }
+    const stallMs = Math.max(100, Math.round(overrides.stallTimeoutMs));
+    const startupMs =
+      typeof overrides.startupTimeoutMs === "number" &&
+      Number.isFinite(overrides.startupTimeoutMs) &&
+      overrides.startupTimeoutMs > 0
+        ? Math.max(100, Math.round(overrides.startupTimeoutMs))
+        : stallMs;
+    const pollIntervalMs = Math.max(50, Math.min(1000, Math.floor(Math.min(stallMs, startupMs) / 8)));
+    return {
+      enabled: true,
+      stallTimeoutMs: stallMs,
+      startupTimeoutMs: startupMs,
+      pollIntervalMs,
+    };
+  }
+
+  const rawStall = process.env.CUTHOL_STALL_TIMEOUT_SEC;
+  let stallTimeoutMs = 300_000;
+  if (rawStall !== undefined && rawStall.trim() !== "") {
+    const clean = rawStall.trim().toLowerCase();
+    if (DISABLED_TOKENS.has(clean)) {
+      return { enabled: false, stallTimeoutMs: 0, startupTimeoutMs: 0, pollIntervalMs: 250 };
+    }
+    const parsed = Number(clean);
+    if (Number.isFinite(parsed)) {
+      if (parsed <= 0) {
+        return { enabled: false, stallTimeoutMs: 0, startupTimeoutMs: 0, pollIntervalMs: 250 };
+      }
+      stallTimeoutMs = Math.max(100, Math.round(parsed * 1000));
+    }
+  }
+
+  let startupTimeoutMs = stallTimeoutMs;
+  if (
+    typeof overrides?.startupTimeoutMs === "number" &&
+    Number.isFinite(overrides.startupTimeoutMs) &&
+    overrides.startupTimeoutMs > 0
+  ) {
+    startupTimeoutMs = Math.max(100, Math.round(overrides.startupTimeoutMs));
+  } else {
+    const rawStartup = process.env.CUTHOL_STALL_STARTUP_TIMEOUT_SEC;
+    if (rawStartup !== undefined && rawStartup.trim() !== "") {
+      const parsedStartup = Number(rawStartup.trim());
+      if (Number.isFinite(parsedStartup) && parsedStartup > 0) {
+        startupTimeoutMs = Math.max(100, Math.round(parsedStartup * 1000));
+      }
+    }
+  }
+
+  const pollIntervalMs = Math.max(
+    50,
+    Math.min(1000, Math.floor(Math.min(stallTimeoutMs, startupTimeoutMs) / 8))
+  );
+  return {
+    enabled: true,
+    stallTimeoutMs,
+    startupTimeoutMs,
+    pollIntervalMs,
+  };
+}
 
 /**
  * Resolves the explicit worker count passed to `hyperframes render --workers <N>`.

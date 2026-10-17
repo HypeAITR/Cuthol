@@ -5,12 +5,16 @@
  * (`master_1080p`) or a fast inspection proxy (`draft_480p`).
  */
 
-import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { MessageChannel, receiveMessageOnPort, Worker } from "node:worker_threads";
+import {
+  type ParallelFfmpegJob,
+  type ParallelFfmpegJobResult,
+  runWatchedParallelFfmpegJobsSync,
+  spawnWatchedSync,
+} from "../core/subprocess.js";
 import {
   computeRenderDurationMs,
   computeSequenceDurationMs,
@@ -186,10 +190,10 @@ export function scanRenderedMp4ForEdgeStrips(
   durationMs: number,
   samples = 5
 ): CutholDiagnostic | null {
-  const probe = spawnSync(
+  const probe = spawnWatchedSync(
     "ffprobe",
     ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", mp4Path],
-    { encoding: "utf8", timeout: 15_000 }
+    { encoding: "utf8", step: "ffprobe edge strip scan" }
   );
   const [w, h] = String(probe.stdout || "").trim().split(",").map(Number);
   if (!(w > 32 && h > 32)) return null;
@@ -200,10 +204,10 @@ export function scanRenderedMp4ForEdgeStrips(
     bottom: { outer: `crop=${w}:${strip}:0:${h - strip}`, inner: `crop=${w}:${strip}:0:${h - 2 * strip}` },
   };
   const meanLuma = (atSec: number, crop: string): number | null => {
-    const proc = spawnSync(
+    const proc = spawnWatchedSync(
       "ffmpeg",
       ["-v", "error", "-ss", atSec.toFixed(3), "-i", mp4Path, "-frames:v", "1", "-vf", `${crop},scale=1:1`, "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"],
-      { maxBuffer: 1024, timeout: 15_000 }
+      { maxBuffer: 1024, step: "ffmpeg edge strip sample" }
     );
     const buf = proc.stdout as Buffer;
     return proc.status === 0 && buf && buf.length >= 1 ? buf[0] : null;
@@ -297,7 +301,7 @@ export function scanRenderedMp4ForBlankFrames(
 
   let totalFrames = 0;
   for (let startFrame = 0; ; startFrame += chunkFrames) {
-    const proc = spawnSync(
+    const proc = spawnWatchedSync(
       "ffmpeg",
       [
         "-v",
@@ -319,7 +323,10 @@ export function scanRenderedMp4ForBlankFrames(
         "rgb24",
         "pipe:1",
       ],
-      { maxBuffer: chunkFrames * frameBytes + 4 * 1024 * 1024 }
+      {
+        maxBuffer: chunkFrames * frameBytes + 4 * 1024 * 1024,
+        step: "ffmpeg blank frame scan",
+      }
     );
     if (proc.status !== 0 || !proc.stdout) {
       if (startFrame === 0) {
@@ -693,7 +700,7 @@ export function scanRenderedMp4AudioHealth(
     minCheckMs >= 5000 ? ["-ss", (minCheckMs / 1000).toFixed(3)] : [];
   const renderBaseOffsetMs = minCheckMs >= 5000 ? Number((minCheckMs / 1000).toFixed(3)) * 1000 : 0;
 
-  const renderAudioProc = spawnSync(
+  const renderAudioProc = spawnWatchedSync(
     "ffmpeg",
     [
       "-v",
@@ -715,6 +722,7 @@ export function scanRenderedMp4AudioHealth(
     {
       cwd: paths.rootDir,
       maxBuffer: Math.ceil((renderReadSpanSec + 5) * sampleRate * 4) + 4 * 1024 * 1024,
+      step: "ffmpeg audio health scan",
     }
   );
   if (renderAudioProc.status !== 0 || !renderAudioProc.stdout || renderAudioProc.stdout.length < 128) {
@@ -1277,6 +1285,9 @@ export function buildOrRenderSequenceAudioForMixOrRender(
       const jobs: ParallelFfmpegJob[] = pending.map((t) => ({
         args: t.ffArgs,
         cwd: paths.rootDir,
+        step: "ffmpeg audio segment",
+        watchedPaths: [t.tmpWavPath],
+        cleanupPathsOnStall: [t.tmpWavPath],
       }));
       const results = runParallelFfmpegJobsSync(
         jobs,
@@ -1303,6 +1314,11 @@ export function buildOrRenderSequenceAudioForMixOrRender(
                 status: r?.status ?? null,
                 error: r?.error,
                 stderr: r?.stderr ?? "",
+                stalled: r?.stalled,
+                stalledMs: r?.stalledMs,
+                stallThresholdMs: r?.stallThresholdMs,
+                lastProgress: r?.lastProgress,
+                commandSummary: r?.commandSummary,
               },
               clipCount: seq.spine.clips.length,
               fallbackDetail: `audio segment #${t.seg.index} failed`,
@@ -1544,18 +1560,27 @@ export function renderSequenceToMp4(options: {
     let ffArgs: string[] = buildRenderFfmpegArgs(activeEncoder, singleStageUsed);
 
     try {
-      const proc = spawnSync("ffmpeg", ffArgs, {
+      const proc = spawnWatchedSync("ffmpeg", ffArgs, {
         cwd: paths.rootDir,
         encoding: "utf8",
         // No wall-clock limit: a full render scales with sequence length (long videos take hours).
         maxBuffer: 256 * 1024 * 1024,
+        step: "ffmpeg render",
+        watchedPaths: [tmpOut],
+        cleanupPathsOnStall: [tmpOut],
       });
 
       let finalProc = proc;
+      const usedNvencOnFirstAttempt = activeEncoder === "h264_nvenc" && !singleStageUsed;
+      const canFallbackOnStall = Boolean(finalProc.stalled && usedNvencOnFirstAttempt);
+      const canFallbackOnEncodeFailure =
+        !finalProc.stalled &&
+        !finalProc.error &&
+        (activeEncoder === "h264_nvenc" || singleStageUsed);
+
       if (
         (finalProc.status !== 0 || finalProc.error || !fs.existsSync(tmpOut)) &&
-        !finalProc.error &&
-        (activeEncoder === "h264_nvenc" || singleStageUsed)
+        (canFallbackOnStall || canFallbackOnEncodeFailure)
       ) {
         if (fs.existsSync(tmpOut)) {
           try {
@@ -1572,15 +1597,20 @@ export function renderSequenceToMp4(options: {
           encoderFallback = {
             from: "h264_nvenc",
             to: "libx264",
-            reason: `h264_nvenc failed at encode time (${errDetail}); fell back to libx264`,
+            reason: finalProc.stalled
+              ? "stalled"
+              : `h264_nvenc failed at encode time (${errDetail}); fell back to libx264`,
           };
         }
         singleStageUsed = false;
         ffArgs = buildRenderFfmpegArgs("libx264", false);
-        finalProc = spawnSync("ffmpeg", ffArgs, {
+        finalProc = spawnWatchedSync("ffmpeg", ffArgs, {
           cwd: paths.rootDir,
           encoding: "utf8",
           maxBuffer: 256 * 1024 * 1024,
+          step: "ffmpeg render",
+          watchedPaths: [tmpOut],
+          cleanupPathsOnStall: [tmpOut],
         });
       }
       encodeMs = Date.now() - tEncode0;
@@ -1721,6 +1751,9 @@ export function renderSequenceToMp4(options: {
           const jobs: ParallelFfmpegJob[] = pending.map((t) => ({
             args: t.ffArgs,
             cwd: paths.rootDir,
+            step: "ffmpeg render segment",
+            watchedPaths: [t.tmpMp4Path],
+            cleanupPathsOnStall: [t.tmpMp4Path],
           }));
           const results = runParallelFfmpegJobsSync(
             jobs,
@@ -1769,7 +1802,11 @@ export function renderSequenceToMp4(options: {
     };
 
     let vSegResult = encodeVideoSegmentsWithEncoder(activeEncoder);
-    if (!vSegResult.ok && activeEncoder === "h264_nvenc" && !vSegResult.firstFailure?.error) {
+    if (
+      !vSegResult.ok &&
+      activeEncoder === "h264_nvenc" &&
+      (!vSegResult.firstFailure?.error || vSegResult.firstFailure?.stalled)
+    ) {
       const errDetail = (vSegResult.firstFailure?.stderr || "NVENC segment encode failed")
         .trim()
         .slice(-240);
@@ -1777,7 +1814,9 @@ export function renderSequenceToMp4(options: {
       encoderFallback = {
         from: "h264_nvenc",
         to: "libx264",
-        reason: `h264_nvenc failed at encode time (${errDetail}); fell back to libx264`,
+        reason: vSegResult.firstFailure?.stalled
+          ? "stalled"
+          : `h264_nvenc failed at encode time (${errDetail}); fell back to libx264`,
       };
       vSegResult = encodeVideoSegmentsWithEncoder("libx264");
     }
@@ -1792,6 +1831,11 @@ export function renderSequenceToMp4(options: {
             status: vSegResult.firstFailure?.status ?? null,
             error: vSegResult.firstFailure?.error,
             stderr: vSegResult.firstFailure?.stderr ?? "",
+            stalled: vSegResult.firstFailure?.stalled,
+            stalledMs: vSegResult.firstFailure?.stalledMs,
+            stallThresholdMs: vSegResult.firstFailure?.stallThresholdMs,
+            lastProgress: vSegResult.firstFailure?.lastProgress,
+            commandSummary: vSegResult.firstFailure?.commandSummary,
           },
           clipCount: sequence.spine.clips.length,
           fallbackDetail: "video segment render failed",
@@ -1868,10 +1912,13 @@ export function renderSequenceToMp4(options: {
     ];
 
     try {
-      const muxProc = spawnSync("ffmpeg", muxArgs, {
+      const muxProc = spawnWatchedSync("ffmpeg", muxArgs, {
         cwd: paths.rootDir,
         encoding: "utf8",
         maxBuffer: 256 * 1024 * 1024,
+        step: "ffmpeg render mux",
+        watchedPaths: [tmpOut],
+        cleanupPathsOnStall: [tmpOut],
       });
       encodeMs = Date.now() - tEncode0;
 
@@ -2090,11 +2137,14 @@ export function ensurePreviewCompositeMp4(
   ];
 
   try {
-    const proc = spawnSync("ffmpeg", ffArgs, {
+    const proc = spawnWatchedSync("ffmpeg", ffArgs, {
       cwd: paths.rootDir,
       encoding: "utf8",
       // No wall-clock limit: a full render scales with sequence length (long videos take hours).
       maxBuffer: 256 * 1024 * 1024,
+      step: "ffmpeg preview composite",
+      watchedPaths: [tmpMp4],
+      cleanupPathsOnStall: [tmpMp4],
     });
 
     if (proc.status !== 0 || proc.error || !fs.existsSync(tmpMp4)) {
@@ -2397,195 +2447,12 @@ interface SingleFrameFfmpegPlan {
   bboxTargets: Array<{ bboxPath: string; pngPath: string }>;
 }
 
-interface ParallelFfmpegJob {
-  args: string[];
-  cwd: string;
-}
-
-interface ParallelFfmpegJobResult {
-  status: number | null;
-  stdout: Buffer;
-  stderr: string;
-  error?: Error;
-}
-
-let sharedFfmpegPoolWorker: Worker | null = null;
-
-function getFfmpegPoolWorker(): Worker {
-  if (sharedFfmpegPoolWorker) return sharedFfmpegPoolWorker;
-  const workerScript = `
-    const { parentPort } = require("node:worker_threads");
-    const { spawn } = require("node:child_process");
-
-    function runOne(job) {
-      return new Promise((resolve) => {
-        const outChunks = [];
-        const errChunks = [];
-        let settled = false;
-        let proc;
-        try {
-          proc = spawn("ffmpeg", job.args, {
-            cwd: job.cwd,
-            stdio: ["ignore", "pipe", "pipe"],
-            windowsHide: true,
-          });
-        } catch (err) {
-          resolve({
-            status: null,
-            stdoutBuf: Buffer.alloc(0),
-            stderr: String(err),
-            errorCode: err && err.code ? String(err.code) : undefined,
-            errorMessage: err && err.message ? String(err.message) : String(err),
-          });
-          return;
-        }
-        proc.stdout.on("data", (chunk) => outChunks.push(chunk));
-        proc.stderr.on("data", (chunk) => errChunks.push(chunk));
-        proc.on("error", (err) => {
-          if (settled) return;
-          settled = true;
-          resolve({
-            status: null,
-            stdoutBuf: Buffer.alloc(0),
-            stderr: String(err),
-            errorCode: err && err.code ? String(err.code) : undefined,
-            errorMessage: err && err.message ? String(err.message) : String(err),
-          });
-        });
-        proc.on("close", (code) => {
-          if (settled) return;
-          settled = true;
-          const stdoutBuf = Buffer.concat(outChunks);
-          const stderr = errChunks.length > 0 ? Buffer.concat(errChunks).toString("utf8") : "";
-          resolve({ status: code ?? 1, stdoutBuf, stderr });
-        });
-      });
-    }
-
-    parentPort.on("message", async (msg) => {
-      const { jobs, concurrency, port, sab } = msg;
-      const signal = new Int32Array(sab);
-      const results = new Array(jobs.length);
-      let nextIdx = 0;
-      const workerCount = Math.max(1, Math.min(jobs.length, concurrency || 4));
-
-      async function workerLoop() {
-        while (true) {
-          const i = nextIdx++;
-          if (i >= jobs.length) break;
-          const res = await runOne(jobs[i]);
-          const ab = res.stdoutBuf.buffer.slice(
-            res.stdoutBuf.byteOffset,
-            res.stdoutBuf.byteOffset + res.stdoutBuf.byteLength
-          );
-          results[i] = {
-            status: res.status,
-            stdoutAb: ab,
-            stderr: res.stderr,
-            errorCode: res.errorCode,
-            errorMessage: res.errorMessage,
-          };
-        }
-      }
-
-      try {
-        await Promise.all(Array.from({ length: workerCount }, () => workerLoop()));
-        const transferList = results.map((r) => r.stdoutAb);
-        port.postMessage({ ok: true, results }, transferList);
-      } catch (err) {
-        port.postMessage({ ok: false, error: String(err) });
-      } finally {
-        port.close();
-        Atomics.store(signal, 0, 1);
-        Atomics.notify(signal, 0, 1);
-      }
-    });
-  `;
-  const worker = new Worker(workerScript, { eval: true });
-  worker.unref();
-  worker.on("error", () => {
-    if (sharedFfmpegPoolWorker === worker) {
-      sharedFfmpegPoolWorker = null;
-    }
-  });
-  worker.on("exit", () => {
-    if (sharedFfmpegPoolWorker === worker) {
-      sharedFfmpegPoolWorker = null;
-    }
-  });
-  sharedFfmpegPoolWorker = worker;
-  return worker;
-}
-
 function runParallelFfmpegJobsSync(
   jobs: ParallelFfmpegJob[],
   maxBuffers: number[],
   concurrency = Math.max(2, Math.min(os.cpus().length, 12))
 ): ParallelFfmpegJobResult[] {
-  if (jobs.length === 0) return [];
-  if (jobs.length === 1) {
-    const proc = spawnSync("ffmpeg", jobs[0].args, {
-      cwd: jobs[0].cwd,
-      maxBuffer: maxBuffers[0],
-    });
-    return [
-      {
-        status: proc.status,
-        stdout: (proc.stdout as Buffer) ?? Buffer.alloc(0),
-        stderr: proc.stderr ? proc.stderr.toString("utf8") : "",
-        error: proc.error,
-      },
-    ];
-  }
-
-  try {
-    const worker = getFfmpegPoolWorker();
-    const { port1, port2 } = new MessageChannel();
-    const sab = new SharedArrayBuffer(4);
-    const signal = new Int32Array(sab);
-    worker.postMessage({ jobs, concurrency, port: port2, sab }, [port2]);
-    Atomics.wait(signal, 0, 0);
-    const received = receiveMessageOnPort(port1);
-    port1.close();
-    if (received?.message?.ok && Array.isArray(received.message.results)) {
-      return received.message.results.map(
-        (r: {
-          status: number | null;
-          stdoutAb: ArrayBuffer;
-          stderr: string;
-          errorCode?: string;
-          errorMessage?: string;
-        }) => {
-          let errObj: NodeJS.ErrnoException | undefined;
-          if (r.errorCode || r.errorMessage) {
-            errObj = new Error(r.errorMessage || r.stderr || "spawn failed");
-            if (r.errorCode) errObj.code = r.errorCode;
-          }
-          return {
-            status: r.status,
-            stdout: Buffer.from(r.stdoutAb),
-            stderr: r.stderr,
-            error: errObj,
-          };
-        }
-      );
-    }
-  } catch {
-    // Fallback to synchronous execution below if worker messaging fails
-  }
-
-  return jobs.map((job, idx) => {
-    const proc = spawnSync("ffmpeg", job.args, {
-      cwd: job.cwd,
-      maxBuffer: maxBuffers[idx],
-    });
-    return {
-      status: proc.status,
-      stdout: (proc.stdout as Buffer) ?? Buffer.alloc(0),
-      stderr: proc.stderr ? proc.stderr.toString("utf8") : "",
-      error: proc.error,
-    };
-  });
+  return runWatchedParallelFfmpegJobsSync(jobs, maxBuffers, concurrency);
 }
 
 function computeAlphaBboxJsonFromRgbaBuffer(buf: Buffer, probeW = 320, probeH = 180): string | null {
@@ -2932,6 +2799,11 @@ export function renderMultipleCompositeFramesRgb24(
             status: res.status,
             error: res.error,
             stderr: res.stderr,
+            stalled: res.stalled,
+            stalledMs: res.stalledMs,
+            stallThresholdMs: res.stallThresholdMs,
+            lastProgress: res.lastProgress,
+            commandSummary: res.commandSummary,
           },
           clipCount: seq.spine.clips.length,
           fallbackDetail: "single frame extract failed",
@@ -2957,9 +2829,9 @@ export function renderMultipleCompositeFramesRgb24(
       "rgb24",
       "pipe:1",
     ];
-    const fallbackProc = spawnSync("ffmpeg", fallbackArgs, {
+    const fallbackProc = spawnWatchedSync("ffmpeg", fallbackArgs, {
       maxBuffer: p.pixelCount * 4 + 1024 * 1024,
-      timeout: 30_000,
+      step: "ffmpeg single frame extract",
     });
     const fbBuf = fallbackProc.stdout as Buffer;
     if (fallbackProc.status !== 0 || fallbackProc.error || !fbBuf || fbBuf.length < p.pixelCount * 3) {

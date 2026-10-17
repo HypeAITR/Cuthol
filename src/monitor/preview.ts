@@ -13,9 +13,9 @@
  *      checks every cell for `G5_SIGNAL` blank frames, and composites a high-resolution Contact Sheet PNG.
  */
 
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { spawnWatchedSync } from "../core/subprocess.js";
 import {
   activeVisualCueIdsAt,
   computeRenderDurationMs,
@@ -110,9 +110,9 @@ function extractRawFrameToCanvas(
     "rgb24",
     "pipe:1",
   ];
-  let proc = spawnSync("ffmpeg", extractArgs, {
+  let proc = spawnWatchedSync("ffmpeg", extractArgs, {
     maxBuffer: width * height * 4 + 1024 * 1024,
-    timeout: 30_000,
+    step: "ffmpeg frame extract",
   });
 
   if (proc.status !== 0 || proc.error) {
@@ -132,7 +132,7 @@ function extractRawFrameToCanvas(
   const pixelCount = width * height;
 
   if (rgbBuf.length < pixelCount * 3) {
-    const retryProc = spawnSync(
+    const retryProc = spawnWatchedSync(
       "ffmpeg",
       [
         "-v",
@@ -149,14 +149,14 @@ function extractRawFrameToCanvas(
         "rgb24",
         "pipe:1",
       ],
-      { maxBuffer: width * height * 4 + 1024 * 1024, timeout: 30_000 }
+      { maxBuffer: width * height * 4 + 1024 * 1024, step: "ffmpeg frame extract" }
     );
     if (retryProc.status === 0 && (retryProc.stdout as Buffer).length >= pixelCount * 3) {
       proc = retryProc;
       rgbBuf = retryProc.stdout as Buffer;
       clampedMs = maxSafeMs;
     } else {
-      const zeroProc = spawnSync(
+      const zeroProc = spawnWatchedSync(
         "ffmpeg",
         [
           "-v",
@@ -173,7 +173,7 @@ function extractRawFrameToCanvas(
           "rgb24",
           "pipe:1",
         ],
-        { maxBuffer: width * height * 4 + 1024 * 1024, timeout: 30_000 }
+        { maxBuffer: width * height * 4 + 1024 * 1024, step: "ffmpeg frame extract" }
       );
       if (zeroProc.status === 0 && (zeroProc.stdout as Buffer).length >= pixelCount * 3) {
         proc = zeroProc;

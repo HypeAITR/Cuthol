@@ -15,10 +15,10 @@
  *    - Generates a 3-column visual contact sheet (`Checkerboard | Footage Composite | Alpha Mask`).
  */
 
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnWatchedSync } from "../core/subprocess.js";
 import { isVisualCue, resolveCueStartMs } from "../core/timeline.js";
 import { CutholDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { PngCanvas } from "../core/png_canvas.js";
@@ -95,7 +95,7 @@ function decodePngToRgbaBuffer(
   width: number,
   height: number
 ): { ok: boolean; buffer: Buffer } {
-  const proc = spawnSync(
+  const proc = spawnWatchedSync(
     "ffmpeg",
     [
       "-v",
@@ -114,7 +114,7 @@ function decodePngToRgbaBuffer(
       "rgba",
       "pipe:1",
     ],
-    { maxBuffer: width * height * 4 + 2 * 1024 * 1024, timeout: 20_000 }
+    { maxBuffer: width * height * 4 + 2 * 1024 * 1024, step: "ffmpeg decode preview png" }
   );
   const buf = proc.stdout as Buffer;
   if (proc.status === 0 && buf && buf.length >= width * height * 4) {
@@ -333,7 +333,7 @@ export function previewAndCheckComposition(options: {
     const candidateBg = path.join(workRoot, "preview_backdrop.mp4");
     const filterScriptPath = path.join(workRoot, "preview_backdrop.filter.txt");
     fs.writeFileSync(filterScriptPath, sliceFilter, "utf8");
-    const bgProc = spawnSync(
+    const bgProc = spawnWatchedSync(
       "ffmpeg",
       [
         "-y",
@@ -357,7 +357,13 @@ export function previewAndCheckComposition(options: {
         "1",
         candidateBg,
       ],
-      { cwd: paths.rootDir, encoding: "utf8" }
+      {
+        cwd: paths.rootDir,
+        encoding: "utf8",
+        step: "ffmpeg preview backdrop",
+        watchedPaths: [candidateBg],
+        cleanupPathsOnStall: [candidateBg],
+      }
     );
     if (bgProc.status === 0 && fs.existsSync(candidateBg) && fs.statSync(candidateBg).size > 500) {
       backdropMp4Path = candidateBg;
@@ -388,7 +394,7 @@ export function previewAndCheckComposition(options: {
   const hfBin = findLocalHyperFramesCliMjs();
   if (fs.existsSync(hfBin)) {
     // Run `npx hyperframes check --json` on the preview build (with footage background)
-    const checkProc = spawnSync(
+    const checkProc = spawnWatchedSync(
       process.execPath,
       [
         hfBin,
@@ -398,7 +404,7 @@ export function previewAndCheckComposition(options: {
         "--at",
         snappedSamples.map((s) => s.snappedSec).join(","),
       ],
-      { encoding: "utf8", timeout: 60_000 }
+      { encoding: "utf8", step: "hyperframes check" }
     );
     const rawCheckOut = (checkProc.stdout || "").trim();
     if (rawCheckOut) {
@@ -432,7 +438,7 @@ export function previewAndCheckComposition(options: {
       snapshotTargetDir = transparentBuildDir;
     }
 
-    spawnSync(
+    spawnWatchedSync(
       process.execPath,
       [
         hfBin,
@@ -446,7 +452,12 @@ export function previewAndCheckComposition(options: {
         "--output",
         snapDir,
       ],
-      { encoding: "utf8", timeout: 60_000 }
+      {
+        encoding: "utf8",
+        step: "hyperframes preview snapshot",
+        watchedPaths: [snapDir],
+        cleanupPathsOnStall: [snapDir],
+      }
     );
   }
 
@@ -528,7 +539,7 @@ export function previewAndCheckComposition(options: {
     let bgRgba: Buffer = Buffer.alloc(cellW * cellH * 4, 0);
     if (backdropMp4Path) {
       const bgFramePng = path.join(workRoot, `bg_f_${r}.png`);
-      spawnSync(
+      spawnWatchedSync(
         "ffmpeg",
         [
           "-y",
@@ -544,10 +555,15 @@ export function previewAndCheckComposition(options: {
           "1",
           bgFramePng,
         ],
-        { encoding: "utf8", timeout: 15_000 }
+        {
+          encoding: "utf8",
+          step: "ffmpeg preview backdrop frame",
+          watchedPaths: [bgFramePng],
+          cleanupPathsOnStall: [bgFramePng],
+        }
       );
       if (!fs.existsSync(bgFramePng)) {
-        spawnSync(
+        spawnWatchedSync(
           "ffmpeg",
           [
             "-y",
@@ -563,7 +579,12 @@ export function previewAndCheckComposition(options: {
             "1",
             bgFramePng,
           ],
-          { encoding: "utf8", timeout: 15_000 }
+          {
+            encoding: "utf8",
+            step: "ffmpeg preview backdrop frame",
+            watchedPaths: [bgFramePng],
+            cleanupPathsOnStall: [bgFramePng],
+          }
         );
       }
       if (fs.existsSync(bgFramePng)) {

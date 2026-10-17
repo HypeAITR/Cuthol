@@ -2,9 +2,9 @@
  * Cuthol Audio Mixing, Loudness Normalization, Voice Polish, Auto-Ducking & Beat Alignment (`src/mix/audio_mix.ts`).
  */
 
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { spawnWatchedSync } from "../core/subprocess.js";
 import { resolveCueStartMs } from "../core/timeline.js";
 import { DecisionTrace, DecisionTraceItem } from "../core/decision_trace.js";
 import {
@@ -123,11 +123,12 @@ function measureSequenceMixLoudness(
 
   let proc;
   try {
-    proc = spawnSync("ffmpeg", ffArgs, {
+    proc = spawnWatchedSync("ffmpeg", ffArgs, {
       cwd: paths.rootDir,
       encoding: "utf8",
       // ebur128 logs ~10 lines per second of audio and runs over the whole mix: no wall-clock limit.
       maxBuffer: 256 * 1024 * 1024,
+      step: "ffmpeg mix loudness",
     });
   } finally {
     if (fs.existsSync(filterScriptPath)) {

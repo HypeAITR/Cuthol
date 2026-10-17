@@ -13,13 +13,13 @@
  *    HyperFrames composition into `.cuthol/blobs/hf_<hash>.mp4` via `npx hyperframes render`.
  */
 
-import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
+import { createSubprocessFailureDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { resolveHyperFramesWorkers, resolveVideoEncoderPreference } from "../core/env.js";
+import { spawnWatchedSync } from "../core/subprocess.js";
 import {
   analyzeCompositionDataUsage,
   computeUsedBridgePayloadHashes,
@@ -316,9 +316,9 @@ export function lintHyperFramesComposition(
   const hfBin = findLocalHyperFramesCliMjs();
 
   if (fs.existsSync(hfBin)) {
-    const proc = spawnSync(process.execPath, [hfBin, "lint", absCompDir, "--json"], {
+    const proc = spawnWatchedSync(process.execPath, [hfBin, "lint", absCompDir, "--json"], {
       encoding: "utf8",
-      timeout: 30_000,
+      step: "hyperframes lint",
     });
     const rawOut = (proc.stdout || "").trim();
     const jsonStart = rawOut.indexOf("{");
@@ -1218,11 +1218,14 @@ let cachedNvencAvailable: boolean | null = null;
  * Result is memoized per process; honors `CUTHOL_DISABLE_NVENC` / `CUTHOL_VIDEO_ENCODER`.
  */
 export function isNvencHardwareAvailable(): boolean {
+  if (process.env.CUTHOL_SIMULATE_NVENC_STALL === "1") {
+    return true;
+  }
   if (cachedNvencAvailable !== null) {
     return cachedNvencAvailable;
   }
   try {
-    const proc = spawnSync(
+    const proc = spawnWatchedSync(
       "ffmpeg",
       [
         "-hide_banner",
@@ -1243,7 +1246,7 @@ export function isNvencHardwareAvailable(): boolean {
         "null",
         "-",
       ],
-      { encoding: "utf8", timeout: 10_000 }
+      { encoding: "utf8", step: "ffmpeg nvenc probe" }
     );
     cachedNvencAvailable = proc.status === 0;
   } catch {
@@ -1419,7 +1422,7 @@ function getStillImageThumb16x9Rgb24(pngPath: string): Buffer | null {
       stillThumb16x9Memo.set(memoKey, buf);
       return buf;
     }
-    const proc = spawnSync(
+    const proc = spawnWatchedSync(
       "ffmpeg",
       [
         "-v",
@@ -1436,7 +1439,7 @@ function getStillImageThumb16x9Rgb24(pngPath: string): Buffer | null {
         "rgb24",
         "pipe:1",
       ],
-      { maxBuffer: 65536, timeout: 10_000 }
+      { maxBuffer: 65536, step: "ffmpeg still thumb" }
     );
     const out = proc.stdout as Buffer;
     if (proc.status === 0 && out && out.length >= 16 * 9 * 3) {
@@ -2341,9 +2344,12 @@ export function renderHyperFramesCompositionToMp4(options: {
 
     // No wall-clock limit: render time grows with composition length (long videos take hours).
     // A large output buffer keeps progress logging of long renders from killing the process (ENOBUFS).
-    const hfProc = spawnSync(process.execPath, renderArgs, {
+    const hfProc = spawnWatchedSync(process.execPath, renderArgs, {
       encoding: "utf8",
       maxBuffer: 512 * 1024 * 1024,
+      step: "hyperframes render",
+      watchedPaths: [tmpBlob],
+      cleanupPathsOnStall: [tmpBlob],
     });
     let finalHfProc = hfProc;
     let usedGpu = wantGpu;
@@ -2354,7 +2360,9 @@ export function renderHyperFramesCompositionToMp4(options: {
       (finalHfProc.status !== 0 || !fs.existsSync(tmpBlob) || fs.statSync(tmpBlob).size <= 1000)
     ) {
       usedGpu = false;
-      gpuFallbackReason = "HyperFrames GPU encode failed; retried with libx264";
+      gpuFallbackReason = finalHfProc.stalled
+        ? "stalled"
+        : "HyperFrames GPU encode failed; retried with libx264";
       if (fs.existsSync(tmpBlob)) {
         try {
           fs.unlinkSync(tmpBlob);
@@ -2362,9 +2370,12 @@ export function renderHyperFramesCompositionToMp4(options: {
           // ignore
         }
       }
-      finalHfProc = spawnSync(process.execPath, buildRenderArgs(false), {
+      finalHfProc = spawnWatchedSync(process.execPath, buildRenderArgs(false), {
         encoding: "utf8",
         maxBuffer: 512 * 1024 * 1024,
+        step: "hyperframes render",
+        watchedPaths: [tmpBlob],
+        cleanupPathsOnStall: [tmpBlob],
       });
     }
 
@@ -2400,6 +2411,17 @@ export function renderHyperFramesCompositionToMp4(options: {
         }
         return outBlob;
       }
+    }
+
+    if (finalHfProc.stalled) {
+      throw new CutholError(
+        createSubprocessFailureDiagnostic({
+          tool: `hyperframes render (${options.compositionDir})`,
+          executable: process.execPath,
+          args: renderArgs,
+          proc: finalHfProc,
+        })
+      );
     }
 
     // Keep the lines that explain the failure; HyperFrames also logs [INFO] progress traces.
@@ -2445,7 +2467,7 @@ function extractFrameFromVideoBlob(
     scaleToWidth && scaleToHeight
       ? `scale=${scaleToWidth}:${scaleToHeight},format=rgba`
       : "format=rgba";
-  const seekProc = spawnSync(
+  const seekProc = spawnWatchedSync(
     "ffmpeg",
     [
       "-y",
@@ -2461,13 +2483,18 @@ function extractFrameFromVideoBlob(
       "1",
       tmpPng,
     ],
-    { encoding: "utf8" }
+    {
+      encoding: "utf8",
+      step: "ffmpeg extract blob frame",
+      watchedPaths: [tmpPng],
+      cleanupPathsOnStall: [tmpPng],
+    }
   );
   if (seekProc.status === 0 && fs.existsSync(tmpPng) && fs.statSync(tmpPng).size > 200) {
     fs.renameSync(tmpPng, outPng);
     return true;
   }
-  const extProc = spawnSync(
+  const extProc = spawnWatchedSync(
     "ffmpeg",
     [
       "-y",
@@ -2481,14 +2508,19 @@ function extractFrameFromVideoBlob(
       "1",
       tmpPng,
     ],
-    { encoding: "utf8" }
+    {
+      encoding: "utf8",
+      step: "ffmpeg extract blob frame",
+      watchedPaths: [tmpPng],
+      cleanupPathsOnStall: [tmpPng],
+    }
   );
   if (extProc.status === 0 && fs.existsSync(tmpPng) && fs.statSync(tmpPng).size > 200) {
     fs.renameSync(tmpPng, outPng);
     return true;
   }
   // Fallback to last frame (`-sseof -0.1`) if `frameIdx` exceeded encoded frame count by 1
-  const eofProc = spawnSync(
+  const eofProc = spawnWatchedSync(
     "ffmpeg",
     [
       "-y",
@@ -2504,7 +2536,12 @@ function extractFrameFromVideoBlob(
       "1",
       tmpPng,
     ],
-    { encoding: "utf8" }
+    {
+      encoding: "utf8",
+      step: "ffmpeg extract blob frame",
+      watchedPaths: [tmpPng],
+      cleanupPathsOnStall: [tmpPng],
+    }
   );
   if (eofProc.status === 0 && fs.existsSync(tmpPng) && fs.statSync(tmpPng).size > 200) {
     fs.renameSync(tmpPng, outPng);
@@ -2663,7 +2700,7 @@ export function renderHyperFramesSingleFramePng(options: {
         });
         targetSnapDir = tempSceneHostDir;
       }
-      const snapProc = spawnSync(
+      const snapProc = spawnWatchedSync(
         process.execPath,
         [
           hfBin,
@@ -2677,7 +2714,12 @@ export function renderHyperFramesSingleFramePng(options: {
           "--output",
           tmpSnapDir,
         ],
-        { encoding: "utf8", timeout: 60_000 }
+        {
+          encoding: "utf8",
+          step: "hyperframes snapshot",
+          watchedPaths: [tmpSnapDir],
+          cleanupPathsOnStall: [tmpSnapDir],
+        }
       );
       if (snapProc.status === 0 && fs.existsSync(tmpSnapDir)) {
         const pngFile = fs
@@ -2912,7 +2954,7 @@ export function renderHyperFramesBatchFramesPng(options: {
         targetSnapDir = tempSceneHostDir;
       }
 
-      const snapProc = spawnSync(
+      const snapProc = spawnWatchedSync(
         process.execPath,
         [
           hfBin,
@@ -2926,7 +2968,12 @@ export function renderHyperFramesBatchFramesPng(options: {
           "--output",
           tmpSnapDir,
         ],
-        { encoding: "utf8", timeout: Math.max(60_000, stillMissing.length * 10_000) }
+        {
+          encoding: "utf8",
+          step: "hyperframes snapshot",
+          watchedPaths: [tmpSnapDir],
+          cleanupPathsOnStall: [tmpSnapDir],
+        }
       );
 
       if (snapProc.status === 0 && fs.existsSync(tmpSnapDir)) {
@@ -3042,9 +3089,9 @@ export function recordCompositionAlphaBboxSidecar(
       "rgba",
       "pipe:1"
     );
-    const proc = spawnSync("ffmpeg", args, {
+    const proc = spawnWatchedSync("ffmpeg", args, {
       maxBuffer: probeW * probeH * 4 + 65536,
-      timeout: 15_000,
+      step: "ffmpeg alpha bbox",
     });
     const buf = proc.stdout as Buffer;
     if (proc.status !== 0 || !buf || buf.length < probeW * probeH * 4) return null;

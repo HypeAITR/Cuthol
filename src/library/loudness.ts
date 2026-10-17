@@ -8,9 +8,9 @@
  * - Recommended gain adjustment to reach the target loudness (`recommended_gain_db`)
  */
 
-import { spawnSync } from "node:child_process";
-import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
+import { createSubprocessFailureDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
+import { spawnWatchedSync } from "../core/subprocess.js";
 import { loadSequence, updateSequenceInPlace } from "../core/workspace.js";
 import { MediaLedger } from "./ledger.js";
 import { resolveLibraryItemPath } from "./probe.js";
@@ -70,15 +70,22 @@ export function analyzeAssetLoudness(options: {
     }
 
     const absFile = resolveLibraryItemPath(paths.rootDir, item);
-    const proc = spawnSync(
-      "ffmpeg",
-      ["-nostats", "-i", absFile, "-map", "0:a:0", "-af", "ebur128=peak=true", "-f", "null", "-"],
-      { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 }
-    );
+    const eburArgs = ["-nostats", "-i", absFile, "-map", "0:a:0", "-af", "ebur128=peak=true", "-f", "null", "-"];
+    const proc = spawnWatchedSync("ffmpeg", eburArgs, {
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+      step: "ffmpeg ebur128",
+    });
 
-    if (proc.status !== 0) {
+    if (proc.status !== 0 || proc.error) {
       throw new CutholError(
-        DIAGNOSTICS.EXTERNAL_TOOL_FAILED("ffmpeg ebur128", (proc.stderr || "ebur128 failed").slice(-400))
+        createSubprocessFailureDiagnostic({
+          tool: "ffmpeg ebur128",
+          executable: "ffmpeg",
+          args: eburArgs,
+          proc,
+          fallbackDetail: (proc.stderr || "ebur128 failed").slice(-400),
+        })
       );
     }
 

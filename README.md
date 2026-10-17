@@ -134,7 +134,7 @@ A Cuthol project is a folder:
 ## Notes
 
 - Diagnostics have the form `[CUTHOL-Gxxx] what | Öneri: fix`. They and some guidance text are currently in Turkish. `Öneri` means "suggestion".
-- Renders have no time limit; long videos simply take longer. Overlays render in parallel (`CUTHOL_WORKERS` or `render --workers`, default from your CPU cores and memory); a motion-graphics video with nothing underneath renders in one stage, and drafts capture overlays at 480p. NVIDIA GPUs are used for the final encode when available (`CUTHOL_DISABLE_NVENC=1` turns it off). No GPU is required. If an overlay cannot be rendered, the render fails with an error instead of substituting anything.
+- Renders have no time limit; long videos simply take longer. A watchdog stops an external process only when it stops making progress (`CUTHOL_STALL_TIMEOUT_SEC`, default 300, 0 turns it off); a stalled NVIDIA encode is retried once on the CPU. Overlays render in parallel (`CUTHOL_WORKERS` or `render --workers`, default from your CPU cores and memory); a motion-graphics video with nothing underneath renders in one stage, and drafts capture overlays at 480p. NVIDIA GPUs are used for the final encode when available (`CUTHOL_DISABLE_NVENC=1` turns it off). No GPU is required. If an overlay cannot be rendered, the render fails with an error instead of substituting anything.
 - Overlays are cached by the data each composition actually uses, so a revision re-renders only what changed; every render reports how many overlays came from cache and why the others were re-rendered. After a render Cuthol checks that segmented audio lines up with its sources.
 - Rendering presets:
   - `draft_480p`: a fast proxy for checking.

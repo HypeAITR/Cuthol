@@ -2,10 +2,10 @@
  * FFprobe Media Inspector, Library Ingestion, and Audio Detach (`src/library/probe.ts`).
  */
 
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
+import { createSubprocessFailureDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
+import { spawnWatchedSync } from "../core/subprocess.js";
 import {
   allocateNextHandle,
   AssetKind,
@@ -73,15 +73,22 @@ export function probeLocalMediaFile(filePath: string, ledger: MediaLedger): {
     };
   }
 
-  const proc = spawnSync(
-    "ffprobe",
-    ["-v", "error", "-show_format", "-show_streams", "-of", "json", absPath],
-    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }
-  );
+  const ffprobeArgs = ["-v", "error", "-show_format", "-show_streams", "-of", "json", absPath];
+  const proc = spawnWatchedSync("ffprobe", ffprobeArgs, {
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    step: "ffprobe",
+  });
 
-  if (proc.status !== 0) {
+  if (proc.status !== 0 || proc.error) {
     throw new CutholError(
-      DIAGNOSTICS.EXTERNAL_TOOL_FAILED("ffprobe", (proc.stderr || proc.stdout || "unknown error").trim())
+      createSubprocessFailureDiagnostic({
+        tool: "ffprobe",
+        executable: "ffprobe",
+        args: ffprobeArgs,
+        proc,
+        fallbackDetail: (proc.stderr || proc.stdout || "unknown error").trim(),
+      })
     );
   }
 
@@ -274,14 +281,22 @@ export function detachAudioFromLibraryAsset(options: {
   const outWavPath = path.join(paths.blobsDir, `detached_${srcItem.handle}_${srcItem.digest_sha256.slice(0, 12)}.wav`);
 
   if (!fs.existsSync(outWavPath)) {
-    const proc = spawnSync(
-      "ffmpeg",
-      ["-y", "-v", "error", "-i", srcAbsPath, "-vn", "-acodec", "pcm_s16le", "-ar", "48000", "-ac", "2", outWavPath],
-      { encoding: "utf8" }
-    );
-    if (proc.status !== 0) {
+    const detachArgs = ["-y", "-v", "error", "-i", srcAbsPath, "-vn", "-acodec", "pcm_s16le", "-ar", "48000", "-ac", "2", outWavPath];
+    const proc = spawnWatchedSync("ffmpeg", detachArgs, {
+      encoding: "utf8",
+      step: "ffmpeg detach audio",
+      watchedPaths: [outWavPath],
+      cleanupPathsOnStall: [outWavPath],
+    });
+    if (proc.status !== 0 || proc.error) {
       throw new CutholError(
-        DIAGNOSTICS.EXTERNAL_TOOL_FAILED("ffmpeg", (proc.stderr || proc.stdout || "audio detach failed").trim())
+        createSubprocessFailureDiagnostic({
+          tool: "ffmpeg detach audio",
+          executable: "ffmpeg",
+          args: detachArgs,
+          proc,
+          fallbackDetail: (proc.stderr || proc.stdout || "audio detach failed").trim(),
+        })
       );
     }
   }

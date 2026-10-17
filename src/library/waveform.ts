@@ -12,13 +12,13 @@
  * 4. Optional high-contrast multi-panel PNG visualization (`--png`) for AI agent visual inspection.
  */
 
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
+import { createSubprocessFailureDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { PngCanvas } from "../core/png_canvas.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
+import { spawnWatchedSync } from "../core/subprocess.js";
 import { loadSequence, updateSequenceInPlace } from "../core/workspace.js";
 import { MediaLedger } from "./ledger.js";
 import { resolveLibraryItemPath } from "./probe.js";
@@ -124,33 +124,36 @@ export function radix2Fft(real: Float64Array, imag: Float64Array): void {
 
 export function extractMono16kPcm(absFilePath: string): Int16Array {
   const sampleRate = OPEN_STANDARDS.SPECTRAL_BANDS_HZ.ANALYSIS_SAMPLE_RATE;
-  const proc = spawnSync(
-    "ffmpeg",
-    [
-      "-v",
-      "error",
-      "-i",
-      absFilePath,
-      "-vn",
-      "-af",
-      "aresample=async=1:first_pts=0",
-      "-ac",
-      "1",
-      "-ar",
-      String(sampleRate),
-      "-f",
-      "s16le",
-      "pipe:1",
-    ],
-    { maxBuffer: 128 * 1024 * 1024 }
-  );
+  const pcmArgs = [
+    "-v",
+    "error",
+    "-i",
+    absFilePath,
+    "-vn",
+    "-af",
+    "aresample=async=1:first_pts=0",
+    "-ac",
+    "1",
+    "-ar",
+    String(sampleRate),
+    "-f",
+    "s16le",
+    "pipe:1",
+  ];
+  const proc = spawnWatchedSync("ffmpeg", pcmArgs, {
+    maxBuffer: 128 * 1024 * 1024,
+    step: "ffmpeg pcm extract",
+  });
 
-  if (proc.status !== 0) {
+  if (proc.status !== 0 || proc.error) {
     throw new CutholError(
-      DIAGNOSTICS.EXTERNAL_TOOL_FAILED(
-        "ffmpeg pcm extract",
-        (proc.stderr?.toString("utf8") || "pcm extraction failed").slice(-400)
-      )
+      createSubprocessFailureDiagnostic({
+        tool: "ffmpeg pcm extract",
+        executable: "ffmpeg",
+        args: pcmArgs,
+        proc,
+        fallbackDetail: (proc.stderr?.toString("utf8") || "pcm extraction failed").slice(-400),
+      })
     );
   }
 

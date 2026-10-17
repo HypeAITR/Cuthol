@@ -600,6 +600,26 @@ export const DIAGNOSTICS = {
     );
   },
 
+  SUBPROCESS_STALLED: (options: {
+    step: string;
+    stalledMs: number;
+    thresholdMs: number;
+    lastProgress: string;
+    commandSummary: string;
+  }) => {
+    const stalledSec = (Math.max(0, options.stalledMs) / 1000).toFixed(1);
+    const threshSec = (Math.max(0, options.thresholdMs) / 1000).toFixed(1);
+    const lastProg = options.lastProgress?.trim() || "hiç ilerleme/çıktı üretilmedi";
+    const cmdSum = options.commandSummary?.trim() || options.step;
+    return createDiagnostic(
+      "CUTHOL-SYS10",
+      "SYS",
+      "ERROR",
+      `'${options.step}' alt süreci ilerleme durduğu için sonlandırıldı (${stalledSec}sn boyunca ilerleme yok, eşik=${threshSec}sn; son ilerleme: ${lastProg}; komut: ${cmdSum}).`,
+      `Donanım kodlayıcı (NVENC) veya tarayıcı alt süreci kilitlenmiş olabilir; işlemi tekrar deneyin, GPU kodlamayı devre dışı bırakmak için 'CUTHOL_VIDEO_ENCODER=libx264' kullanın veya ilerleme eşiğini 'CUTHOL_STALL_TIMEOUT_SEC' ile ayarlayın.`
+    );
+  },
+
   INVALID_CUE_EXCISE_KIND: (cueId: string, kind: string) =>
     createDiagnostic(
       "CUTHOL-G310",
@@ -626,6 +646,33 @@ export function getPlatformCommandLineLimit(platform: NodeJS.Platform = process.
   return platform === "win32" ? 32_767 : 131_072;
 }
 
+export function summarizeCommandForDiagnostic(
+  executable: string,
+  args: readonly string[],
+  maxChars = 160
+): string {
+  const exeBase = executable.replace(/\\/g, "/").split("/").pop() || executable;
+  const compactArgs = args.map((a) => {
+    if (a.length > 48) {
+      const normalized = a.replace(/\\/g, "/");
+      if (normalized.includes("/")) {
+        const parts = normalized.split("/");
+        const tail2 = parts.slice(-2).join("/");
+        if (tail2.length <= 56) return `.../${tail2}`;
+        const base = parts[parts.length - 1] || "";
+        if (base.length <= 48) return `.../${base}`;
+      }
+      return `${a.slice(0, 20)}...${a.slice(-24)}`;
+    }
+    return a;
+  });
+  const full = [exeBase, ...compactArgs].join(" ");
+  if (full.length <= maxChars) return full;
+  const headLen = Math.max(40, Math.floor(maxChars * 0.55));
+  const tailLen = Math.max(30, maxChars - headLen - 5);
+  return `${full.slice(0, headLen)} ... ${full.slice(-tailLen)}`;
+}
+
 export function createSubprocessFailureDiagnostic(options: {
   tool: string;
   executable?: string;
@@ -636,12 +683,29 @@ export function createSubprocessFailureDiagnostic(options: {
     error?: Error;
     stderr?: string | Buffer | null;
     stdout?: string | Buffer | null;
+    stalled?: boolean;
+    stalledMs?: number;
+    stallThresholdMs?: number;
+    lastProgress?: string;
+    commandSummary?: string;
   };
   clipCount?: number;
   fallbackDetail?: string;
 }): CutholDiagnostic {
   const executable = options.executable ?? options.tool.split(/\s+/)[0] ?? "ffmpeg";
   const args = options.args ?? [];
+
+  if (options.proc.stalled) {
+    return DIAGNOSTICS.SUBPROCESS_STALLED({
+      step: options.tool,
+      stalledMs: options.proc.stalledMs ?? options.proc.stallThresholdMs ?? 0,
+      thresholdMs: options.proc.stallThresholdMs ?? options.proc.stalledMs ?? 0,
+      lastProgress: options.proc.lastProgress ?? "hiç ilerleme/çıktı üretilmedi",
+      commandSummary:
+        options.proc.commandSummary ?? summarizeCommandForDiagnostic(executable, args),
+    });
+  }
+
   const commandLength = estimateCommandLineLength(executable, args);
   const limitChars = getPlatformCommandLineLimit();
   const singleArgMax = args.reduce((max, a) => (a.length > max ? a.length : max), 0);

@@ -43,9 +43,12 @@ export interface WatchedSubprocessResult<T = Buffer | string> {
   lastProgress?: string;
   commandSummary?: string;
   step?: string;
+  elapsedMs?: number;
 }
 
 export interface ParallelFfmpegJob {
+  /** Executable to spawn (defaults to `"ffmpeg"`). */
+  executable?: string;
   args: string[];
   cwd: string;
   step?: string;
@@ -63,6 +66,7 @@ export interface ParallelFfmpegJobResult {
   stallThresholdMs?: number;
   lastProgress?: string;
   commandSummary?: string;
+  elapsedMs?: number;
 }
 
 interface WorkerJobRequest {
@@ -78,6 +82,7 @@ interface WorkerJobRequest {
   startupTimeoutMs: number;
   pollIntervalMs: number;
   simulateNvencStall?: boolean;
+  simulateHwEncoderStall?: string;
 }
 
 interface WorkerJobResponse {
@@ -93,6 +98,7 @@ interface WorkerJobResponse {
   stallThresholdMs?: number;
   lastProgress?: string;
   commandSummary?: string;
+  elapsedMs?: number;
 }
 
 let sharedWatchdogWorker: Worker | null = null;
@@ -138,15 +144,18 @@ function measurePathProgressBytes(targetPath) {
     const st = fs.statSync(targetPath);
     if (st.isFile()) return st.size;
     if (st.isDirectory()) {
-      let total = 0;
+      // Avoid holding open Win32 directory/file handles inside HyperFrames .hf-transaction-* staging folders
+      // while ArtifactTransaction.commit() renames the staging directory on Windows.
+      let total = Math.round(st.mtimeMs || 0);
       for (const entry of fs.readdirSync(targetPath, { withFileTypes: true })) {
+        if (entry.name.includes(".hf-transaction-")) {
+          continue;
+        }
         const sub = path.join(targetPath, entry.name);
         if (entry.isFile()) {
           try {
             total += fs.statSync(sub).size + 1;
           } catch {}
-        } else if (entry.isDirectory()) {
-          total += measurePathProgressBytes(sub);
         }
       }
       return total;
@@ -265,11 +274,33 @@ function runOneWatchedJob(job) {
     let effectiveArgs = Array.isArray(job.args) ? job.args.slice() : [];
     let progressFile = null;
 
+    const hwEncoders = ["h264_nvenc", "h264_amf", "h264_qsv", "h264_vaapi", "h264_videotoolbox"];
+    const activeHwEnc = hwEncoders.find((enc) => effectiveArgs.includes(enc)) || null;
+    const isNullMux =
+      effectiveArgs.includes("-f") && effectiveArgs[effectiveArgs.indexOf("-f") + 1] === "null";
+    const isProbeJob = /\bprobe\b/i.test(job.step || "");
+    const rawHwStall = String(
+      job.simulateHwEncoderStall || process.env.CUTHOL_SIMULATE_HW_ENCODER_STALL || ""
+    )
+      .trim()
+      .toLowerCase();
+    const matchesHwStall =
+      Boolean(activeHwEnc) &&
+      !isNullMux &&
+      !isProbeJob &&
+      (rawHwStall === "1" ||
+        rawHwStall === "true" ||
+        rawHwStall === "all" ||
+        (activeHwEnc &&
+          (rawHwStall.split(/[,;\s]+/).includes(activeHwEnc) ||
+            rawHwStall.split(/[,;\s]+/).includes(activeHwEnc.replace(/^h264_/, "")))));
     const simulateNvencStall =
       isFfmpeg &&
-      Boolean(job.simulateNvencStall || process.env.CUTHOL_SIMULATE_NVENC_STALL === "1") &&
-      effectiveArgs.includes("h264_nvenc") &&
-      !(effectiveArgs.includes("-f") && effectiveArgs[effectiveArgs.indexOf("-f") + 1] === "null");
+      !isNullMux &&
+      !isProbeJob &&
+      ((Boolean(job.simulateNvencStall || process.env.CUTHOL_SIMULATE_NVENC_STALL === "1") &&
+        effectiveArgs.includes("h264_nvenc")) ||
+        matchesHwStall);
 
     if (simulateNvencStall) {
       effectiveExe = process.execPath;
@@ -356,6 +387,7 @@ function runOneWatchedJob(job) {
         stallThresholdMs: result.stallThresholdMs,
         lastProgress: result.lastProgress,
         commandSummary: result.commandSummary,
+        elapsedMs: Date.now() - startTime,
       });
     }
 
@@ -453,22 +485,24 @@ function runOneWatchedJob(job) {
         hasProgress = true;
       }
 
-      let curWatchedBytes = 0;
-      for (const wp of watchedPaths) {
-        curWatchedBytes += measurePathProgressBytes(wp);
-      }
-      if (curWatchedBytes > maxWatchedBytes) {
-        maxWatchedBytes = curWatchedBytes;
-        lastProgressTime = now;
-        hasProgress = true;
-        if (maxFrame < 0 && maxOutTimeUs < 0) {
-          lastProgressDesc = lastStreamSnippet
-            ? "stdout: " + lastStreamSnippet + ", dosya_boyutu=" + curWatchedBytes + "B"
-            : "dosya_boyutu=" + curWatchedBytes + "B";
+      const stallThreshold = hasProgress ? job.stallTimeoutMs : job.startupTimeoutMs;
+      if (now - lastProgressTime >= Math.min(2000, Math.max(100, Math.floor((stallThreshold || 2000) / 3)))) {
+        let curWatchedBytes = 0;
+        for (const wp of watchedPaths) {
+          curWatchedBytes += measurePathProgressBytes(wp);
+        }
+        if (curWatchedBytes > maxWatchedBytes) {
+          maxWatchedBytes = curWatchedBytes;
+          lastProgressTime = now;
+          hasProgress = true;
+          if (maxFrame < 0 && maxOutTimeUs < 0) {
+            lastProgressDesc = lastStreamSnippet
+              ? "stdout: " + lastStreamSnippet + ", dosya_boyutu=" + curWatchedBytes + "B"
+              : "dosya_boyutu=" + curWatchedBytes + "B";
+          }
         }
       }
 
-      const stallThreshold = hasProgress ? job.stallTimeoutMs : job.startupTimeoutMs;
       if (stallThreshold > 0 && !pendingStallResult) {
         const elapsedSinceProgress = now - lastProgressTime;
         if (elapsedSinceProgress >= stallThreshold) {
@@ -626,6 +660,7 @@ export function spawnWatchedSync(
     if (!cleanOpts.maxBuffer) {
       cleanOpts.maxBuffer = 256 * 1024 * 1024;
     }
+    const t0 = Date.now();
     const raw = spawnSync(executable, args, cleanOpts);
     return {
       pid: raw.pid,
@@ -638,6 +673,7 @@ export function spawnWatchedSync(
       stalled: false,
       commandSummary: cmdSummary,
       step,
+      elapsedMs: Date.now() - t0,
     };
   }
 
@@ -654,6 +690,7 @@ export function spawnWatchedSync(
     startupTimeoutMs: watchdogCfg.startupTimeoutMs,
     pollIntervalMs: watchdogCfg.pollIntervalMs,
     simulateNvencStall: process.env.CUTHOL_SIMULATE_NVENC_STALL === "1",
+    simulateHwEncoderStall: process.env.CUTHOL_SIMULATE_HW_ENCODER_STALL,
   };
 
   const worker = getWatchdogWorker();
@@ -709,11 +746,12 @@ export function spawnWatchedSync(
     lastProgress: res.lastProgress,
     commandSummary: cmdSummary,
     step,
+    elapsedMs: res.elapsedMs,
   };
 }
 
 /**
- * Runs multiple FFmpeg jobs in parallel with per-job progress watchdog monitoring.
+ * Runs multiple FFmpeg (or Node/HyperFrames) jobs in parallel with per-job progress watchdog monitoring.
  */
 export function runWatchedParallelFfmpegJobsSync(
   jobs: ParallelFfmpegJob[],
@@ -722,7 +760,8 @@ export function runWatchedParallelFfmpegJobsSync(
 ): ParallelFfmpegJobResult[] {
   if (jobs.length === 0) return [];
   if (jobs.length === 1) {
-    const proc = spawnWatchedSync("ffmpeg", jobs[0].args, {
+    const exe = jobs[0].executable ?? "ffmpeg";
+    const proc = spawnWatchedSync(exe, jobs[0].args, {
       cwd: jobs[0].cwd,
       maxBuffer: maxBuffers[0] ?? 32 * 1024 * 1024,
       step: jobs[0].step ?? "ffmpeg parallel job",
@@ -740,6 +779,7 @@ export function runWatchedParallelFfmpegJobsSync(
         stallThresholdMs: proc.stallThresholdMs,
         lastProgress: proc.lastProgress,
         commandSummary: proc.commandSummary,
+        elapsedMs: proc.elapsedMs,
       },
     ];
   }
@@ -747,7 +787,8 @@ export function runWatchedParallelFfmpegJobsSync(
   const watchdogCfg = resolveStallWatchdogConfig();
   if (!watchdogCfg.enabled) {
     return jobs.map((job, idx) => {
-      const proc = spawnWatchedSync("ffmpeg", job.args, {
+      const exe = job.executable ?? "ffmpeg";
+      const proc = spawnWatchedSync(exe, job.args, {
         cwd: job.cwd,
         maxBuffer: maxBuffers[idx] ?? 32 * 1024 * 1024,
         step: job.step ?? "ffmpeg parallel job",
@@ -759,6 +800,7 @@ export function runWatchedParallelFfmpegJobsSync(
         error: proc.error,
         stalled: false,
         commandSummary: proc.commandSummary,
+        elapsedMs: proc.elapsedMs,
       };
     });
   }
@@ -769,7 +811,7 @@ export function runWatchedParallelFfmpegJobsSync(
     const sab = new SharedArrayBuffer(4);
     const signal = new Int32Array(sab);
     const workerJobs: WorkerJobRequest[] = jobs.map((j, idx) => ({
-      executable: "ffmpeg",
+      executable: j.executable ?? "ffmpeg",
       args: Array.from(j.args),
       cwd: j.cwd || process.cwd(),
       maxBuffer: maxBuffers[idx] ?? 32 * 1024 * 1024,
@@ -780,6 +822,7 @@ export function runWatchedParallelFfmpegJobsSync(
       startupTimeoutMs: watchdogCfg.startupTimeoutMs,
       pollIntervalMs: watchdogCfg.pollIntervalMs,
       simulateNvencStall: process.env.CUTHOL_SIMULATE_NVENC_STALL === "1",
+      simulateHwEncoderStall: process.env.CUTHOL_SIMULATE_HW_ENCODER_STALL,
     }));
     worker.postMessage({ jobs: workerJobs, concurrency, port: port2, sab }, [port2]);
     Atomics.wait(signal, 0, 0);
@@ -793,6 +836,7 @@ export function runWatchedParallelFfmpegJobsSync(
           errObj = new Error(r.errorMessage || stderrStr || "spawn failed");
           if (r.errorCode) errObj.code = r.errorCode;
         }
+        const exe = jobs[idx].executable ?? "ffmpeg";
         return {
           status: r.status,
           stdout: Buffer.from(r.stdoutAb),
@@ -802,7 +846,8 @@ export function runWatchedParallelFfmpegJobsSync(
           stalledMs: r.stalledMs,
           stallThresholdMs: r.stallThresholdMs,
           lastProgress: r.lastProgress,
-          commandSummary: summarizeCommandForDiagnostic("ffmpeg", jobs[idx].args),
+          commandSummary: summarizeCommandForDiagnostic(exe, jobs[idx].args),
+          elapsedMs: r.elapsedMs,
         };
       });
     }
@@ -811,7 +856,8 @@ export function runWatchedParallelFfmpegJobsSync(
   }
 
   return jobs.map((job, idx) => {
-    const proc = spawnWatchedSync("ffmpeg", job.args, {
+    const exe = job.executable ?? "ffmpeg";
+    const proc = spawnWatchedSync(exe, job.args, {
       cwd: job.cwd,
       maxBuffer: maxBuffers[idx] ?? 32 * 1024 * 1024,
       step: job.step ?? "ffmpeg parallel job",
@@ -828,6 +874,7 @@ export function runWatchedParallelFfmpegJobsSync(
       stallThresholdMs: proc.stallThresholdMs,
       lastProgress: proc.lastProgress,
       commandSummary: proc.commandSummary,
+      elapsedMs: proc.elapsedMs,
     };
   });
 }

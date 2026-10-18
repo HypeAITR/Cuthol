@@ -26,8 +26,9 @@ import { commitSequenceMutation, loadSequence, WorkspacePaths } from "../core/wo
 import { MediaLedger } from "../library/ledger.js";
 import { LoudnessMetrics } from "../library/loudness.js";
 import {
+  ensureLibraryItemVideoProbe,
+  isProbeMetadataComplete,
   isVariableFrameRate,
-  probeLocalMediaFile,
   resolveLibraryItemPath,
 } from "../library/probe.js";
 import {
@@ -320,26 +321,16 @@ export function verifySequence(
             diagnostics.push(DIAGNOSTICS.MISSING_FILE_ON_DISK(item.handle, item.uri));
             continue;
           }
-          if (item.probe.has_video && item.probe.fps > 0 && !isStillGraphic(item)) {
-            if (item.probe.is_vfr === undefined) {
-              if (item.probe.r_frame_rate || item.probe.avg_frame_rate) {
-                item.probe.is_vfr = isVariableFrameRate(
-                  item.probe.r_frame_rate,
-                  item.probe.avg_frame_rate
-                );
-              } else {
-                try {
-                  if (!g2Ledger) g2Ledger = new MediaLedger(paths.ledgerFile);
-                  const refreshed = probeLocalMediaFile(absPath, g2Ledger).probe;
-                  item.probe.is_vfr = refreshed.is_vfr;
-                  item.probe.r_frame_rate = refreshed.r_frame_rate;
-                  item.probe.avg_frame_rate = refreshed.avg_frame_rate;
-                } catch {
-                  // ignore probe failure
-                }
+          if (item.probe.has_video) {
+            if (!isProbeMetadataComplete(item.probe)) {
+              try {
+                if (!g2Ledger) g2Ledger = new MediaLedger(paths.ledgerFile);
+                ensureLibraryItemVideoProbe(item, paths.rootDir, g2Ledger);
+              } catch {
+                // ignore probe failure
               }
             }
-            if (item.probe.is_vfr) {
+            if (item.probe.fps > 0 && !isStillGraphic(item) && item.probe.is_vfr) {
               diagnostics.push(
                 DIAGNOSTICS.VARIABLE_FRAME_RATE_SOURCE(
                   item.handle,
@@ -347,6 +338,17 @@ export function verifySequence(
                   seq.stage.fps,
                   item.probe.r_frame_rate,
                   item.probe.avg_frame_rate
+                )
+              );
+            }
+            const cs = (item.probe.color_space ?? "").toLowerCase().trim();
+            if (cs === "bt2020nc" || cs === "bt2020c" || cs === "bt2020") {
+              diagnostics.push(
+                DIAGNOSTICS.BT2020_COLOR_SPACE_SOURCE(
+                  item.handle,
+                  item.probe.color_space ?? cs,
+                  item.probe.color_transfer,
+                  item.probe.color_primaries
                 )
               );
             }
@@ -439,18 +441,31 @@ export function verifySequence(
         }
       } else {
         for (const item of seq.library) {
-          if (item.probe.has_video && item.probe.fps > 0 && !isStillGraphic(item)) {
-            const vfr =
-              item.probe.is_vfr ??
-              isVariableFrameRate(item.probe.r_frame_rate, item.probe.avg_frame_rate);
-            if (vfr) {
+          if (item.probe.has_video) {
+            if (item.probe.fps > 0 && !isStillGraphic(item)) {
+              const vfr =
+                item.probe.is_vfr ??
+                isVariableFrameRate(item.probe.r_frame_rate, item.probe.avg_frame_rate);
+              if (vfr) {
+                diagnostics.push(
+                  DIAGNOSTICS.VARIABLE_FRAME_RATE_SOURCE(
+                    item.handle,
+                    item.probe.fps,
+                    seq.stage.fps,
+                    item.probe.r_frame_rate,
+                    item.probe.avg_frame_rate
+                  )
+                );
+              }
+            }
+            const cs = (item.probe.color_space ?? "").toLowerCase().trim();
+            if (cs === "bt2020nc" || cs === "bt2020c" || cs === "bt2020") {
               diagnostics.push(
-                DIAGNOSTICS.VARIABLE_FRAME_RATE_SOURCE(
+                DIAGNOSTICS.BT2020_COLOR_SPACE_SOURCE(
                   item.handle,
-                  item.probe.fps,
-                  seq.stage.fps,
-                  item.probe.r_frame_rate,
-                  item.probe.avg_frame_rate
+                  item.probe.color_space ?? cs,
+                  item.probe.color_transfer,
+                  item.probe.color_primaries
                 )
               );
             }

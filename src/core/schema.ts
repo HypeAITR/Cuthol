@@ -22,6 +22,11 @@ export interface ProbeMetadata {
   is_vfr?: boolean;
   r_frame_rate?: string | null;
   avg_frame_rate?: string | null;
+  pix_fmt?: string | null;
+  color_space?: string | null;
+  color_range?: string | null;
+  color_transfer?: string | null;
+  color_primaries?: string | null;
   has_video: boolean;
   has_audio: boolean;
   video_codec: string | null;

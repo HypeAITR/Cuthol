@@ -105,7 +105,7 @@ function decodePngToRgbaBuffer(
       "-sws_flags",
       "neighbor",
       "-vf",
-      `scale=${width}:${height}:flags=neighbor`,
+      `scale=${width}:${height}:flags=neighbor,format=rgba`,
       "-frames:v",
       "1",
       "-f",
@@ -328,7 +328,7 @@ export function previewAndCheckComposition(options: {
       activeWindowMs: [cueStartMs, cueEndMs],
       includeAudio: false,
     });
-    const sliceFilter = `${underneathPlan.filterComplex};${underneathPlan.videoOutPad}fps=${fps},scale=${stageW}:${stageH},format=yuv420p[v_bg_preview]`;
+    const sliceFilter = `${underneathPlan.filterComplex};${underneathPlan.videoOutPad}fps=${fps},scale=${stageW}:${stageH}:in_color_matrix=bt709:out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv[v_bg_preview]`;
 
     const candidateBg = path.join(workRoot, "preview_backdrop.mp4");
     const filterScriptPath = path.join(workRoot, "preview_backdrop.filter.txt");
@@ -355,6 +355,14 @@ export function previewAndCheckComposition(options: {
         "ultrafast",
         "-g",
         "1",
+        "-colorspace",
+        "bt709",
+        "-color_primaries",
+        "bt709",
+        "-color_trc",
+        "bt709",
+        "-color_range",
+        "tv",
         candidateBg,
       ],
       {
@@ -550,7 +558,7 @@ export function previewAndCheckComposition(options: {
           "-i",
           backdropMp4Path,
           "-vf",
-          `scale=${cellW}:${cellH}`,
+          `scale=${cellW}:${cellH}:in_color_matrix=bt709:out_color_matrix=bt709,format=rgba`,
           "-frames:v",
           "1",
           bgFramePng,
@@ -574,7 +582,7 @@ export function previewAndCheckComposition(options: {
             "-i",
             backdropMp4Path,
             "-vf",
-            `scale=${cellW}:${cellH}`,
+            `scale=${cellW}:${cellH}:in_color_matrix=bt709:out_color_matrix=bt709,format=rgba`,
             "-frames:v",
             "1",
             bgFramePng,

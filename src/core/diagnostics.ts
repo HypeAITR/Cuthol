@@ -219,6 +219,24 @@ export const DIAGNOSTICS = {
     );
   },
 
+  BT2020_COLOR_SPACE_SOURCE: (
+    handle: string,
+    colorSpace: string,
+    colorTransfer?: string | null,
+    colorPrimaries?: string | null
+  ) => {
+    const trcDetail = colorTransfer ? `, color_transfer=${colorTransfer}` : "";
+    const primDetail = colorPrimaries ? `, color_primaries=${colorPrimaries}` : "";
+    return createDiagnostic(
+      "CUTHOL-G208",
+      "G2_ASSETS",
+      "INFO",
+      `'${handle}' kaynağı BT.2020 renk uzayında etiketlenmiş (color_space=${colorSpace}${trcDetail}${primDetail}); Cuthol YCbCr->BT.709 dönüşümünde 'in_color_matrix=bt2020:out_color_matrix=bt709' matrisini kullanır, ancak HDR gama/primaries ton eşlemesi (tone-mapping) uygulamaz.`,
+      `Kaynak SDR BT.2020 ise matris dönüşümü yeterlidir; HDR (PQ/HLG) kaynaklarda gerekirse harici SDR ton eşlemesi uygulayın veya 'cuthol monitor frame' ile renkleri kontrol edin.`,
+      handle
+    );
+  },
+
   // --- Gate 3: Temporal Continuity & Frame Budget (G3_TIMING) ---
   SUB_FRAME_DURATION: (itemId: string, durationMs: number, minMs: number) =>
     createDiagnostic(
@@ -616,7 +634,7 @@ export const DIAGNOSTICS = {
       "SYS",
       "ERROR",
       `'${options.step}' alt süreci ilerleme durduğu için sonlandırıldı (${stalledSec}sn boyunca ilerleme yok, eşik=${threshSec}sn; son ilerleme: ${lastProg}; komut: ${cmdSum}).`,
-      `Donanım kodlayıcı (NVENC) veya tarayıcı alt süreci kilitlenmiş olabilir; işlemi tekrar deneyin, GPU kodlamayı devre dışı bırakmak için 'CUTHOL_VIDEO_ENCODER=libx264' kullanın veya ilerleme eşiğini 'CUTHOL_STALL_TIMEOUT_SEC' ile ayarlayın.`
+      `Donanım kodlayıcı (NVENC/AMF/QSV/VAAPI/VideoToolbox) veya tarayıcı alt süreci kilitlenmiş olabilir; işlemi tekrar deneyin, GPU kodlamayı devre dışı bırakmak için 'CUTHOL_ENCODER=x264' kullanın veya ilerleme eşiğini 'CUTHOL_STALL_TIMEOUT_SEC' ile ayarlayın.`
     );
   },
 

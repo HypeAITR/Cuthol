@@ -12,14 +12,49 @@ import path from "node:path";
 import { computeRenderDurationMs, resolveCueStartMs } from "../core/timeline.js";
 import { CutholSequence, getCuePlaybackRate, isStillGraphic, maxSourceDurationMs, ParameterEnvelope, TransitionSpec } from "../core/schema.js";
 import { WorkspacePaths } from "../core/workspace.js";
-import { resolveLibraryItemPath } from "../library/probe.js";
+import { MediaLedger } from "../library/ledger.js";
+import {
+  ensureLibraryItemVideoProbe,
+  isProbeMetadataComplete,
+  probeStandaloneVideoColorMetadata,
+  resolveLibraryItemPath,
+  resolveSourceColorSpec,
+  SourceColorSpec,
+} from "../library/probe.js";
 import { sequenceMsToSourceMs } from "../sequence/spine.js";
 import { compileTypographyAssFile } from "./ass_generator.js";
 import { syncCompositionBridgeFiles } from "./bridge_exporter.js";
 import {
+  hasPendingCollectedOverlayForPaths,
+  isOverlayCollectActive,
+  isPngSequenceBlobDir,
   renderHyperFramesCompositionToMp4,
   renderHyperFramesSingleFramePng,
+  runCollectedOverlays,
 } from "./hyperframes_bridge.js";
+
+const BT709_SETPARAMS =
+  "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv";
+const BT709_TO_YUV420P = `scale=in_color_matrix=bt709:out_color_matrix=bt709:out_range=tv,format=yuv420p,${BT709_SETPARAMS}`;
+const BT709_TO_YUVA420P = `scale=in_color_matrix=bt709:out_color_matrix=bt709:out_range=tv,format=yuva420p,${BT709_SETPARAMS}`;
+const BT709_TO_YUV444P10 = `scale=in_color_matrix=bt709:out_color_matrix=bt709:out_range=tv,format=yuv444p10le,${BT709_SETPARAMS}`;
+const BT709_TO_YUVA444P10 = `scale=in_color_matrix=bt709:out_color_matrix=bt709:out_range=tv,format=yuva444p10le,${BT709_SETPARAMS}`;
+const BT709_TO_RGBA = "scale=in_color_matrix=bt709:out_color_matrix=bt709,format=rgba";
+
+function buildSourceScaleFilter(
+  width: number,
+  height: number,
+  colorSpec: SourceColorSpec,
+  forceOriginalAspectRatio?: "decrease" | "increase"
+): string {
+  const foar = forceOriginalAspectRatio
+    ? `:force_original_aspect_ratio=${forceOriginalAspectRatio}`
+    : "";
+  if (colorSpec.isRgb) {
+    return `scale=${width}:${height}${foar}`;
+  }
+  return `scale=${width}:${height}${foar}:in_color_matrix=${colorSpec.inMatrix}:out_color_matrix=bt709:in_range=${colorSpec.inRange}:out_range=tv`;
+}
 
 export type RenderPreset = "draft_480p" | "master_1080p";
 
@@ -684,10 +719,16 @@ function extractSceneHostBackdropSlice(
   // Render the exact underneath composite graph (backdrop + z_index < 0 lanes + spine with speed ramps,
   // transitions, color grades, crops, and fit modes) over [cueStartSec, cueEndSec] so boundary frames match 100%.
   if (underneathGraph && underneathGraph.inputArgs.length > 0) {
+    if (
+      isOverlayCollectActive() &&
+      hasPendingCollectedOverlayForPaths(underneathGraph.inputArgs)
+    ) {
+      runCollectedOverlays({ keepCollecting: true });
+    }
     const graphFilter = [
       "sws_flags=accurate_rnd+full_chroma_int",
       ...underneathGraph.filterChains,
-      `${underneathGraph.videoPad}trim=start=${cueStartSec}:end=${cueEndSec},setpts=PTS-STARTPTS,fps=${fps}:eof_action=pass,tpad=stop_mode=clone:stop_duration=${(2 / fps).toFixed(3)},format=yuv420p,settb=AVTB[v_sh_out]`,
+      `${underneathGraph.videoPad}trim=start=${cueStartSec}:end=${cueEndSec},setpts=PTS-STARTPTS,fps=${fps}:eof_action=pass,tpad=stop_mode=clone:stop_duration=${(2 / fps).toFixed(3)},${BT709_TO_YUV420P},settb=AVTB[v_sh_out]`,
     ].join(";");
 
     const sliceHash = crypto
@@ -767,6 +808,8 @@ function extractSceneHostBackdropSlice(
   if (!asset || !asset.probe.has_video) return undefined;
 
   const absAsset = resolveLibraryItemPath(paths.rootDir, asset);
+  ensureLibraryItemVideoProbe(asset, paths.rootDir);
+  const assetColorSpec = resolveSourceColorSpec(asset.probe, absAsset);
   const srcStartMs = sequenceMsToSourceMs(clip, Math.max(clip.timeline_in_ms, cueStartMs));
   const srcStartSec = Number((srcStartMs / 1000).toFixed(3));
 
@@ -780,6 +823,11 @@ function extractSceneHostBackdropSlice(
         w: renderWidth,
         h: renderHeight,
         fps,
+        colorSpec: {
+          isRgb: assetColorSpec.isRgb,
+          inMatrix: assetColorSpec.inMatrix,
+          inRange: assetColorSpec.inRange,
+        },
       })
     )
     .digest("hex")
@@ -791,6 +839,8 @@ function extractSceneHostBackdropSlice(
     return outMp4;
   }
 
+  const shScalePrefix = assetColorSpec.isRgb ? "format=rgba," : "";
+  const shScaleStep = buildSourceScaleFilter(renderWidth, renderHeight, assetColorSpec, "increase");
   const tmpMp4 = `${outMp4}.${process.pid}.tmp.mp4`;
   const proc = spawnSync(
     "ffmpeg",
@@ -805,7 +855,7 @@ function extractSceneHostBackdropSlice(
       "-t",
       String(durSec),
       "-vf",
-      `fps=${fps}:eof_action=pass,tpad=stop_mode=clone:stop_duration=${(2 / fps).toFixed(3)},scale=${renderWidth}:${renderHeight}:force_original_aspect_ratio=increase,crop=${renderWidth}:${renderHeight},format=yuv420p,settb=AVTB`,
+      `fps=${fps}:eof_action=pass,tpad=stop_mode=clone:stop_duration=${(2 / fps).toFixed(3)},${shScalePrefix}${shScaleStep},crop=${renderWidth}:${renderHeight},${BT709_TO_YUV420P},settb=AVTB`,
       "-an",
       "-c:v",
       "libx264",
@@ -832,37 +882,66 @@ function extractSceneHostBackdropSlice(
   return undefined;
 }
 
+interface StaticStillLayerSpec {
+  id: string;
+  assetHandle: string;
+  assetDigest: string;
+  absAssetPath: string;
+  spatialFilters: string[];
+  xExpr: string;
+  yExpr: string;
+}
+
 function extractStaticBackdropPngSlice(
   seq: CutholSequence,
   paths: WorkspacePaths,
-  cueStartMs: number,
   renderWidth: number,
   renderHeight: number,
   fps: number,
-  underneathGraph: {
-    inputArgs: string[];
-    filterChains: string[];
-    videoPad: string;
-  }
+  stillLayers: StaticStillLayerSpec[]
 ): string | undefined {
-  if (underneathGraph.inputArgs.length === 0) return undefined;
-  const cueStartSec = Number((cueStartMs / 1000).toFixed(3));
-  const graphFilter = [
-    "sws_flags=accurate_rnd+full_chroma_int",
-    ...underneathGraph.filterChains,
-    `${underneathGraph.videoPad}trim=start=${cueStartSec},setpts=PTS-STARTPTS,fps=${fps}:eof_action=pass,scale=${renderWidth}:${renderHeight},format=rgb24[v_still_out]`,
-  ].join(";");
+  if (stillLayers.length === 0) return undefined;
+  const bgHex = seq.stage.backdrop.color.replace(/^#/, "0x");
+  const inputArgs: string[] = [
+    "-f",
+    "lavfi",
+    "-i",
+    `color=c=${bgHex}:s=${renderWidth}x${renderHeight}:r=${fps}:d=0.1,format=rgb24,${BT709_TO_YUV420P},settb=AVTB`,
+  ];
+  const chains: string[] = ["sws_flags=accurate_rnd+full_chroma_int"];
+  let pad = "[0:v]";
+  for (let idx = 0; idx < stillLayers.length; idx++) {
+    const layer = stillLayers[idx];
+    const inIdx = idx + 1;
+    inputArgs.push("-loop", "1", "-framerate", String(fps), "-t", "0.1", "-i", layer.absAssetPath);
+    const layerPad = `[v_st_${idx}]`;
+    const nextPad = `[vc_st_${idx + 1}]`;
+    chains.push(
+      `[${inIdx}:v]settb=AVTB,fps=${fps}:eof_action=pass,${layer.spatialFilters.join(",")},settb=AVTB${layerPad}`,
+      `${pad}${layerPad}overlay=x='${layer.xExpr}':y='${layer.yExpr}':eval=frame:eof_action=pass,${BT709_SETPARAMS}${nextPad}`
+    );
+    pad = nextPad;
+  }
+  chains.push(
+    `${pad}fps=${fps}:eof_action=pass,scale=${renderWidth}:${renderHeight}:in_color_matrix=bt709:out_color_matrix=bt709,format=rgb24[v_still_out]`
+  );
+  const graphFilter = chains.join(";");
 
   const sliceHash = crypto
     .createHash("sha256")
     .update(
       JSON.stringify({
-        libDigests: seq.library.map((x) => `${x.handle}:${x.digest_sha256}`),
-        inputArgs: underneathGraph.inputArgs,
-        graphFilter,
-        cueStartSec,
+        bgHex,
         w: renderWidth,
         h: renderHeight,
+        fps,
+        layers: stillLayers.map((l) => ({
+          handle: l.assetHandle,
+          digest: l.assetDigest,
+          filters: l.spatialFilters,
+          x: l.xExpr,
+          y: l.yExpr,
+        })),
       })
     )
     .digest("hex")
@@ -881,7 +960,7 @@ function extractStaticBackdropPngSlice(
       "-y",
       "-v",
       "error",
-      ...underneathGraph.inputArgs,
+      ...inputArgs,
       "-filter_complex",
       graphFilter,
       "-map",
@@ -920,6 +999,26 @@ export function compileSequenceRenderPlan(
   const renderHeight = Math.max(16, Math.round((seq.stage.height * scaleFactor) / 2) * 2);
   const fps = seq.stage.fps;
 
+  if (seq.library.some((item) => item.probe.has_video && !isProbeMetadataComplete(item.probe))) {
+    let probeLedger: MediaLedger | null = null;
+    try {
+      for (const item of seq.library) {
+        if (item.probe.has_video && !isProbeMetadataComplete(item.probe)) {
+          if (!probeLedger && paths?.ledgerFile) {
+            try {
+              probeLedger = new MediaLedger(paths.ledgerFile);
+            } catch {
+              // ignore ledger open error
+            }
+          }
+          ensureLibraryItemVideoProbe(item, paths.rootDir, probeLedger);
+        }
+      }
+    } finally {
+      probeLedger?.close();
+    }
+  }
+
   const libMap = new Map(seq.library.map((item) => [item.handle, item]));
   const inputArgs: string[] = [];
   const filterChains: string[] = [];
@@ -933,6 +1032,7 @@ export function compileSequenceRenderPlan(
     kind: "still_graphic" | "moving" | "opaque_comp";
     blobPath?: string;
     bakedUnderneathIds?: string[];
+    stillSpec?: StaticStillLayerSpec;
   }
   const drawnVisualLayers: DrawnVisualLayer[] = [];
 
@@ -971,7 +1071,7 @@ export function compileSequenceRenderPlan(
     "-f",
     "lavfi",
     "-i",
-    `color=c=${bgHex}:s=${renderWidth}x${renderHeight}:r=${fps}:d=${bgDurationSec},settb=AVTB`,
+    `color=c=${bgHex}:s=${renderWidth}x${renderHeight}:r=${fps}:d=${bgDurationSec},format=rgb24,${BT709_TO_YUV420P},settb=AVTB`,
   ]);
 
   let currentVideoPad = `[${bgInputIdx}:v]`;
@@ -1123,19 +1223,20 @@ export function compileSequenceRenderPlan(
               effectiveTransparent = false;
               opaqueBackdropColor = seq.stage.backdrop.color;
             } else if (hasOnlyStaticStillUnderneath) {
-              const stillPng = extractStaticBackdropPngSlice(
-                seq,
-                paths,
-                cueStartMs,
-                renderWidth,
-                renderHeight,
-                fps,
-                {
-                  inputArgs: [...inputArgs],
-                  filterChains: [...filterChains],
-                  videoPad: currentVideoPad,
-                }
-              );
+              const stillSpecs = overlappingUnder
+                .map((l) => l.stillSpec)
+                .filter((s): s is StaticStillLayerSpec => Boolean(s));
+              const stillPng =
+                stillSpecs.length === overlappingUnder.length
+                  ? extractStaticBackdropPngSlice(
+                      seq,
+                      paths,
+                      renderWidth,
+                      renderHeight,
+                      fps,
+                      stillSpecs
+                    )
+                  : undefined;
               if (stillPng) {
                 effectiveTransparent = false;
                 opaqueBackdropColor = seq.stage.backdrop.color;
@@ -1163,13 +1264,39 @@ export function compileSequenceRenderPlan(
             useGpu: compileOptions?.useGpu,
           });
           hyperframesBlobs.push(hfBlob);
-          hfIdx = addInput(["-i", hfBlob]);
+          const isPngSeqBlob = isPngSequenceBlobDir(hfBlob);
+          hfIdx = isPngSeqBlob
+            ? addInput([
+                "-framerate",
+                String(fps),
+                "-start_number",
+                "1",
+                "-i",
+                path.join(hfBlob, "frame_%06d.png"),
+              ])
+            : addInput(["-i", hfBlob]);
+
+          const blobColorSpec = isPngSeqBlob
+            ? ({ isRgb: true, inMatrix: "bt709", inRange: "pc", sourceRule: "rgb" } as const)
+            : resolveSourceColorSpec(
+                probeStandaloneVideoColorMetadata(hfBlob),
+                hfBlob,
+                { isHyperFramesBlob: true }
+              );
 
           drawnVisualLayers.push({
             id: cue.id,
             startMs: cueStartMs,
             endMs: cueEndMs,
-            kind: !effectiveTransparent && isFullFrameUnscaled && hfBlob.endsWith(".mp4") ? "opaque_comp" : "moving",
+            kind:
+              !effectiveTransparent &&
+              isFullFrameUnscaled &&
+              hfBlob.endsWith(".mp4") &&
+              !blobColorSpec.isRgb &&
+              blobColorSpec.inMatrix === "bt709" &&
+              blobColorSpec.inRange === "tv"
+                ? "opaque_comp"
+                : "moving",
             blobPath: hfBlob,
             bakedUnderneathIds,
           });
@@ -1201,7 +1328,20 @@ export function compileSequenceRenderPlan(
         const baseCenterX = Math.round((renderWidth - hfEffW) / 2);
         const baseCenterY = Math.round((renderHeight - hfEffH) / 2);
 
-        const hfFilters: string[] = [`scale=${targetW}:${targetH}`];
+        const activeHfBlobPath = hyperframesBlobs[hyperframesBlobs.length - 1] ?? "";
+        const hfColorSpec: SourceColorSpec =
+          !activeHfBlobPath ||
+          isPngSequenceBlobDir(activeHfBlobPath) ||
+          activeHfBlobPath.toLowerCase().endsWith(".png") ||
+          activeHfBlobPath.toLowerCase().endsWith(".ffv1.mov")
+            ? { isRgb: true, inMatrix: "bt709", inRange: "pc", sourceRule: "rgb" }
+            : resolveSourceColorSpec(
+                probeStandaloneVideoColorMetadata(activeHfBlobPath),
+                activeHfBlobPath,
+                { isHyperFramesBlob: true }
+              );
+
+        const hfFilters: string[] = [buildSourceScaleFilter(targetW, targetH, hfColorSpec)];
         if (cue.placement.mirror_x) hfFilters.push("hflip");
         if (cue.placement.mirror_y) hfFilters.push("vflip");
         const hfRotEnv = cue.envelopes.find((e) => e.parameter === "placement.rotation_deg");
@@ -1216,9 +1356,9 @@ export function compileSequenceRenderPlan(
           timeBaseOffsetMs: 0,
           mode: "raw",
         });
-        // Always normalize through `format=rgba` before `yuva444p10le` so both RGBA PNG single-frame snapshots
-        // and ProRes 4444 `.mov` blobs share the exact same color matrix conversion path in FFmpeg.
-        hfFilters.push("format=rgba");
+        // RGB sources (PNG sequence, single-frame PNG, FFV1 BGRA) stay in RGB until converted to BT.709 YUV;
+        // YUV overlay blobs (ProRes / MP4) convert to RGBA using their resolved input color matrix.
+        hfFilters.push(hfColorSpec.isRgb ? "format=rgba" : BT709_TO_RGBA);
         if (hfRotExpr) {
           const radExpr = `((${hfRotExpr})*PI/180)`;
           hfFilters.push(`rotate=a='${radExpr}':ow='rotw(${radExpr})':oh='roth(${radExpr})':c=none`);
@@ -1305,9 +1445,11 @@ export function compileSequenceRenderPlan(
               : String(Math.round(baseCenterY + (cue.placement.y_pct / 100) * renderHeight)));
 
         if (!effectiveTransparent && isFullFrameUnscaled && compileOptions?.singleFrameAtMs === undefined) {
-          const nextPad = `[vc_${++vStepCounter}]`;
+          const ovYuvPad = `[vc_oyuv_${++vStepCounter}]`;
+          const nextPad = `[vc_${vStepCounter}]`;
           filterChains.push(
-            `${currentVideoPad}${hfPad}overlay=x='${xExpr}':y='${yExpr}':eval=frame:enable='between(t,${cueStartSec},${cueEndSec})':eof_action=pass:repeatlast=0,format=yuv420p${nextPad}`
+            `${hfPad}${BT709_TO_YUVA420P}${ovYuvPad}`,
+            `${currentVideoPad}${ovYuvPad}overlay=x='${xExpr}':y='${yExpr}':eval=frame:enable='between(t,${cueStartSec},${cueEndSec})':eof_action=pass:repeatlast=0,${BT709_TO_YUV420P}${nextPad}`
           );
           currentVideoPad = nextPad;
         } else {
@@ -1315,9 +1457,9 @@ export function compileSequenceRenderPlan(
           const ov10Pad = `[vc_o10_${vStepCounter}]`;
           const nextPad = `[vc_${vStepCounter}]`;
           filterChains.push(
-            `${currentVideoPad}format=yuv444p10le${base10Pad}`,
-            `${hfPad}format=yuva444p10le${ov10Pad}`,
-            `${base10Pad}${ov10Pad}overlay=x='${xExpr}':y='${yExpr}':format=yuv444p10:alpha=straight:eval=frame:enable='between(t,${cueStartSec},${cueEndSec})':eof_action=pass:repeatlast=0,format=yuv420p${nextPad}`
+            `${currentVideoPad}${BT709_TO_YUV444P10}${base10Pad}`,
+            `${hfPad}${BT709_TO_YUVA444P10}${ov10Pad}`,
+            `${base10Pad}${ov10Pad}overlay=x='${xExpr}':y='${yExpr}':format=yuv444p10:alpha=straight:eval=frame:enable='between(t,${cueStartSec},${cueEndSec})':eof_action=pass:repeatlast=0,${BT709_TO_YUV420P}${nextPad}`
           );
           currentVideoPad = nextPad;
         }
@@ -1356,12 +1498,13 @@ export function compileSequenceRenderPlan(
             cue.placement.opacity >= 0.999
               ? "still_graphic"
               : "moving";
-          drawnVisualLayers.push({
+          const drawnCueLayer: DrawnVisualLayer = {
             id: cue.id,
             startMs: cueStartMs,
             endMs: cueEndMs,
             kind: layerKind,
-          });
+          };
+          drawnVisualLayers.push(drawnCueLayer);
           if (!isCueInActiveWindow) {
             continue;
           }
@@ -1458,6 +1601,12 @@ export function compileSequenceRenderPlan(
                 `fps=${fps}:eof_action=pass`,
                 `tpad=stop_mode=clone:stop_duration=${cueTailPadSec}`,
               ];
+          const cueSpatialFilterStartIdx = vFilters.length;
+
+          const cueColorSpec = resolveSourceColorSpec(asset.probe, absAssetPath);
+          if (cueColorSpec.isRgb) {
+            vFilters.push("format=rgba");
+          }
 
           if (cue.placement.crop) {
             const cr = cue.placement.crop;
@@ -1470,15 +1619,17 @@ export function compileSequenceRenderPlan(
 
           if (cue.placement.fit_mode === "contain") {
             vFilters.push(
-              `scale=${targetW}:${targetH}:force_original_aspect_ratio=decrease`,
+              buildSourceScaleFilter(targetW, targetH, cueColorSpec, "decrease"),
               `pad=${targetW}:${targetH}:(ow-iw)/2:(oh-ih)/2:color=black@0`
             );
           } else {
-            vFilters.push(`scale=${targetW}:${targetH}`);
+            vFilters.push(buildSourceScaleFilter(targetW, targetH, cueColorSpec));
           }
           if (cue.placement.mirror_x) vFilters.push("hflip");
           if (cue.placement.mirror_y) vFilters.push("vflip");
-          vFilters.push(`format=rgba`);
+          const cueRgbaIdx = vFilters.length;
+          let cueUsesRgba = true;
+          vFilters.push(cueColorSpec.isRgb ? "format=rgba" : BT709_TO_RGBA);
 
           const cueRotEnv = cue.envelopes.find((e) => e.parameter === "placement.rotation_deg");
           const cueRotExpr = compileEnvelopeToFfmpegExpr({
@@ -1505,6 +1656,32 @@ export function compileSequenceRenderPlan(
           } else if (cue.placement.opacity < 0.999) {
             vFilters.push(`colorchannelmixer=aa=${cue.placement.opacity.toFixed(3)}`);
           }
+          // Opaque, full-frame, untransformed, envelope-less B-roll footage cues skip the RGBA round-trip.
+          if (
+            process.env.CUTHOL_EXP_NORGBA !== "0" &&
+            !isStill &&
+            !cueColorSpec.isRgb &&
+            asset.kind === "footage" &&
+            !/\.(?:png|webp|gif|mov)$/i.test(absAssetPath) &&
+            cue.placement.fit_mode !== "contain" &&
+            !cueRotExpr &&
+            Math.abs(cue.placement.rotation_deg) <= 0.01 &&
+            !cueOpExpr &&
+            cue.placement.opacity >= 0.999 &&
+            !cueHasDynScale &&
+            !xEnv &&
+            !yEnv &&
+            !cue.envelopes.some((e) => e.parameter.startsWith("placement.")) &&
+            targetW === renderWidth &&
+            targetH === renderHeight &&
+            Math.abs(cue.placement.scale_x - 1) < 1e-3 &&
+            Math.abs(cue.placement.scale_y - 1) < 1e-3 &&
+            Math.abs(cue.placement.x_pct) < 0.01 &&
+            Math.abs(cue.placement.y_pct) < 0.01
+          ) {
+            vFilters.splice(cueRgbaIdx, 1);
+            cueUsesRgba = false;
+          }
           const sxPart = cueSxExpr ? `abs(${cueSxExpr})` : String(Math.abs(cue.placement.scale_x));
           const syPart = cueSyExpr ? `abs(${cueSyExpr})` : String(Math.abs(cue.placement.scale_y));
           vFilters.push(
@@ -1523,6 +1700,10 @@ export function compileSequenceRenderPlan(
               localTimeExpr: `((in-1)/${fps})`,
             })
           );
+          vFilters.push(
+            cueUsesRgba || cueHasDynScale || xEnv || yEnv ? BT709_TO_YUVA420P : BT709_TO_YUV420P
+          );
+          const cueSpatialFilters = vFilters.slice(cueSpatialFilterStartIdx);
           vFilters.push(`settb=AVTB`, `setpts=PTS-STARTPTS+${cueStartSec}/TB`);
           if (activeWin && (cueStartMs < winLeadStartMs - 1e-3 || cueEndMs > winEndMs + 1e-3)) {
             vFilters.push(`trim=start=${winLeadStartSec}:end=${winEndPadSec}`);
@@ -1561,9 +1742,21 @@ export function compileSequenceRenderPlan(
                 ? `(H-h)/2+${Math.round((cue.placement.y_pct / 100) * renderHeight)}`
                 : String(Math.round(baseCenterY + (cue.placement.y_pct / 100) * renderHeight)));
 
+          if (layerKind === "still_graphic") {
+            drawnCueLayer.stillSpec = {
+              id: cue.id,
+              assetHandle: asset.handle,
+              assetDigest: asset.digest_sha256,
+              absAssetPath,
+              spatialFilters: cueSpatialFilters,
+              xExpr,
+              yExpr,
+            };
+          }
+
           const nextPad = `[vc_${++vStepCounter}]`;
           filterChains.push(
-            `${currentVideoPad}${cuePad}overlay=x='${xExpr}':y='${yExpr}':eval=frame:enable='between(t,${cueStartSec},${cueEndSec})':eof_action=pass${nextPad}`
+            `${currentVideoPad}${cuePad}overlay=x='${xExpr}':y='${yExpr}':eval=frame:enable='between(t,${cueStartSec},${cueEndSec})':eof_action=pass,${BT709_SETPARAMS}${nextPad}`
           );
           currentVideoPad = nextPad;
         }
@@ -1572,7 +1765,7 @@ export function compileSequenceRenderPlan(
 
     // Compile and apply typography for this lane right at its `z_index` level,
     // keeping native `seq.stage.width x seq.stage.height` PlayResX/Y so libass scales outlines/margins accurately!
-    if (laneHasTypography) {
+    if (laneHasTypography && !isOverlayCollectActive()) {
       const laneAssHash = crypto
         .createHash("sha256")
         .update(JSON.stringify({ stage: seq.stage, spine: seq.spine.clips, lane }))
@@ -1618,7 +1811,7 @@ export function compileSequenceRenderPlan(
         const relAssPath = path.relative(paths.rootDir, assResult.filePath);
         const escapedAssPath = escapeFfmpegFilterPath(relAssPath);
         const nextPad = `[vc_${++vStepCounter}]`;
-        filterChains.push(`${currentVideoPad}ass=filename=${escapedAssPath}${nextPad}`);
+        filterChains.push(`${currentVideoPad}ass=filename=${escapedAssPath},${BT709_SETPARAMS}${nextPad}`);
         currentVideoPad = nextPad;
       }
     }
@@ -1652,12 +1845,13 @@ export function compileSequenceRenderPlan(
       clip.envelopes.length === 0 &&
       (!clip.transition_out || clip.transition_out.duration_ms <= 0) &&
       (!incomingTransition || incomingTransition.duration_ms <= 0);
-    drawnVisualLayers.push({
+    const drawnSpineLayer: DrawnVisualLayer = {
       id: clip.id,
       startMs: clipStartMs,
       endMs: clipEndMs,
       kind: isStaticStillClip ? "still_graphic" : "moving",
-    });
+    };
+    drawnVisualLayers.push(drawnSpineLayer);
 
     if (activeWin && (clipEndMs <= winStartMs - 1e-3 || clipStartMs >= winEndMs + 1e-3)) {
       continue;
@@ -1757,6 +1951,11 @@ export function compileSequenceRenderPlan(
         `fps=${fps}:eof_action=pass`,
         `tpad=stop_mode=clone:stop_duration=${tailPadSec}`,
       ];
+      const spSpatialFilterStartIdx = vFilters.length;
+      const clipColorSpec = resolveSourceColorSpec(asset.probe, absAssetPath);
+      if (clipColorSpec.isRgb) {
+        vFilters.push("format=rgba");
+      }
 
       // Apply crop if configured
       if (clip.placement.crop) {
@@ -1770,16 +1969,16 @@ export function compileSequenceRenderPlan(
 
       if (clip.placement.fit_mode === "contain") {
         vFilters.push(
-          `scale=${targetW}:${targetH}:force_original_aspect_ratio=decrease`,
+          buildSourceScaleFilter(targetW, targetH, clipColorSpec, "decrease"),
           `pad=${targetW}:${targetH}:(ow-iw)/2:(oh-ih)/2:color=black@0`
         );
       } else if (clip.placement.fit_mode === "cover") {
         vFilters.push(
-          `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase`,
+          buildSourceScaleFilter(targetW, targetH, clipColorSpec, "increase"),
           `crop=${targetW}:${targetH}`
         );
       } else {
-        vFilters.push(`scale=${targetW}:${targetH}`);
+        vFilters.push(buildSourceScaleFilter(targetW, targetH, clipColorSpec));
       }
 
       if (clip.placement.mirror_x) vFilters.push("hflip");
@@ -1792,13 +1991,17 @@ export function compileSequenceRenderPlan(
         );
       }
 
+      let spRgbaIdx = -1;
+      let spUsesRgba = true;
       if (clip.treatments.cutout.mode === "chroma" && clip.treatments.cutout.chroma_key_hex) {
         const keyColor = clip.treatments.cutout.chroma_key_hex.replace(/^#/, "0x");
+        const toRgbaStep = clipColorSpec.isRgb ? "format=rgba" : BT709_TO_RGBA;
         vFilters.push(
-          `format=rgba,colorkey=${keyColor}:${clip.treatments.cutout.similarity.toFixed(2)}:${clip.treatments.cutout.blend.toFixed(2)}`
+          `${toRgbaStep},colorkey=${keyColor}:${clip.treatments.cutout.similarity.toFixed(2)}:${clip.treatments.cutout.blend.toFixed(2)}`
         );
       } else {
-        vFilters.push("format=rgba");
+        spRgbaIdx = vFilters.length;
+        vFilters.push(clipColorSpec.isRgb ? "format=rgba" : BT709_TO_RGBA);
       }
 
       // Apply rotation_deg / envelopes with dynamic output bounding box
@@ -1899,6 +2102,34 @@ export function compileSequenceRenderPlan(
           ? `${Math.abs(clip.placement.scale_y)}*(${zoomFactor})`
           : String(Math.abs(clip.placement.scale_y));
 
+      // Opaque, full-frame, untransformed, transition-less, envelope-less footage spine clips skip the RGBA round-trip.
+      if (
+        process.env.CUTHOL_EXP_NORGBA !== "0" &&
+        spRgbaIdx >= 0 &&
+        !isStill &&
+        !clipColorSpec.isRgb &&
+        asset.kind === "footage" &&
+        !/\.(?:png|webp|gif|mov)$/i.test(absAssetPath) &&
+        clip.placement.fit_mode !== "contain" &&
+        !spRotExpr &&
+        Math.abs(clip.placement.rotation_deg) <= 0.01 &&
+        !spOpExpr &&
+        clip.placement.opacity >= 0.999 &&
+        !(outTrans && outTrans.duration_ms > 0) &&
+        !(incomingTransition && incomingTransition.duration_ms > 0) &&
+        !spHasDynScale &&
+        !xEnv &&
+        !yEnv &&
+        !clip.envelopes.some((e) => e.parameter.startsWith("placement.")) &&
+        Math.abs(clip.placement.scale_x - 1) < 1e-3 &&
+        Math.abs(clip.placement.scale_y - 1) < 1e-3 &&
+        Math.abs(clip.placement.x_pct) < 0.01 &&
+        Math.abs(clip.placement.y_pct) < 0.01
+      ) {
+        vFilters.splice(spRgbaIdx, 1);
+        spUsesRgba = false;
+      }
+
       vFilters.push(
         ...buildSubpixelScaleOrPanFilters({
           hasDynamicScale: spHasDynScale,
@@ -1915,7 +2146,11 @@ export function compileSequenceRenderPlan(
           localTimeExpr: `((in-1)/${fps})`,
         })
       );
+      vFilters.push(
+        spUsesRgba || spHasDynScale || xEnv || yEnv ? BT709_TO_YUVA420P : BT709_TO_YUV420P
+      );
 
+      const spSpatialFilters = vFilters.slice(spSpatialFilterStartIdx);
       vFilters.push(`settb=AVTB`, `setpts=PTS+${tlInSec}/TB`);
       if (activeWin && (clipStartMs < winLeadStartMs - 1e-3 || clipEndMs > winEndMs + 1e-3)) {
         vFilters.push(`trim=start=${winLeadStartSec}:end=${winEndPadSec}`);
@@ -1954,6 +2189,18 @@ export function compileSequenceRenderPlan(
             ? `(H-h)/2+${Math.round((clip.placement.y_pct / 100) * renderHeight)}`
             : String(Math.round(baseCenterY + (clip.placement.y_pct / 100) * renderHeight)));
 
+      if (isStaticStillClip) {
+        drawnSpineLayer.stillSpec = {
+          id: clip.id,
+          assetHandle: asset.handle,
+          assetDigest: asset.digest_sha256,
+          absAssetPath,
+          spatialFilters: spSpatialFilters,
+          xExpr,
+          yExpr,
+        };
+      }
+
       // Animate incoming wipe_left / wipe_right / slide_up transitions
       if (incomingTransition && incomingTransition.duration_ms > 0) {
         const t0 = Number((clip.timeline_in_ms / 1000).toFixed(3));
@@ -1970,7 +2217,7 @@ export function compileSequenceRenderPlan(
 
       const nextPad = `[vc_${++vStepCounter}]`;
       filterChains.push(
-        `${currentVideoPad}${clipPad}overlay=x='${xExpr}':y='${yExpr}':eval=frame:enable='between(t,${tlInSec},${tlOutSec})':eof_action=pass${nextPad}`
+        `${currentVideoPad}${clipPad}overlay=x='${xExpr}':y='${yExpr}':eval=frame:enable='between(t,${tlInSec},${tlOutSec})':eof_action=pass,${BT709_SETPARAMS}${nextPad}`
       );
       currentVideoPad = nextPad;
     }
@@ -2011,10 +2258,10 @@ export function compileSequenceRenderPlan(
   const finalVideoPad = "[vout]";
   if (activeWin && compileOptions?.singleFrameAtMs === undefined) {
     filterChains.push(
-      `${currentVideoPad}trim=start=${winStartSec}:end=${winEndSec},setpts=PTS-STARTPTS,format=yuv420p,settb=AVTB${finalVideoPad}`
+      `${currentVideoPad}trim=start=${winStartSec}:end=${winEndSec},setpts=PTS-STARTPTS,${BT709_TO_YUV420P},settb=AVTB${finalVideoPad}`
     );
   } else {
-    filterChains.push(`${currentVideoPad}format=yuv420p,settb=AVTB${finalVideoPad}`);
+    filterChains.push(`${currentVideoPad}${BT709_TO_YUV420P},settb=AVTB${finalVideoPad}`);
   }
 
   // --- 3. Compile Audio Graph via the single shared `compileSequenceAudioPlan` ---

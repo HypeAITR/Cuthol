@@ -51,7 +51,170 @@ export function isVariableFrameRate(
   return false;
 }
 
-export function probeLocalMediaFile(filePath: string, ledger: MediaLedger): {
+export type FfmpegColorMatrix = "bt709" | "bt601" | "bt2020" | "smpte240m" | "fcc";
+export type FfmpegColorRange = "tv" | "pc";
+
+export interface SourceColorSpec {
+  isRgb: boolean;
+  inMatrix: FfmpegColorMatrix;
+  inRange: FfmpegColorRange;
+  sourceRule: "tagged" | "heuristic_hd" | "heuristic_sd" | "rgb" | "hf_default";
+  note?: string;
+}
+
+const probeMemoryCacheBySha = new Map<string, ProbeMetadata>();
+const standaloneVideoColorCache = new Map<string, Partial<ProbeMetadata>>();
+
+export function isProbeMetadataComplete(probe?: Partial<ProbeMetadata> | null): boolean {
+  if (!probe || !probe.has_video) return true;
+  const hasVfrField = probe.fps === 0 || probe.is_vfr !== undefined;
+  const hasColorFields =
+    probe.color_space !== undefined &&
+    probe.color_range !== undefined &&
+    probe.pix_fmt !== undefined;
+  return hasVfrField && hasColorFields;
+}
+
+function normalizeColorTag(raw?: unknown): string | null {
+  if (!raw || typeof raw !== "string") return null;
+  const s = raw.trim().toLowerCase();
+  if (!s || s === "unknown" || s === "unspecified" || s === "reserved") return null;
+  return s;
+}
+
+export function resolveSourceColorSpec(
+  probe?: Partial<ProbeMetadata> | null,
+  filePath?: string,
+  options?: { isHyperFramesBlob?: boolean }
+): SourceColorSpec {
+  const cs = (probe?.color_space ?? "").toLowerCase().trim();
+  const cr = (probe?.color_range ?? "").toLowerCase().trim();
+  const pix = (probe?.pix_fmt ?? "").toLowerCase().trim();
+  const codec = (probe?.video_codec ?? "").toLowerCase().trim();
+  const ext = filePath ? path.extname(filePath).toLowerCase() : "";
+  const lowerPath = filePath ? filePath.toLowerCase() : "";
+
+  const isRgbFormat =
+    cs === "gbr" ||
+    cs === "rgb" ||
+    /^(?:rgb|rgba|bgr|bgra|argb|abgr|gbr|pal8|ya|gray|monob|monow)/.test(pix) ||
+    ["png", "bmp", "gif", "svg", "ffv1", "mjpeg"].includes(codec) ||
+    [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".svg"].includes(ext) ||
+    lowerPath.endsWith(".pngseq") ||
+    lowerPath.endsWith(".ffv1.mov");
+
+  if (isRgbFormat) {
+    return {
+      isRgb: true,
+      inMatrix: "bt709",
+      inRange: "pc",
+      sourceRule: "rgb",
+    };
+  }
+
+  const inRange: FfmpegColorRange =
+    cr === "pc" || cr === "full" || cr === "jpeg" || pix.startsWith("yuvj") ? "pc" : "tv";
+
+  if (cs === "bt709") {
+    return { isRgb: false, inMatrix: "bt709", inRange, sourceRule: "tagged" };
+  }
+  if (cs === "smpte170m" || cs === "bt470bg" || cs === "bt601" || cs === "bt470") {
+    return { isRgb: false, inMatrix: "bt601", inRange, sourceRule: "tagged" };
+  }
+  if (cs === "bt2020nc" || cs === "bt2020c" || cs === "bt2020") {
+    return {
+      isRgb: false,
+      inMatrix: "bt2020",
+      inRange,
+      sourceRule: "tagged",
+      note: "BT.2020 kaynak renk matrisi (bt2020) kullanılarak BT.709'a dönüştürüldü (HDR ton eşleme uygulanmadı).",
+    };
+  }
+  if (cs === "smpte240m") {
+    return { isRgb: false, inMatrix: "smpte240m", inRange, sourceRule: "tagged" };
+  }
+  if (cs === "fcc") {
+    return { isRgb: false, inMatrix: "fcc", inRange, sourceRule: "tagged" };
+  }
+
+  if (options?.isHyperFramesBlob) {
+    return {
+      isRgb: false,
+      inMatrix: "bt709",
+      inRange,
+      sourceRule: "hf_default",
+    };
+  }
+
+  const w = probe?.width ?? 0;
+  const h = probe?.height ?? 0;
+  if (h >= 720 || w >= 1280) {
+    return { isRgb: false, inMatrix: "bt709", inRange, sourceRule: "heuristic_hd" };
+  }
+  return { isRgb: false, inMatrix: "bt601", inRange, sourceRule: "heuristic_sd" };
+}
+
+export function probeStandaloneVideoColorMetadata(filePath: string): Partial<ProbeMetadata> {
+  const absPath = path.resolve(filePath);
+  if (!fs.existsSync(absPath)) return {};
+  let cacheKey = absPath;
+  try {
+    const st = fs.statSync(absPath);
+    if (st.isDirectory()) {
+      return { pix_fmt: "rgba", color_space: "gbr", color_range: "pc", video_codec: "png" };
+    }
+    cacheKey = `${absPath}|${st.size}|${st.mtimeMs}`;
+  } catch {
+    return {};
+  }
+  const hit = standaloneVideoColorCache.get(cacheKey);
+  if (hit) return hit;
+
+  const ffprobeArgs = [
+    "-v",
+    "error",
+    "-select_streams",
+    "v:0",
+    "-show_entries",
+    "stream=codec_name,pix_fmt,width,height,color_space,color_range,color_transfer,color_primaries",
+    "-of",
+    "json",
+    absPath,
+  ];
+  const proc = spawnWatchedSync("ffprobe", ffprobeArgs, {
+    encoding: "utf8",
+    maxBuffer: 4 * 1024 * 1024,
+    step: "ffprobe color",
+  });
+  if (proc.status !== 0 || proc.error) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(proc.stdout) as { streams?: Array<Record<string, unknown>> };
+    const vs = parsed.streams?.[0];
+    if (!vs) return {};
+    const meta: Partial<ProbeMetadata> = {
+      width: Number(vs.width ?? 0),
+      height: Number(vs.height ?? 0),
+      video_codec: vs.codec_name ? String(vs.codec_name) : null,
+      pix_fmt: vs.pix_fmt ? String(vs.pix_fmt) : null,
+      color_space: normalizeColorTag(vs.color_space),
+      color_range: normalizeColorTag(vs.color_range),
+      color_transfer: normalizeColorTag(vs.color_transfer),
+      color_primaries: normalizeColorTag(vs.color_primaries),
+    };
+    standaloneVideoColorCache.set(cacheKey, meta);
+    return meta;
+  } catch {
+    return {};
+  }
+}
+
+export function probeLocalMediaFile(
+  filePath: string,
+  ledger: MediaLedger,
+  knownSha256?: string
+): {
   sha256: string;
   probe: ProbeMetadata;
   kind: AssetKind;
@@ -63,9 +226,29 @@ export function probeLocalMediaFile(filePath: string, ledger: MediaLedger): {
     throw new CutholError(DIAGNOSTICS.MISSING_FILE_ON_DISK("ingest", shownUri));
   }
 
-  const { sha256, sizeBytes } = ledger.resolveFileSha256(absPath);
+  let sha256: string;
+  let sizeBytes: number;
+  if (knownSha256) {
+    sha256 = knownSha256;
+    sizeBytes = fs.statSync(absPath).size;
+  } else {
+    const resolved = ledger.resolveFileSha256(absPath);
+    sha256 = resolved.sha256;
+    sizeBytes = resolved.sizeBytes;
+  }
+
+  const memCached = probeMemoryCacheBySha.get(sha256);
+  if (memCached && isProbeMetadataComplete(memCached)) {
+    return {
+      sha256,
+      probe: memCached,
+      kind: inferAssetKind(absPath, memCached),
+    };
+  }
+
   const cached = ledger.getProbe<ProbeMetadata>(sha256);
-  if (cached && (!cached.has_video || cached.fps === 0 || cached.is_vfr !== undefined)) {
+  if (cached && isProbeMetadataComplete(cached)) {
+    probeMemoryCacheBySha.set(sha256, cached);
     return {
       sha256,
       probe: cached,
@@ -135,6 +318,12 @@ export function probeLocalMediaFile(filePath: string, ledger: MediaLedger): {
   const isVfr =
     Boolean(videoStream) && !isStillImage ? isVariableFrameRate(rawRRate, rawAvgRate) : false;
 
+  const rawPixFmt = videoStream?.pix_fmt ? String(videoStream.pix_fmt) : null;
+  const rawColorSpace = normalizeColorTag(videoStream?.color_space);
+  const rawColorRange = normalizeColorTag(videoStream?.color_range);
+  const rawColorTransfer = normalizeColorTag(videoStream?.color_transfer);
+  const rawColorPrimaries = normalizeColorTag(videoStream?.color_primaries);
+
   const probe: ProbeMetadata = {
     duration_ms: isStillImage ? 5000 : duration_ms,
     width,
@@ -147,6 +336,15 @@ export function probeLocalMediaFile(filePath: string, ledger: MediaLedger): {
           avg_frame_rate: rawAvgRate,
         }
       : {}),
+    ...(videoStream
+      ? {
+          pix_fmt: rawPixFmt,
+          color_space: rawColorSpace,
+          color_range: rawColorRange,
+          color_transfer: rawColorTransfer,
+          color_primaries: rawColorPrimaries,
+        }
+      : {}),
     has_video: Boolean(videoStream),
     has_audio: Boolean(audioStream),
     video_codec: videoStream ? String(videoStream.codec_name ?? null) : null,
@@ -157,11 +355,77 @@ export function probeLocalMediaFile(filePath: string, ledger: MediaLedger): {
   };
 
   ledger.setProbe(sha256, probe);
+  probeMemoryCacheBySha.set(sha256, probe);
   return {
     sha256,
     probe,
     kind: inferAssetKind(absPath, probe),
   };
+}
+
+export function ensureLibraryItemVideoProbe(
+  item: LibraryItem,
+  rootDir: string,
+  ledger?: MediaLedger | null
+): ProbeMetadata {
+  if (!item.probe.has_video || isProbeMetadataComplete(item.probe)) {
+    return item.probe;
+  }
+
+  const applyRefreshedFields = (src: Partial<ProbeMetadata>) => {
+    if (item.probe.fps > 0 && item.probe.is_vfr === undefined) {
+      if (src.is_vfr !== undefined) item.probe.is_vfr = src.is_vfr;
+      if (src.r_frame_rate !== undefined) item.probe.r_frame_rate = src.r_frame_rate;
+      if (src.avg_frame_rate !== undefined) item.probe.avg_frame_rate = src.avg_frame_rate;
+    }
+    if (src.pix_fmt !== undefined) item.probe.pix_fmt = src.pix_fmt;
+    if (src.color_space !== undefined) item.probe.color_space = src.color_space;
+    if (src.color_range !== undefined) item.probe.color_range = src.color_range;
+    if (src.color_transfer !== undefined) item.probe.color_transfer = src.color_transfer;
+    if (src.color_primaries !== undefined) item.probe.color_primaries = src.color_primaries;
+  };
+
+  if (item.digest_sha256) {
+    const mem = probeMemoryCacheBySha.get(item.digest_sha256);
+    if (mem && isProbeMetadataComplete(mem)) {
+      applyRefreshedFields(mem);
+      return item.probe;
+    }
+    if (ledger) {
+      const fromLedger = ledger.getProbe<ProbeMetadata>(item.digest_sha256);
+      if (fromLedger && isProbeMetadataComplete(fromLedger)) {
+        probeMemoryCacheBySha.set(item.digest_sha256, fromLedger);
+        applyRefreshedFields(fromLedger);
+        return item.probe;
+      }
+    }
+  }
+
+  if (
+    item.probe.fps > 0 &&
+    item.probe.is_vfr === undefined &&
+    (item.probe.r_frame_rate || item.probe.avg_frame_rate)
+  ) {
+    item.probe.is_vfr = isVariableFrameRate(item.probe.r_frame_rate, item.probe.avg_frame_rate);
+  }
+
+  const absPath = resolveLibraryItemPath(rootDir, item);
+  if (!fs.existsSync(absPath)) {
+    return item.probe;
+  }
+
+  try {
+    if (ledger) {
+      const refreshed = probeLocalMediaFile(absPath, ledger, item.digest_sha256 || undefined).probe;
+      applyRefreshedFields(refreshed);
+    } else {
+      const colorMeta = probeStandaloneVideoColorMetadata(absPath);
+      applyRefreshedFields(colorMeta);
+    }
+  } catch {
+    // ignore probe failure on missing/corrupt external file
+  }
+  return item.probe;
 }
 
 function inferAssetKind(filePath: string, probe: ProbeMetadata): AssetKind {
@@ -216,7 +480,7 @@ export function ingestAssetsIntoWorkspace(options: {
           (item) => item.digest_sha256 === sha256 && (!options.explicitKind || item.kind === kind)
         );
         if (existing && (!requestedHandle || existing.handle === requestedHandle)) {
-          if (existing.probe.has_video && existing.probe.fps > 0 && existing.probe.is_vfr === undefined) {
+          if (existing.probe.has_video && !isProbeMetadataComplete(existing.probe)) {
             existing.probe = probe;
           }
           added.push(existing);

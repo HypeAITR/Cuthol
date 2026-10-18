@@ -30,12 +30,26 @@ import {
   RenderPreset,
 } from "../compositor/compiler.js";
 import {
+  beginOverlayCollect,
   beginOverlayRenderTracking,
   finishOverlayRenderTracking,
+  isPngSequenceBlobDir,
+  isValidVideoBlobOnDisk,
   renderHyperFramesBatchFramesPng,
   RenderOverlaySummary,
-  shouldUseNvencForRender,
+  resolveFramePngInPngSequenceDir,
+  runCollectedOverlays,
 } from "../compositor/hyperframes_bridge.js";
+import {
+  BT709_COLOR_OUTPUT_ARGS,
+  buildVideoCodecArgs,
+  H264_BT709_VUI_BSF,
+  isHardwareEncoder,
+  type RenderEncoderFallback,
+  resolveMaxHardwareEncoderSessions,
+  resolveVideoEncoderForRender,
+  type VideoEncoderCodec,
+} from "./encoder.js";
 import {
   createSubprocessFailureDiagnostic,
   CutholDiagnostic,
@@ -43,7 +57,11 @@ import {
   DIAGNOSTICS,
   estimateCommandLineLength,
 } from "../core/diagnostics.js";
-import { resolveHyperFramesWorkers, resolveMaxClipsPerRenderSegment } from "../core/env.js";
+import {
+  resolveHyperFramesWorkers,
+  resolveMaxClipsPerRenderSegment,
+  resolveOverlayConcurrency,
+} from "../core/env.js";
 import { CutholSequence, getCuePlaybackRate, maxSourceDurationMs } from "../core/schema.js";
 import { loadSequence, WorkspacePaths } from "../core/workspace.js";
 import { resolveLibraryItemPath } from "../library/probe.js";
@@ -74,11 +92,7 @@ export interface PostRenderBlankScanResult {
   diagnostics: CutholDiagnostic[];
 }
 
-export interface RenderEncoderFallback {
-  from: "h264_nvenc";
-  to: "libx264";
-  reason: string;
-}
+export type { RenderEncoderFallback, VideoEncoderCodec } from "./encoder.js";
 
 export interface AudioHealthCheckPoint {
   item_id: string;
@@ -110,6 +124,7 @@ export interface RenderStageTimingsMs {
   compile_and_overlays_ms: number;
   encode_ms: number;
   blank_scan_ms: number;
+  edge_strip_scan_ms?: number;
   audio_health_ms?: number;
   total_ms: number;
 }
@@ -123,7 +138,7 @@ export interface RenderOutputSummary {
   fps: number;
   duration_ms: number;
   size_bytes: number;
-  encoder: "h264_nvenc" | "libx264";
+  encoder: VideoEncoderCodec;
   encoder_fallback: RenderEncoderFallback | null;
   workers: number;
   single_stage: boolean;
@@ -203,6 +218,70 @@ export function scanRenderedMp4ForEdgeStrips(
     right: { outer: `crop=${strip}:${h}:${w - strip}:0`, inner: `crop=${strip}:${h}:${w - 2 * strip}:0` },
     bottom: { outer: `crop=${w}:${strip}:0:${h - strip}`, inner: `crop=${w}:${strip}:0:${h - 2 * strip}` },
   };
+
+  // Single-pass FFmpeg edge strip check across all `samples` timestamps x 4 edge/inner crops.
+  // Falls back to the per-sample loop below if any sample timestamp is past EOF or if disabled via CUTHOL_EDGE_SCAN_ONEPASS=0.
+  if (samples > 0 && process.env.CUTHOL_EDGE_SCAN_ONEPASS !== "0" && process.env.CUTHOL_EDGE_SCAN_ONEPASS !== "false") {
+    const cropList = [
+      regions.right.outer,
+      regions.right.inner,
+      regions.bottom.outer,
+      regions.bottom.inner,
+    ];
+    const args: string[] = ["-v", "error"];
+    for (let i = 0; i < samples; i++) {
+      args.push("-ss", (((i + 0.5) / samples) * (durationMs / 1000)).toFixed(3), "-i", mp4Path);
+    }
+    const parts: string[] = [];
+    const labels: string[] = [];
+    for (let i = 0; i < samples; i++) {
+      parts.push(
+        `[${i}:v]trim=end_frame=1,split=4${cropList.map((_, k) => `[s${i}_${k}]`).join("")}`
+      );
+      cropList.forEach((c, k) => {
+        parts.push(`[s${i}_${k}]${c},scale=1:1,format=gray[o${i}_${k}]`);
+        labels.push(`[o${i}_${k}]`);
+      });
+    }
+    parts.push(`${labels.join("")}hstack=inputs=${labels.length}[out]`);
+    args.push(
+      "-filter_complex",
+      parts.join(";"),
+      "-map",
+      "[out]",
+      "-frames:v",
+      "1",
+      "-f",
+      "rawvideo",
+      "-pix_fmt",
+      "gray",
+      "pipe:1"
+    );
+    const one = spawnWatchedSync("ffmpeg", args, {
+      maxBuffer: 1 << 20,
+      step: "ffmpeg edge strip scan (one pass)",
+    });
+    const buf = one.stdout as Buffer;
+    if (one.status === 0 && buf && buf.length >= labels.length) {
+      const hitEdges: string[] = [];
+      for (const [edge, base] of [
+        ["right", 0],
+        ["bottom", 2],
+      ] as const) {
+        let hits = 0;
+        for (let i = 0; i < samples; i++) {
+          if (buf[i * 4 + base] <= 4 && buf[i * 4 + base + 1] >= 24) {
+            hits += 1;
+          }
+        }
+        if (hits >= Math.max(2, Math.ceil(samples * 0.6))) {
+          hitEdges.push(edge);
+        }
+      }
+      return hitEdges.length > 0 ? DIAGNOSTICS.RENDER_EDGE_STRIP(hitEdges, w, h) : null;
+    }
+  }
+
   const meanLuma = (atSec: number, crop: string): number | null => {
     const proc = spawnWatchedSync(
       "ffmpeg",
@@ -228,6 +307,22 @@ export function scanRenderedMp4ForEdgeStrips(
     if (checked > 0 && hits >= Math.max(2, Math.ceil(checked * 0.6))) affected.push(edge);
   }
   return affected.length > 0 ? DIAGNOSTICS.RENDER_EDGE_STRIP(affected, w, h) : null;
+}
+
+function countActiveUniqueCompositions(seq: CutholSequence, rootDir: string): number {
+  const dirs = new Set<string>();
+  for (const lane of seq.lanes) {
+    if (lane.muted) continue;
+    for (const cue of lane.cues) {
+      if (cue.kind === "composition" && cue.composition?.composition_dir) {
+        const abs = path.isAbsolute(cue.composition.composition_dir)
+          ? path.resolve(cue.composition.composition_dir)
+          : path.resolve(rootDir, cue.composition.composition_dir);
+        dirs.add(abs);
+      }
+    }
+  }
+  return dirs.size;
 }
 
 export function scanRenderedMp4ForBlankFrames(
@@ -316,7 +411,7 @@ export function scanRenderedMp4ForBlankFrames(
         "-frames:v",
         String(chunkFrames),
         "-vf",
-        `scale=${scanW}:${scanH}:flags=neighbor`,
+        `scale=${scanW}:${scanH}:flags=neighbor:in_color_matrix=bt709:out_color_matrix=bt709,format=rgb24`,
         "-f",
         "rawvideo",
         "-pix_fmt",
@@ -960,42 +1055,6 @@ export function scanRenderedMp4AudioHealth(
   };
 }
 
-function buildVideoCodecArgs(
-  encoder: "h264_nvenc" | "libx264",
-  preset: RenderPreset
-): string[] {
-  if (encoder === "h264_nvenc") {
-    return preset === "draft_480p"
-      ? ["-c:v", "h264_nvenc", "-preset", "p1", "-rc", "vbr", "-cq", "24", "-b:v", "0", "-pix_fmt", "yuv420p"]
-      : [
-          "-c:v",
-          "h264_nvenc",
-          "-preset",
-          "p4",
-          "-tune",
-          "hq",
-          "-rc",
-          "vbr",
-          "-cq",
-          "22",
-          "-b:v",
-          "0",
-          "-pix_fmt",
-          "yuv420p",
-        ];
-  }
-  return [
-    "-c:v",
-    "libx264",
-    "-preset",
-    preset === "draft_480p" ? "ultrafast" : "fast",
-    "-crf",
-    preset === "draft_480p" ? "24" : "19",
-    "-pix_fmt",
-    "yuv420p",
-  ];
-}
-
 export interface RenderTimeSegment {
   index: number;
   startFrame: number;
@@ -1370,7 +1429,7 @@ export function renderSequenceToMp4(options: {
   outputPath?: string;
   preset?: RenderPreset;
   workers?: number;
-  encoder?: "auto" | "nvenc" | "libx264";
+  encoder?: string;
 }): RenderOutputSummary {
   const tTotal0 = Date.now();
   const { paths, sequence } = loadSequence(options.workspaceDir);
@@ -1392,11 +1451,9 @@ export function renderSequenceToMp4(options: {
 
   const preset: RenderPreset = options.preset ?? "master_1080p";
   const workers = resolveHyperFramesWorkers(options.workers);
-  const nvencDecision = shouldUseNvencForRender(options.encoder);
-  let activeEncoder: "h264_nvenc" | "libx264" = nvencDecision.useNvenc ? "h264_nvenc" : "libx264";
-  let encoderFallback: RenderEncoderFallback | null = nvencDecision.fallbackReason
-    ? { from: "h264_nvenc", to: "libx264", reason: nvencDecision.fallbackReason }
-    : null;
+  const encDecision = resolveVideoEncoderForRender(options.encoder);
+  let activeEncoder: VideoEncoderCodec = encDecision.encoder;
+  let encoderFallback: RenderEncoderFallback | null = encDecision.fallback;
 
   const defaultOut = path.join(paths.rootDir, "output", `render_r${sequence.meta.revision}_${preset}.mp4`);
   const resolvedOut = options.outputPath
@@ -1419,7 +1476,21 @@ export function renderSequenceToMp4(options: {
   let renderWidth = 0;
   let renderHeight = 0;
   let fps = sequence.stage.fps;
-  beginOverlayRenderTracking();
+  const uniqueCompCount = countActiveUniqueCompositions(sequence, paths.rootDir);
+  const overlayConcurrency = resolveOverlayConcurrency({
+    workersPerOverlay: workers,
+    coldOverlayCount: uniqueCompCount > 0 ? uniqueCompCount : 1,
+  });
+  beginOverlayRenderTracking({ concurrency: overlayConcurrency, workers });
+
+  let overlayPrepassMs = 0;
+  if (uniqueCompCount >= 2 && overlayConcurrency > 1) {
+    const tPrepass0 = Date.now();
+    beginOverlayCollect();
+    compileSequenceRenderPlan(sequence, paths, preset, { includeAudio: false, workers });
+    runCollectedOverlays({ workers });
+    overlayPrepassMs = Date.now() - tPrepass0;
+  }
 
   if (segments.length <= 1) {
     const tCompile0 = Date.now();
@@ -1427,7 +1498,7 @@ export function renderSequenceToMp4(options: {
     // NVENC is used for Cuthol's own composite encode only; HyperFrames encodes overlays on the CPU
     // (its GPU encode is not faster here and its rate control cannot be set from outside).
     const plan = compileSequenceRenderPlan(sequence, paths, preset, { workers });
-    compileAndOverlaysMs = Date.now() - tCompile0;
+    compileAndOverlaysMs = Date.now() - tCompile0 + overlayPrepassMs;
     renderWidth = plan.renderWidth;
     renderHeight = plan.renderHeight;
     fps = plan.fps;
@@ -1435,7 +1506,7 @@ export function renderSequenceToMp4(options: {
     let canRemuxDirectBlob = false;
     let directBlobAudioBuild: SegmentedAudioBuildResult | null = null;
     if (plan.directVideoBlobPath && fs.existsSync(plan.directVideoBlobPath)) {
-      let blobEncoder: "h264_nvenc" | "libx264" | null = null;
+      let blobEncoder: VideoEncoderCodec | null = null;
       let blobFallbackReason: string | null = null;
       let blobMatchesTargetRes = true;
       const metaPath = `${plan.directVideoBlobPath}.meta.json`;
@@ -1462,9 +1533,10 @@ export function renderSequenceToMp4(options: {
       if (!blobMatchesTargetRes) {
         plan.directVideoBlobPath = undefined;
       } else {
-        if (blobFallbackReason && activeEncoder === "h264_nvenc") {
+        if (blobFallbackReason && isHardwareEncoder(activeEncoder)) {
+          const prevEnc = activeEncoder;
           activeEncoder = "libx264";
-          encoderFallback = { from: "h264_nvenc", to: "libx264", reason: blobFallbackReason };
+          encoderFallback = { from: prevEnc, to: "libx264", reason: blobFallbackReason };
         }
         directBlobAudioBuild = buildOrRenderSequenceAudioForMixOrRender(
           sequence,
@@ -1483,9 +1555,13 @@ export function renderSequenceToMp4(options: {
 
     const filterScriptPath = `${tmpOut}.filter.txt`;
     const buildRenderFfmpegArgs = (
-      encoder: "h264_nvenc" | "libx264",
+      encoder: VideoEncoderCodec,
       useStreamCopy: boolean
     ): string[] => {
+      const vaapiDeviceArgs =
+        !useStreamCopy && encoder === "h264_vaapi"
+          ? ["-vaapi_device", process.env.CUTHOL_VAAPI_DEVICE || "/dev/dri/renderD128"]
+          : [];
       if (plan.directVideoBlobPath && directBlobAudioBuild) {
         const audioInputArgs =
           directBlobAudioBuild.mode === "direct_plan"
@@ -1503,6 +1579,7 @@ export function renderSequenceToMp4(options: {
           "-y",
           "-v",
           "error",
+          ...vaapiDeviceArgs,
           "-i",
           plan.directVideoBlobPath,
           ...audioInputArgs,
@@ -1513,7 +1590,9 @@ export function renderSequenceToMp4(options: {
           directBlobAudioBuild.audioOutPad,
           "-t",
           (plan.totalDurationMs / 1000).toFixed(3),
-          ...(useStreamCopy ? ["-c:v", "copy"] : buildVideoCodecArgs(encoder, preset)),
+          ...(useStreamCopy
+            ? ["-c:v", "copy", ...BT709_COLOR_OUTPUT_ARGS, "-bsf:v", H264_BT709_VUI_BSF]
+            : buildVideoCodecArgs(encoder, preset)),
           "-c:a",
           "aac",
           "-b:a",
@@ -1524,22 +1603,30 @@ export function renderSequenceToMp4(options: {
         ];
       }
 
+      const effectiveFilterComplex =
+        encoder === "h264_vaapi"
+          ? `${plan.filterComplex};${plan.videoOutPad}format=nv12,hwupload[vout_vaapi]`
+          : plan.filterComplex;
+      const effectiveVideoOutPad =
+        encoder === "h264_vaapi" ? "[vout_vaapi]" : plan.videoOutPad;
+
       const useScript =
-        plan.filterComplex.length > 4000 ||
-        estimateCommandLineLength("ffmpeg", plan.inputArgs) + plan.filterComplex.length > 12000;
+        effectiveFilterComplex.length > 4000 ||
+        estimateCommandLineLength("ffmpeg", plan.inputArgs) + effectiveFilterComplex.length > 12000;
       if (useScript) {
-        fs.writeFileSync(filterScriptPath, plan.filterComplex, "utf8");
+        fs.writeFileSync(filterScriptPath, effectiveFilterComplex, "utf8");
       }
       return [
         "-y",
         "-v",
         "error",
+        ...vaapiDeviceArgs,
         ...plan.inputArgs,
         ...(useScript
           ? ["-/filter_complex", filterScriptPath]
-          : ["-filter_complex", plan.filterComplex]),
+          : ["-filter_complex", effectiveFilterComplex]),
         "-map",
-        plan.videoOutPad,
+        effectiveVideoOutPad,
         "-map",
         plan.audioOutPad,
         "-t",
@@ -1571,12 +1658,12 @@ export function renderSequenceToMp4(options: {
       });
 
       let finalProc = proc;
-      const usedNvencOnFirstAttempt = activeEncoder === "h264_nvenc" && !singleStageUsed;
-      const canFallbackOnStall = Boolean(finalProc.stalled && usedNvencOnFirstAttempt);
+      const usedHwOnFirstAttempt = isHardwareEncoder(activeEncoder) && !singleStageUsed;
+      const canFallbackOnStall = Boolean(finalProc.stalled && usedHwOnFirstAttempt);
       const canFallbackOnEncodeFailure =
         !finalProc.stalled &&
         !finalProc.error &&
-        (activeEncoder === "h264_nvenc" || singleStageUsed);
+        (isHardwareEncoder(activeEncoder) || singleStageUsed);
 
       if (
         (finalProc.status !== 0 || finalProc.error || !fs.existsSync(tmpOut)) &&
@@ -1589,17 +1676,18 @@ export function renderSequenceToMp4(options: {
             // ignore
           }
         }
-        const errDetail = (finalProc.stderr || finalProc.stdout || "NVENC encode failed")
+        const errDetail = (finalProc.stderr || finalProc.stdout || `${activeEncoder} encode failed`)
           .trim()
           .slice(-240);
-        if (activeEncoder === "h264_nvenc") {
+        if (isHardwareEncoder(activeEncoder)) {
+          const prevEncoder = activeEncoder;
           activeEncoder = "libx264";
           encoderFallback = {
-            from: "h264_nvenc",
+            from: prevEncoder,
             to: "libx264",
             reason: finalProc.stalled
               ? "stalled"
-              : `h264_nvenc failed at encode time (${errDetail}); fell back to libx264`,
+              : `${prevEncoder} failed at encode time (${errDetail}); fell back to libx264`,
           };
         }
         singleStageUsed = false;
@@ -1661,14 +1749,20 @@ export function renderSequenceToMp4(options: {
       fps = segPlan.fps;
       segmentVideoPlans.push({ seg, plan: segPlan });
     }
-    compileAndOverlaysMs = Date.now() - tCompile0;
+    compileAndOverlaysMs = Date.now() - tCompile0 + overlayPrepassMs;
 
     const tEncode0 = Date.now();
     const libDigests = sequence.library.map((x) => `${x.handle}:${x.digest_sha256}`);
 
     const encodeVideoSegmentsWithEncoder = (
-      encoder: "h264_nvenc" | "libx264"
-    ): { ok: boolean; segMp4Paths: string[]; firstFailure?: ParallelFfmpegJobResult; failedArgs?: string[] } => {
+      encoder: VideoEncoderCodec
+    ): {
+      ok: boolean;
+      segMp4Paths: string[];
+      firstFailure?: ParallelFfmpegJobResult;
+      failedArgs?: string[];
+      segmentFallbackReason?: string;
+    } => {
       interface VideoSegTask {
         seg: RenderTimeSegment;
         plan: CompiledRenderPlan;
@@ -1679,20 +1773,35 @@ export function renderSequenceToMp4(options: {
         needsEncode: boolean;
       }
 
-      const vTasks: VideoSegTask[] = segmentVideoPlans.map(({ seg, plan: segPlan }) => {
+      const buildSegTaskForEncoder = (
+        seg: RenderTimeSegment,
+        segPlan: CompiledRenderPlan,
+        segEncoder: VideoEncoderCodec
+      ): VideoSegTask => {
+        const effectiveFilter =
+          segEncoder === "h264_vaapi"
+            ? `${segPlan.filterComplex};${segPlan.videoOutPad}format=nv12,hwupload[vout_vaapi]`
+            : segPlan.filterComplex;
+        const effectiveOutPad =
+          segEncoder === "h264_vaapi" ? "[vout_vaapi]" : segPlan.videoOutPad;
+        const vaapiArgs =
+          segEncoder === "h264_vaapi"
+            ? ["-vaapi_device", process.env.CUTHOL_VAAPI_DEVICE || "/dev/dri/renderD128"]
+            : [];
+
         const vHash = crypto
           .createHash("sha256")
           .update(
             JSON.stringify({
               libDigests,
               preset,
-              encoder,
+              encoder: segEncoder,
               w: segPlan.renderWidth,
               h: segPlan.renderHeight,
               fps: segPlan.fps,
               frameCount: seg.frameCount,
               inputArgs: segPlan.inputArgs,
-              filterComplex: segPlan.filterComplex,
+              filterComplex: effectiveFilter,
             })
           )
           .digest("hex")
@@ -1705,11 +1814,12 @@ export function renderSequenceToMp4(options: {
           "-y",
           "-v",
           "error",
+          ...vaapiArgs,
           ...segPlan.inputArgs,
           "-/filter_complex",
           filterPath,
           "-map",
-          segPlan.videoOutPad,
+          effectiveOutPad,
           "-frames:v",
           String(seg.frameCount),
           "-r",
@@ -1717,37 +1827,34 @@ export function renderSequenceToMp4(options: {
           "-fps_mode",
           "cfr",
           "-an",
-          ...buildVideoCodecArgs(encoder, preset),
-          "-colorspace",
-          "bt709",
-          "-color_primaries",
-          "bt709",
-          "-color_trc",
-          "bt709",
-          "-color_range",
-          "tv",
+          ...buildVideoCodecArgs(segEncoder, preset),
           tmpMp4Path,
         ];
         const cached = fs.existsSync(mp4Path) && fs.statSync(mp4Path).size > 500;
         return {
           seg,
-          plan: segPlan,
+          plan: { ...segPlan, filterComplex: effectiveFilter },
           mp4Path,
           tmpMp4Path,
           filterPath,
           ffArgs,
           needsEncode: !cached,
         };
-      });
+      };
+
+      const vTasks: VideoSegTask[] = segmentVideoPlans.map(({ seg, plan: segPlan }) =>
+        buildSegTaskForEncoder(seg, segPlan, encoder)
+      );
 
       const pending = vTasks.filter((t) => t.needsEncode);
+      let segmentFallbackReason: string | undefined;
+
       if (pending.length > 0) {
         for (const t of pending) {
           fs.writeFileSync(t.filterPath, t.plan.filterComplex, "utf8");
         }
         try {
-          const concurrency =
-            encoder === "h264_nvenc" ? 2 : Math.max(2, Math.min(os.cpus().length, 6));
+          const concurrency = resolveMaxHardwareEncoderSessions(encoder);
           const jobs: ParallelFfmpegJob[] = pending.map((t) => ({
             args: t.ffArgs,
             cwd: paths.rootDir,
@@ -1760,27 +1867,110 @@ export function renderSequenceToMp4(options: {
             pending.map(() => 32 * 1024 * 1024),
             concurrency
           );
+
+          const failedIndices: number[] = [];
           for (let i = 0; i < pending.length; i++) {
             const t = pending[i];
             const r = results[i];
-            if (!r || r.status !== 0 || r.error || !fs.existsSync(t.tmpMp4Path)) {
-              for (const p of pending) {
-                if (fs.existsSync(p.tmpMp4Path)) {
-                  try {
-                    fs.unlinkSync(p.tmpMp4Path);
-                  } catch {
-                    // ignore
+            const simSessionFail =
+              isHardwareEncoder(encoder) &&
+              process.env.CUTHOL_SIMULATE_HW_SESSION_LIMIT === "1" &&
+              i >= 1;
+            if (simSessionFail || !r || r.status !== 0 || r.error || !fs.existsSync(t.tmpMp4Path)) {
+              if (fs.existsSync(t.tmpMp4Path)) {
+                try {
+                  fs.unlinkSync(t.tmpMp4Path);
+                } catch {
+                  // ignore
+                }
+              }
+              failedIndices.push(i);
+            } else {
+              fs.renameSync(t.tmpMp4Path, t.mp4Path);
+            }
+          }
+
+          if (failedIndices.length > 0) {
+            const firstIdx = failedIndices[0];
+            const firstFailRes = results[firstIdx];
+            if (isHardwareEncoder(encoder) && (!firstFailRes?.error || firstFailRes?.stalled)) {
+              // Retry only the failed segment(s) with libx264 (handles GPU session limit or hardware stall)
+              const errDetail = (
+                firstFailRes?.stderr || `${encoder} hardware session limit or segment encode failure`
+              )
+                .trim()
+                .slice(-200);
+              segmentFallbackReason = firstFailRes?.stalled
+                ? "stalled"
+                : `${encoder} segment encode failed (${errDetail}); retried failed segment(s) with libx264`;
+
+              const fallbackTasks = failedIndices.map((idx) => {
+                const orig = pending[idx];
+                return {
+                  orig,
+                  fb: buildSegTaskForEncoder(
+                    orig.seg,
+                    segmentVideoPlans[orig.seg.index].plan,
+                    "libx264"
+                  ),
+                };
+              });
+
+              for (const { fb } of fallbackTasks) {
+                if (fb.needsEncode) {
+                  fs.writeFileSync(fb.filterPath, fb.plan.filterComplex, "utf8");
+                }
+              }
+              try {
+                const fbPending = fallbackTasks.filter((x) => x.fb.needsEncode);
+                if (fbPending.length > 0) {
+                  const fbResults = runParallelFfmpegJobsSync(
+                    fbPending.map(({ fb }) => ({
+                      args: fb.ffArgs,
+                      cwd: paths.rootDir,
+                      step: "ffmpeg render segment (libx264 fallback)",
+                      watchedPaths: [fb.tmpMp4Path],
+                      cleanupPathsOnStall: [fb.tmpMp4Path],
+                    })),
+                    fbPending.map(() => 32 * 1024 * 1024),
+                    Math.max(2, Math.min(os.cpus().length, 6))
+                  );
+                  for (let k = 0; k < fbPending.length; k++) {
+                    const { fb } = fbPending[k];
+                    const fbRes = fbResults[k];
+                    if (!fbRes || fbRes.status !== 0 || fbRes.error || !fs.existsSync(fb.tmpMp4Path)) {
+                      return {
+                        ok: false,
+                        segMp4Paths: [],
+                        firstFailure: fbRes,
+                        failedArgs: fb.ffArgs,
+                      };
+                    }
+                    fs.renameSync(fb.tmpMp4Path, fb.mp4Path);
+                  }
+                }
+                for (const { orig, fb } of fallbackTasks) {
+                  vTasks[orig.seg.index] = fb;
+                }
+              } finally {
+                for (const { fb } of fallbackTasks) {
+                  if (fs.existsSync(fb.filterPath)) {
+                    try {
+                      fs.unlinkSync(fb.filterPath);
+                    } catch {
+                      // ignore
+                    }
                   }
                 }
               }
+            } else {
               return {
                 ok: false,
                 segMp4Paths: [],
-                firstFailure: r,
-                failedArgs: t.ffArgs,
+                firstFailure: firstFailRes,
+                failedArgs: pending[firstIdx].ffArgs,
               };
             }
-            fs.renameSync(t.tmpMp4Path, t.mp4Path);
           }
         } finally {
           for (const t of pending) {
@@ -1798,27 +1988,19 @@ export function renderSequenceToMp4(options: {
       return {
         ok: true,
         segMp4Paths: vTasks.map((t) => t.mp4Path),
+        segmentFallbackReason,
       };
     };
 
-    let vSegResult = encodeVideoSegmentsWithEncoder(activeEncoder);
-    if (
-      !vSegResult.ok &&
-      activeEncoder === "h264_nvenc" &&
-      (!vSegResult.firstFailure?.error || vSegResult.firstFailure?.stalled)
-    ) {
-      const errDetail = (vSegResult.firstFailure?.stderr || "NVENC segment encode failed")
-        .trim()
-        .slice(-240);
+    const vSegResult = encodeVideoSegmentsWithEncoder(activeEncoder);
+    if (vSegResult.segmentFallbackReason && isHardwareEncoder(activeEncoder)) {
+      const prevEncoder = activeEncoder;
       activeEncoder = "libx264";
       encoderFallback = {
-        from: "h264_nvenc",
+        from: prevEncoder,
         to: "libx264",
-        reason: vSegResult.firstFailure?.stalled
-          ? "stalled"
-          : `h264_nvenc failed at encode time (${errDetail}); fell back to libx264`,
+        reason: vSegResult.segmentFallbackReason,
       };
-      vSegResult = encodeVideoSegmentsWithEncoder("libx264");
     }
 
     if (!vSegResult.ok) {
@@ -1902,6 +2084,9 @@ export function renderSequenceToMp4(options: {
       exactTotalDurationSec,
       "-c:v",
       "copy",
+      ...BT709_COLOR_OUTPUT_ARGS,
+      "-bsf:v",
+      H264_BT709_VUI_BSF,
       "-c:a",
       "aac",
       "-b:a",
@@ -1961,7 +2146,9 @@ export function renderSequenceToMp4(options: {
     verification.diagnostics.push(diag);
     verification.warning_count += 1;
   }
+  const tEdge0 = Date.now();
   const edgeStrip = scanRenderedMp4ForEdgeStrips(resolvedOut, totalDurationMs);
+  const edgeStripScanMs = Date.now() - tEdge0;
   if (edgeStrip) {
     verification.diagnostics.push(edgeStrip);
     verification.warning_count += 1;
@@ -1998,6 +2185,7 @@ export function renderSequenceToMp4(options: {
       compile_and_overlays_ms: compileAndOverlaysMs,
       encode_ms: encodeMs,
       blank_scan_ms: blankScanMs,
+      edge_strip_scan_ms: edgeStripScanMs,
       audio_health_ms: audioHealthMs,
       total_ms: totalMs,
     },
@@ -2092,7 +2280,19 @@ export function ensurePreviewCompositeMp4(
     };
   }
 
-  const plan = compileSequenceRenderPlan(seq, paths, preset);
+  const previewCompCount = countActiveUniqueCompositions(seq, paths.rootDir);
+  const previewWorkers = resolveHyperFramesWorkers();
+  const previewConcurrency = resolveOverlayConcurrency({
+    workersPerOverlay: previewWorkers,
+    coldOverlayCount: previewCompCount > 0 ? previewCompCount : 1,
+  });
+  if (previewCompCount >= 2 && previewConcurrency > 1) {
+    beginOverlayCollect();
+    compileSequenceRenderPlan(seq, paths, preset, { includeAudio: false, workers: previewWorkers });
+    runCollectedOverlays({ workers: previewWorkers });
+  }
+
+  const plan = compileSequenceRenderPlan(seq, paths, preset, { workers: previewWorkers });
 
   fs.mkdirSync(paths.blobsDir, { recursive: true });
   const tmpMp4 = path.join(
@@ -2131,6 +2331,7 @@ export function ensurePreviewCompositeMp4(
     "1", // All-intra frames for exact millisecond seeking in monitor
     "-pix_fmt",
     "yuv420p",
+    ...BT709_COLOR_OUTPUT_ARGS,
     "-c:a",
     "aac",
     tmpMp4,
@@ -2288,7 +2489,10 @@ export function prefetchCompositeFramesForTimestamps(
 
           const durationSec = Math.max(0.1, Number((cue.duration_ms / 1000).toFixed(3)));
           const totalFrames = Math.max(1, Math.round(durationSec * fps));
-          const missingByFrame = new Map<number, { outPng: string; tmpPng: string; seekSec: string }>();
+          const missingByFrame = new Map<
+            number,
+            { fIdx: number; outPng: string; tmpPng: string; seekSec: string }
+          >();
           for (const localSec of localSecs) {
             const fIdx = Math.max(0, Math.min(totalFrames - 1, Math.floor(localSec * fps + 1e-6)));
             if (missingByFrame.has(fIdx)) continue;
@@ -2296,6 +2500,7 @@ export function prefetchCompositeFramesForTimestamps(
             if (!fs.existsSync(outPng) || fs.statSync(outPng).size <= 200) {
               const tmpPng = `${outPng}.${process.pid}.${fIdx}.tmp.png`;
               missingByFrame.set(fIdx, {
+                fIdx,
                 outPng,
                 tmpPng,
                 seekSec: (fIdx / fps).toFixed(6),
@@ -2331,65 +2536,103 @@ export function prefetchCompositeFramesForTimestamps(
               },
             ];
 
-            let cachedVideo: string | null = null;
+            let cachedBlob: string | null = null;
             let extractVf = "format=rgba";
+            let needsScaleFromBlob = false;
             for (const spec of candidateSpecs) {
-              const cMov = path.join(paths.blobsDir, `hf_comp_${spec.hash}.mov`);
-              const cMp4 = path.join(paths.blobsDir, `hf_comp_${spec.hash}.mp4`);
-              const found =
-                fs.existsSync(cMov) && fs.statSync(cMov).size > 1000
-                  ? cMov
-                  : fs.existsSync(cMp4) && fs.statSync(cMp4).size > 1000
-                    ? cMp4
-                    : null;
-              if (found) {
-                cachedVideo = found;
-                extractVf = spec.needsScale
-                  ? `scale=${renderWidth}:${renderHeight},format=rgba`
-                  : "format=rgba";
-                break;
+              for (const ext of ["pngseq", "ffv1.mov", "mov", "mp4"] as const) {
+                const cand = path.join(paths.blobsDir, `hf_comp_${spec.hash}.${ext}`);
+                if (isValidVideoBlobOnDisk(cand, ext === "pngseq" ? totalFrames : undefined)) {
+                  cachedBlob = cand;
+                  needsScaleFromBlob = spec.needsScale;
+                  extractVf = spec.needsScale
+                    ? `scale=${renderWidth}:${renderHeight},format=rgba`
+                    : "format=rgba";
+                  break;
+                }
               }
+              if (cachedBlob) break;
             }
 
-            if (cachedVideo) {
+            if (cachedBlob) {
               fs.mkdirSync(paths.blobsDir, { recursive: true });
               const missingList = [...missingByFrame.values()];
-              const extractJobs: ParallelFfmpegJob[] = missingList.map((m) => ({
-                args: [
-                  "-y",
-                  "-v",
-                  "error",
-                  "-ss",
-                  m.seekSec,
-                  "-i",
-                  cachedVideo,
-                  "-vf",
-                  extractVf,
-                  "-frames:v",
-                  "1",
-                  m.tmpPng,
-                ],
-                cwd: paths.rootDir,
-              }));
-              const extractResults = runParallelFfmpegJobsSync(
-                extractJobs,
-                missingList.map(() => 4 * 1024 * 1024)
-              );
               let extractedCount = 0;
-              for (let i = 0; i < missingList.length; i++) {
-                const m = missingList[i];
-                if (
-                  extractResults[i]?.status === 0 &&
-                  fs.existsSync(m.tmpPng) &&
-                  fs.statSync(m.tmpPng).size > 200
-                ) {
-                  fs.renameSync(m.tmpPng, m.outPng);
-                  extractedCount++;
-                } else if (fs.existsSync(m.tmpPng)) {
-                  try {
-                    fs.unlinkSync(m.tmpPng);
-                  } catch {
-                    // ignore
+
+              if (isPngSequenceBlobDir(cachedBlob) && !needsScaleFromBlob) {
+                for (const m of missingList) {
+                  const srcPng = resolveFramePngInPngSequenceDir(cachedBlob, m.fIdx);
+                  if (srcPng) {
+                    try {
+                      fs.copyFileSync(srcPng, m.tmpPng);
+                      if (fs.existsSync(m.tmpPng) && fs.statSync(m.tmpPng).size > 64) {
+                        fs.renameSync(m.tmpPng, m.outPng);
+                        extractedCount++;
+                      }
+                    } catch {
+                      // ignore
+                    }
+                  }
+                }
+              } else {
+                const extractJobs: ParallelFfmpegJob[] = missingList.map((m) => {
+                  if (isPngSequenceBlobDir(cachedBlob!)) {
+                    const srcPng =
+                      resolveFramePngInPngSequenceDir(cachedBlob!, m.fIdx) ??
+                      path.join(cachedBlob!, "frame_000001.png");
+                    return {
+                      args: [
+                        "-y",
+                        "-v",
+                        "error",
+                        "-i",
+                        srcPng,
+                        "-vf",
+                        extractVf,
+                        "-frames:v",
+                        "1",
+                        m.tmpPng,
+                      ],
+                      cwd: paths.rootDir,
+                    };
+                  }
+                  return {
+                    args: [
+                      "-y",
+                      "-v",
+                      "error",
+                      "-ss",
+                      m.seekSec,
+                      "-i",
+                      cachedBlob!,
+                      "-vf",
+                      extractVf,
+                      "-frames:v",
+                      "1",
+                      m.tmpPng,
+                    ],
+                    cwd: paths.rootDir,
+                  };
+                });
+                const extractResults = runParallelFfmpegJobsSync(
+                  extractJobs,
+                  missingList.map(() => 4 * 1024 * 1024)
+                );
+                for (let i = 0; i < missingList.length; i++) {
+                  const m = missingList[i];
+                  if (
+                    extractResults[i]?.status === 0 &&
+                    fs.existsSync(m.tmpPng) &&
+                    fs.statSync(m.tmpPng).size > 200
+                  ) {
+                    fs.renameSync(m.tmpPng, m.outPng);
+                    extractedCount++;
+                  } else if (fs.existsSync(m.tmpPng)) {
+                    try {
+                      fs.unlinkSync(m.tmpPng);
+                    } catch {
+                      // ignore
+                    }
                   }
                 }
               }
@@ -2608,7 +2851,7 @@ function buildSingleFrameFfmpegPlanFromCompiledPlan(
   }
 
   const optimizedInputArgs = videoInputGroups.flat();
-  const filterWithSelect = `${videoFilterComplex};${plan.videoOutPad}trim=start=${snappedSec},setpts=PTS-STARTPTS[v_single_out]`;
+  const filterWithSelect = `${videoFilterComplex};${plan.videoOutPad}trim=start=${snappedSec},setpts=PTS-STARTPTS,scale=in_color_matrix=bt709:out_color_matrix=bt709,format=rgb24[v_single_out]`;
 
   return {
     ffArgs: [
@@ -2821,6 +3064,8 @@ export function renderMultipleCompositeFramesRgb24(
       (p.clampedMs / 1000).toFixed(3),
       "-i",
       fallbackMp4Path,
+      "-vf",
+      "scale=flags=accurate_rnd+full_chroma_int:in_color_matrix=bt709:out_color_matrix=bt709,format=rgb24",
       "-frames:v",
       "1",
       "-f",

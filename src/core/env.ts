@@ -43,7 +43,16 @@ export interface SharedExtensionsConfig {
   extensionsDir: string | null;
 }
 
-export type VideoEncoderPreference = "auto" | "nvenc" | "libx264";
+export type VideoEncoderPreference =
+  | "auto"
+  | "nvenc"
+  | "amf"
+  | "qsv"
+  | "vaapi"
+  | "videotoolbox"
+  | "libx264";
+
+export type AlphaOverlayFormat = "pngseq" | "ffv1" | "mov";
 
 export interface StallWatchdogConfig {
   enabled: boolean;
@@ -132,10 +141,14 @@ export function resolveStallWatchdogConfig(overrides?: {
 }
 
 /**
- * Resolves the explicit worker count passed to `hyperframes render --workers <N>`.
- * Never relies on HyperFrames `auto` (which can fall back to 1 worker).
- * - Can be overridden via `overrideWorkers` option or `CUTHOL_WORKERS` / `CUTHOL_RENDER_WORKERS` / `CUTHOL_HYPERFRAMES_WORKERS`.
- * - Defaults to a balanced hardware worker count based on logical CPU cores and total RAM (e.g. 6 on a 12-core machine).
+ * Resolves the explicit worker count (`W`) passed to each `hyperframes render --workers <W>` invocation.
+ * Never relies on HyperFrames `auto`.
+ * - Can be overridden via `overrideWorkers` (`render --workers <W>`) or `CUTHOL_WORKERS` / `CUTHOL_RENDER_WORKERS` / `CUTHOL_HYPERFRAMES_WORKERS`.
+ * - Hardware defaults:
+ *   - Windows & macOS: `W = 1` (keeps single-worker streaming encode / `drawElement` path active and avoids
+ *     multi-worker separate chunk encode overhead; multi-core parallelism comes from concurrent overlays `K`).
+ *   - Linux: `W = 2` on >2 logical cores (`1` on <=2 cores), since Linux BeginFrame scales to 1-2 workers per composition
+ *     while leaving remaining cores for concurrent overlays `K`.
  */
 export function resolveHyperFramesWorkers(overrideWorkers?: number | null): number {
   if (typeof overrideWorkers === "number" && Number.isFinite(overrideWorkers) && overrideWorkers >= 1) {
@@ -157,11 +170,65 @@ export function resolveHyperFramesWorkers(overrideWorkers?: number | null): numb
     }
   }
 
+  if (process.platform === "win32" || process.platform === "darwin") {
+    return 1;
+  }
+
   const cpuCount = Math.max(1, os.cpus().length);
+  return cpuCount <= 2 ? 1 : 2;
+}
+
+/**
+ * Resolves the number of cold HyperFrames composition overlays (`K`) rendered concurrently
+ * during the render pre-pass.
+ * - Can be overridden via `options.overrideConcurrency` or `CUTHOL_OVERLAY_CONCURRENCY` (`1` forces sequential rendering).
+ * - Hardware default: `K = floor(logical_cores / W)`, bounded by total RAM (~40% budget at ~1.0 GB per `W` worker tree),
+ *   current free RAM (preserving >=1.0 GB free headroom at ~450 MB per headless Chrome worker), and `coldOverlayCount`.
+ */
+export function resolveOverlayConcurrency(options?: {
+  overrideConcurrency?: number | null;
+  workersPerOverlay?: number | null;
+  coldOverlayCount?: number | null;
+}): number {
+  const coldCap =
+    typeof options?.coldOverlayCount === "number" &&
+    Number.isFinite(options.coldOverlayCount) &&
+    options.coldOverlayCount >= 1
+      ? Math.max(1, Math.floor(options.coldOverlayCount))
+      : null;
+
+  if (
+    typeof options?.overrideConcurrency === "number" &&
+    Number.isFinite(options.overrideConcurrency) &&
+    options.overrideConcurrency >= 1
+  ) {
+    const explicit = Math.max(1, Math.min(32, Math.floor(options.overrideConcurrency)));
+    return coldCap !== null ? Math.min(explicit, coldCap) : explicit;
+  }
+
+  const rawEnv = process.env.CUTHOL_OVERLAY_CONCURRENCY;
+  if (rawEnv !== undefined && rawEnv.trim() !== "") {
+    const parsed = Number(rawEnv.trim());
+    if (Number.isFinite(parsed) && parsed >= 1) {
+      const explicit = Math.max(1, Math.min(32, Math.floor(parsed)));
+      return coldCap !== null ? Math.min(explicit, coldCap) : explicit;
+    }
+  }
+
+  const w = Math.max(1, resolveHyperFramesWorkers(options?.workersPerOverlay));
+  const cpuCount = Math.max(1, os.cpus().length);
+  const byCpu = Math.max(1, Math.floor(cpuCount / w));
+
   const totalMemGb = os.totalmem() / 1024 ** 3;
-  const byCpu = cpuCount <= 2 ? 1 : Math.min(8, Math.floor(cpuCount / 2));
-  const byMem = Math.max(1, Math.floor(totalMemGb / 2));
-  return Math.max(1, Math.min(byCpu, byMem));
+  const freeMemGb = os.freemem() / 1024 ** 3;
+  // Total RAM cap: allocate at most ~40% of total system RAM (~1.0 GB per worker process tree -> 6 on 16 GB with W=1)
+  const byTotalMem = Math.max(1, Math.floor((totalMemGb * 0.4) / Math.max(0.5, 1.0 * w)));
+  // Free RAM cap: keep at least 0.8 GB of currently free RAM untouched (~0.35 GB per headless Chrome worker)
+  const availFreeGb = Math.max(0.35 * w, freeMemGb - 0.8);
+  const byFreeMem = Math.max(1, Math.floor(availFreeGb / (0.35 * w)));
+
+  const resolved = Math.max(1, Math.min(byCpu, byTotalMem, byFreeMem, 12));
+  return coldCap !== null ? Math.min(resolved, coldCap) : resolved;
 }
 
 /**
@@ -185,25 +252,74 @@ export function resolveMaxClipsPerRenderSegment(overrideMax?: number | null): nu
 }
 
 /**
+ * Resolves the intermediate storage format for transparent (`overlay_alpha`) HyperFrames overlays.
+ * - Default is `"pngseq"` (`hyperframes render --format png-sequence` directory with `frame_%06d.png`),
+ *   which skips intermediate video encoding (`prores_ks`) and keeps lossless 8-bit straight RGBA.
+ * - When `CUTHOL_ALPHA_FORMAT=ffv1` is set, or when `expectedFrames >= CUTHOL_ALPHA_FFV1_MIN_FRAMES`
+ *   (default: 3600 frames = 2 min at 30 fps; `0` disables threshold packing), packs the captured PNG
+ *   frames into a single lossless RGBA FFV1 `.ffv1.mov` container with exact `1/fps` frame timing.
+ * - `CUTHOL_ALPHA_FORMAT=mov` selects legacy ProRes 4444 `.mov`.
+ */
+export function resolveAlphaOverlayFormat(expectedFrames?: number): AlphaOverlayFormat {
+  const raw = process.env.CUTHOL_ALPHA_FORMAT?.trim().toLowerCase();
+  if (raw === "mov" || raw === "prores") {
+    return "mov";
+  }
+  if (raw === "ffv1") {
+    return "ffv1";
+  }
+  if (raw === "png" || raw === "png-sequence" || raw === "pngseq") {
+    const rawMin = process.env.CUTHOL_ALPHA_FFV1_MIN_FRAMES?.trim();
+    if (!rawMin) return "pngseq";
+  }
+
+  let ffv1MinFrames = 3600;
+  const rawMin = process.env.CUTHOL_ALPHA_FFV1_MIN_FRAMES?.trim();
+  if (rawMin !== undefined && rawMin !== "") {
+    if (DISABLED_TOKENS.has(rawMin.toLowerCase())) {
+      ffv1MinFrames = 0;
+    } else {
+      const parsed = Number(rawMin);
+      if (Number.isFinite(parsed)) {
+        ffv1MinFrames = parsed <= 0 ? 0 : Math.max(10, Math.floor(parsed));
+      }
+    }
+  }
+
+  if (
+    ffv1MinFrames > 0 &&
+    typeof expectedFrames === "number" &&
+    Number.isFinite(expectedFrames) &&
+    expectedFrames >= ffv1MinFrames
+  ) {
+    return "ffv1";
+  }
+
+  return "pngseq";
+}
+
+/**
  * Resolves the video encoder preference for final and intermediate MP4 encoding.
- * - Set `CUTHOL_DISABLE_NVENC=1` (or `CUTHOL_DISABLE_GPU=1` or `CUTHOL_VIDEO_ENCODER=libx264`) to force `libx264`.
- * - Set `CUTHOL_VIDEO_ENCODER=nvenc` to explicitly prefer `h264_nvenc`.
+ * - Controlled via `CUTHOL_ENCODER=auto|nvenc|amf|qsv|vaapi|videotoolbox|x264`
+ *   (or legacy `CUTHOL_VIDEO_ENCODER`).
+ * - Set `CUTHOL_DISABLE_NVENC=1` or `CUTHOL_DISABLE_GPU=1` to force `libx264` when no explicit hardware
+ *   vendor is requested (or to disable NVENC specifically).
  */
 export function resolveVideoEncoderPreference(
   overrideEncoder?: string | null
 ): VideoEncoderPreference {
   const candidates = [
     overrideEncoder ?? undefined,
-    process.env.CUTHOL_VIDEO_ENCODER,
     process.env.CUTHOL_ENCODER,
+    process.env.CUTHOL_VIDEO_ENCODER,
   ];
 
-  const disableFlags = [process.env.CUTHOL_DISABLE_NVENC, process.env.CUTHOL_DISABLE_GPU];
-  for (const flag of disableFlags) {
-    if (flag && ENABLED_TOKENS.has(flag.trim().toLowerCase())) {
-      return "libx264";
-    }
-  }
+  const disableGpu =
+    Boolean(process.env.CUTHOL_DISABLE_GPU) &&
+    ENABLED_TOKENS.has(process.env.CUTHOL_DISABLE_GPU!.trim().toLowerCase());
+  const disableNvenc =
+    Boolean(process.env.CUTHOL_DISABLE_NVENC) &&
+    ENABLED_TOKENS.has(process.env.CUTHOL_DISABLE_NVENC!.trim().toLowerCase());
 
   for (const raw of candidates) {
     if (raw === undefined) continue;
@@ -219,12 +335,31 @@ export function resolveVideoEncoderPreference(
     ) {
       return "libx264";
     }
-    if (lower === "nvenc" || lower === "h264_nvenc" || lower === "gpu" || lower === "hw") {
-      return "nvenc";
+    if (lower === "nvenc" || lower === "h264_nvenc" || lower === "nvidia") {
+      return disableNvenc || disableGpu ? "libx264" : "nvenc";
     }
-    if (lower === "auto") {
+    if (lower === "amf" || lower === "h264_amf" || lower === "amd") {
+      return disableGpu ? "libx264" : "amf";
+    }
+    if (lower === "qsv" || lower === "h264_qsv" || lower === "intel") {
+      return disableGpu ? "libx264" : "qsv";
+    }
+    if (lower === "vaapi" || lower === "h264_vaapi") {
+      return disableGpu ? "libx264" : "vaapi";
+    }
+    if (lower === "videotoolbox" || lower === "h264_videotoolbox" || lower === "vt") {
+      return disableGpu ? "libx264" : "videotoolbox";
+    }
+    if (lower === "auto" || lower === "gpu" || lower === "hw") {
+      if (disableGpu || disableNvenc) {
+        return "libx264";
+      }
       return "auto";
     }
+  }
+
+  if (disableGpu || disableNvenc) {
+    return "libx264";
   }
 
   return "auto";

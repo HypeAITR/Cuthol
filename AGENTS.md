@@ -10,16 +10,19 @@ This file is for agents that work **on** Cuthol's code. To **use** Cuthol to edi
 
 ## Layout
 
+The full file map, layering rules and where to start for each kind of change are in [`src/ARCHITECTURE.md`](src/ARCHITECTURE.md). Old module paths are kept as re-export facades; new code goes in the focused files next to them.
+
 | Path | Contents |
 |---|---|
-| `src/cli.ts` | CLI entry point; every command emits a `cuthol.envelope/1` JSON result |
-| `src/mcp/` | MCP server: `catalog.ts` declares tools/actions and maps them to CLI argv; `server.ts` runs the CLI per call, formats compact text results, returns images |
+| `src/cli.ts` | CLI entry point; command groups in `cli_cmd_*.ts`; every command emits a `cuthol.envelope/1` JSON result (`cli_output.ts`) |
+| `src/mcp/` | MCP server: `catalog.ts` validates calls and maps them to CLI argv, tool/action specs live in `catalog_specs_*.ts`; `server.ts` runs the CLI per call, formats compact text results, returns images |
 | `src/core/` | Sequence schema and handles, workspace and journal, diagnostics dictionary, open standards (`standards.ts`), time parsing |
 | `src/sequence/` | Spine (magnetic storyline), lanes and cues, cue sheets |
 | `src/library/` | Ingest/probe, loudness, beats (grid + onsets), scenes, waveform, subject tracking, ledger cache, queries |
 | `src/speech/` | Transcription, cleanup (pauses/fillers), captions, voiceover synthesis |
 | `src/mix/` | Normalization, voice polish, ducking, beat alignment |
 | `src/compositor/` | ffmpeg filter-graph compiler, HyperFrames bridge and runtime (`window.__cuthol`), caption rendering, composition preview |
+| `src/extensions/` | Extension system: manifests, registry, processors, planners, recipes, composition helpers |
 | `src/monitor/`, `src/render/`, `src/verify/`, `src/brief/` | Frames/sheets/timeline, render + post-render scan, the 5 gates, text lenses |
 | `skills/cuthol/` | The agent skill shipped with Cuthol |
 
@@ -58,5 +61,5 @@ Build with `npm install && npm run build`; run with `node dist/cli.js` (or `node
 7. **No single-metric gaming.** When fixing a measurable problem, also check a counter-metric that would catch a cheap fix. For example:
    - zero overlapping cuts **and** the same time saved;
    - zero black frames **and** no shifted source frames.
-8. **Keep the skill true.** When behavior or parameters change, update `src/mcp/catalog.ts` and `skills/cuthol/**`. Write only what the code does.
+8. **Keep the skill true.** When behavior or parameters change, update the MCP catalog (`src/mcp/catalog*.ts`) and `skills/cuthol/**`. Write only what the code does.
 9. **Never commit secrets.** API keys live in the environment or a `.env` file, which is git-ignored.

@@ -18,7 +18,7 @@ import {
   removeLaneCues,
   updateLaneCue,
 } from "./sequence/lanes.js";
-import { boolFlag, numFlag, parsePropsJsonFlag, strFlag } from "./cli_args.js";
+import { boolFlag, numFlag, parseExciseRanges, parsePropsJsonFlag, strFlag } from "./cli_args.js";
 import {
   CLI_NOT_HANDLED,
   CliCommandContext,
@@ -213,10 +213,7 @@ export function runLaneCommand(ctx: CliCommandContext): CliCommandResult {
     if (!cueId || !rangesRaw) {
       throw new Error("Provide --cue <cue_XX> --ranges <a..b,c..d>.");
     }
-    const ranges = rangesRaw.split(",").map((pair) => {
-      const [a, b] = pair.trim().split("..");
-      return { start_ms: parseTimeMs(a), end_ms: parseTimeMs(b) };
-    });
+    const ranges = parseExciseRanges(rangesRaw);
     const coordFlag = strFlag(flags, "coord") as
       | "source"
       | "sequence"

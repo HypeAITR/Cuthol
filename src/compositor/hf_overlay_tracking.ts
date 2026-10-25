@@ -11,16 +11,19 @@ import {
   runWatchedParallelFfmpegJobsSync,
   spawnWatchedSync,
 } from "../core/subprocess.js";
+import { progressSetStage, progressWatch } from "../core/progress.js";
 import { isValidVideoBlobOnDisk } from "./hf_blobs.js";
 
 export type OverlayCacheReason =
   | "cached"
   | "new"
   | "html_changed"
+  | "renderer_version_changed"
   | "slice_changed"
   | "global_used_changed"
   | "props_changed"
-  | "backdrop_changed";
+  | "backdrop_changed"
+  | "blob_missing";
 
 export interface HyperFramesPipelineSummaryInfo {
   hf_summary: string | null;
@@ -174,9 +177,16 @@ let activeOverlayPrepassWallMs = 0;
 
 let activeOverlayConcurrencyMeta: { concurrency: number; workers: number } | null = null;
 
-export function beginOverlayRenderTracking(meta?: { concurrency?: number; workers?: number }): void {
+let activeNativeCaptureForMasterReuse = false;
+
+export function beginOverlayRenderTracking(meta?: {
+  concurrency?: number;
+  workers?: number;
+  nativeCaptureForMasterReuse?: boolean;
+}): void {
   activeOverlayTrackingMap = new Map<string, OverlayRenderItemSummary>();
   activeOverlayPrepassWallMs = 0;
+  activeNativeCaptureForMasterReuse = Boolean(meta?.nativeCaptureForMasterReuse);
   activeOverlayConcurrencyMeta = meta
     ? {
         concurrency: meta.concurrency ?? 1,
@@ -193,9 +203,11 @@ export function finishOverlayRenderTracking(): RenderOverlaySummary {
   const items = activeOverlayTrackingMap ? [...activeOverlayTrackingMap.values()] : [];
   const wallPrepassMs = activeOverlayPrepassWallMs;
   const execMeta = activeOverlayConcurrencyMeta;
+  const nativeCaptureForMasterReuse = activeNativeCaptureForMasterReuse;
   activeOverlayTrackingMap = null;
   activeOverlayPrepassWallMs = 0;
   activeOverlayConcurrencyMeta = null;
+  activeNativeCaptureForMasterReuse = false;
 
   const total = items.length;
   let cached = 0;
@@ -248,7 +260,9 @@ export function finishOverlayRenderTracking(): RenderOverlaySummary {
   if (total === 0) {
     summary = `0 overlays (${secStr})`;
   } else if (rendered === 0) {
-    summary = `${cached}/${total} cached, 0 rendered (${secStr})`;
+    summary = nativeCaptureForMasterReuse
+      ? `${cached}/${total} cached, 0 rendered (native capture for master reuse; ${secStr})`
+      : `${cached}/${total} cached, 0 rendered (${secStr})`;
   } else {
     const reasonParts = Object.entries(reasons)
       .map(([r, c]) => `${r}=${c}`)
@@ -268,6 +282,9 @@ export function finishOverlayRenderTracking(): RenderOverlaySummary {
     }
     if (execMeta) {
       modeParts.push(`K=${execMeta.concurrency}xW=${execMeta.workers}`);
+    }
+    if (nativeCaptureForMasterReuse) {
+      modeParts.push("native capture for master reuse");
     }
     const modeSuffix = modeParts.length > 0 ? `; ${modeParts.join(", ")}` : "";
     summary = `${cached}/${total} cached, ${rendered} rendered (${reasonParts}; ${names}${more}${modeSuffix}) in ${secStr}`;
@@ -294,6 +311,7 @@ export function recordOverlayRenderOutcome(item: OverlayRenderItemSummary): void
   const existing = activeOverlayTrackingMap.get(key);
   if (!existing) {
     activeOverlayTrackingMap.set(key, { ...item });
+    progressSetStage("overlay", activeOverlayTrackingMap.size);
     return;
   }
   if (!item.cached) {
@@ -457,6 +475,11 @@ export function runCollectedOverlays(options?: {
   activeOverlayConcurrencyMeta = { concurrency: k, workers: w };
 
   const t0 = Date.now();
+  progressWatch({
+    mode: "watch",
+    paths: jobs.map((j) => j.watchTargetPath),
+    expectedFrames: jobs.map((j) => j.expectedFrames ?? 0),
+  });
   const parallelJobs: ParallelFfmpegJob[] = jobs.map((j, idx) => ({
     executable: process.execPath,
     args: j.args,

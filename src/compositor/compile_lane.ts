@@ -13,6 +13,7 @@ import {
 import { compileTypographyAssFile } from "./ass_generator.js";
 import { syncCompositionBridgeFiles } from "./bridge_exporter.js";
 import {
+  isDraftNativeOverlayCapture,
   isOverlayCollectActive,
   isPngSequenceBlobDir,
   renderHyperFramesCompositionToMp4,
@@ -23,6 +24,7 @@ import {
   extractSceneHostBackdropSlice,
   extractStaticBackdropPngSlice,
 } from "./compile_backdrop.js";
+import { compileSpineClip } from "./compile_spine.js";
 import {
   BT709_TO_YUV420P,
   buildSourceScaleFilter,
@@ -42,6 +44,84 @@ import type { DrawnVisualLayer, VideoGraphCompileContext } from "./compiler.js";
 
 type LaneSpec = CutholSequence["lanes"][number];
 type LaneCueSpec = LaneSpec["cues"][number];
+
+function masterFrameSize(seq: CutholSequence): { width: number; height: number } {
+  return {
+    width: Math.max(16, Math.round(seq.stage.width / 2) * 2),
+    height: Math.max(16, Math.round(seq.stage.height / 2) * 2),
+  };
+}
+
+function contextAtCanvas(
+  ctx: VideoGraphCompileContext,
+  width: number,
+  height: number
+): VideoGraphCompileContext {
+  const scratch: VideoGraphCompileContext = {
+    ...ctx,
+    preset: "master_1080p",
+    renderWidth: width,
+    renderHeight: height,
+    inputArgs: [],
+    filterChains: [],
+    hyperframesBlobs: [],
+    assFilePaths: [],
+    drawnVisualLayers: [],
+    nextInputIdx: 0,
+    currentVideoPad: "[0:v]",
+    vStepCounter: 0,
+    addInput: (args: string[]) => {
+      scratch.inputArgs.push(...args);
+      return scratch.nextInputIdx++;
+    },
+  };
+  return scratch;
+}
+
+function stillSpecAtCanvas(
+  ctx: VideoGraphCompileContext,
+  layer: DrawnVisualLayer,
+  width: number,
+  height: number
+): StaticStillLayerSpec | undefined {
+  const scratch = contextAtCanvas(ctx, width, height);
+  const spineIdx = ctx.seq.spine.clips.findIndex((clip) => clip.id === layer.id);
+  if (spineIdx >= 0) {
+    compileSpineClip(scratch, spineIdx);
+  } else {
+    let cue: LaneCueSpec | undefined;
+    for (const lane of ctx.seq.lanes) {
+      cue = lane.cues.find((item) => item.id === layer.id);
+      if (cue) break;
+    }
+    if (!cue?.asset_handle) return undefined;
+    compileAssetLaneCue(
+      scratch,
+      cue,
+      layer.startMs,
+      layer.endMs,
+      (layer.startMs / 1000).toFixed(3),
+      (layer.endMs / 1000).toFixed(3),
+      true
+    );
+  }
+  return scratch.drawnVisualLayers.find((item) => item.id === layer.id)?.stillSpec;
+}
+
+function stillSpecsAtCanvas(
+  ctx: VideoGraphCompileContext,
+  layers: DrawnVisualLayer[],
+  width: number,
+  height: number
+): StaticStillLayerSpec[] | undefined {
+  const specs: StaticStillLayerSpec[] = [];
+  for (const layer of layers) {
+    const spec = stillSpecAtCanvas(ctx, layer, width, height);
+    if (!spec) return undefined;
+    specs.push(spec);
+  }
+  return specs;
+}
 
 function prepareCompositionCueInput(
   ctx: VideoGraphCompileContext,
@@ -158,16 +238,24 @@ function prepareCompositionCueInput(
         const stillSpecs = overlappingUnder
           .map((l) => l.stillSpec)
           .filter((s): s is StaticStillLayerSpec => Boolean(s));
+        let sliceW = renderWidth;
+        let sliceH = renderHeight;
+        let sliceSpecs = stillSpecs;
+        if (stillSpecs.length === overlappingUnder.length && isDraftNativeOverlayCapture()) {
+          // The blob key hashes this PNG. Master compiles it at the master frame, so native capture must too.
+          const master = masterFrameSize(seq);
+          if (master.width !== renderWidth || master.height !== renderHeight) {
+            const rebuilt = stillSpecsAtCanvas(ctx, overlappingUnder, master.width, master.height);
+            if (rebuilt) {
+              sliceW = master.width;
+              sliceH = master.height;
+              sliceSpecs = rebuilt;
+            }
+          }
+        }
         const stillPng =
-          stillSpecs.length === overlappingUnder.length
-            ? extractStaticBackdropPngSlice(
-                seq,
-                paths,
-                renderWidth,
-                renderHeight,
-                fps,
-                stillSpecs
-              )
+          sliceSpecs.length === overlappingUnder.length
+            ? extractStaticBackdropPngSlice(seq, paths, sliceW, sliceH, fps, sliceSpecs)
             : undefined;
         if (stillPng) {
           effectiveTransparent = false;

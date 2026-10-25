@@ -12,6 +12,7 @@ import {
 import { analyzeAssetScenes } from "./library/scenes.js";
 import { analyzeAssetSubjectTrack, formatSubjectTrackDigest } from "./library/subject.js";
 import { analyzeAssetWaveform } from "./library/waveform.js";
+import { DIAGNOSTICS } from "./core/diagnostics.js";
 import { numFlag, strFlag } from "./cli_args.js";
 import {
   CLI_NOT_HANDLED,
@@ -122,9 +123,14 @@ export function runLibraryCommand(ctx: CliCommandContext): CliCommandResult {
       cursor: strFlag(flags, "cursor"),
       maxTokens: numFlag(flags, "max-tokens"),
     });
+    const pageWarning =
+      qRes.truncated_by === "max_tokens"
+        ? DIAGNOSTICS.QUERY_PAGE_TOKEN_TRUNCATED(qRes.returned, qRes.next_cursor ?? "")
+        : null;
     emitEnvelopeJson(workspaceDir, "library.query", {
       action: "library.query",
       ...qRes,
+      ...(pageWarning ? { diagnostics: [pageWarning] } : {}),
     });
     return;
   }

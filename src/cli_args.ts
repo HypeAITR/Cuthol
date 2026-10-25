@@ -1,5 +1,6 @@
 // CLI argument parsing: known/boolean flag lexicon, typo suggestions, typed flag readers (split out of cli.ts).
 import { CutholError, DIAGNOSTICS } from "./core/diagnostics.js";
+import { parseTimeMs } from "./core/time.js";
 
 interface ParsedArgs {
   positionals: string[];
@@ -148,6 +149,7 @@ export const KNOWN_CLI_FLAGS = new Set([
   "topic",
   "workers",
   "encoder",
+  "overlay-res",
   "across",
 ]);
 
@@ -287,4 +289,142 @@ export function boolFlag(flags: Record<string, string | boolean>, name: string, 
     if (val === "false" || val === "0") return false;
   }
   return fallback;
+}
+
+const EXCISE_RANGES_SUGGEST = "aralıkları virgülle ayırın: --ranges 2s..3s,6s..7s";
+
+interface RestBudget {
+  /** Trailing positionals after the group and action. */
+  max: number;
+  unbounded?: boolean;
+  /** Flags that already fill the `rest[0]` slot. */
+  occupiedBy?: string[];
+  /** Boolean flags that fill that slot only when true. */
+  occupiedWhenTrue?: string[];
+  /** One further positional, only when `rest[0]` is this token and the flag is absent. */
+  extraWhenFirstIs?: { token: string; unlessFlag: string };
+  suggest?: string;
+}
+
+// Accepted trailing positionals. Commands not listed accept none.
+const REST_BUDGETS: Record<string, RestBudget> = {
+  "workspace.init": { max: 1 },
+  "workspace.open": { max: 1 },
+  "workspace.backdrop": { max: 1, occupiedBy: ["color"] },
+  "workspace.journal": { max: 1, extraWhenFirstIs: { token: "tag", unlessFlag: "name" } },
+
+  "library.ingest": { max: 0, unbounded: true },
+  "library.loudness": { max: 1, occupiedBy: ["handle"] },
+  "library.waveform": { max: 1, occupiedBy: ["handle"] },
+  "library.beats": { max: 1, occupiedBy: ["handle"] },
+  "library.scenes": { max: 1, occupiedBy: ["handle"] },
+  "library.detach-audio": { max: 1, occupiedBy: ["handle"] },
+  "library.query": { max: 1, occupiedBy: ["handle"] },
+  "library.subject": { max: 1, occupiedBy: ["handle"] },
+
+  "spine.append": { max: 1, occupiedBy: ["asset"] },
+  "spine.split": { max: 1, occupiedBy: ["clip"] },
+  "spine.trim": { max: 1, occupiedBy: ["clip"] },
+  "spine.excise": { max: 1, occupiedBy: ["clip"], suggest: EXCISE_RANGES_SUGGEST },
+  "spine.remove": { max: 1, occupiedBy: ["clips", "clip"] },
+  "spine.reorder": { max: 1, occupiedBy: ["clip"] },
+  "spine.transform": { max: 1, occupiedBy: ["clip"] },
+  "spine.speed": { max: 1, occupiedBy: ["clip"] },
+  "spine.transition": { max: 1, occupiedBy: ["clip"] },
+  "spine.envelope": { max: 1, occupiedBy: ["clip", "id"] },
+  "spine.reframe": { max: 1, occupiedBy: ["clips", "clip"], occupiedWhenTrue: ["all-spine"] },
+  "spine.mute": { max: 1, occupiedBy: ["clips", "clip"], occupiedWhenTrue: ["all-spine"] },
+  "spine.unmute": { max: 1, occupiedBy: ["clips", "clip"], occupiedWhenTrue: ["all-spine"] },
+
+  "lane.lock": { max: 1, occupiedBy: ["lane"] },
+  "lane.unlock": { max: 1, occupiedBy: ["lane"] },
+  "lane.add-composition": { max: 1, occupiedBy: ["comp-dir", "composition-dir", "dir-comp"] },
+  "lane.update-cue": { max: 1, occupiedBy: ["cue", "id"] },
+  "lane.excise": { max: 1, occupiedBy: ["cue", "id", "clip"], suggest: EXCISE_RANGES_SUGGEST },
+  "lane.remove-cue": { max: 1, occupiedBy: ["cues", "cue"] },
+
+  "composition.scaffold": { max: 1, occupiedBy: ["comp-dir", "composition-dir"] },
+  "composition.preview": { max: 1, occupiedBy: ["cue", "id"] },
+  "composition.check": { max: 1, occupiedBy: ["cue", "id"] },
+
+  "cue.export": { max: 1, occupiedBy: ["file"] },
+  "cue.diff": { max: 1, occupiedBy: ["file"] },
+  "cue.plan": { max: 1, occupiedBy: ["file"] },
+  "cue.apply": { max: 1, occupiedBy: ["file"] },
+
+  "speech.transcribe": { max: 1, occupiedBy: ["handle"] },
+  "speech.synthesize": { max: 1, occupiedBy: ["text"] },
+  "speech.cleanup": { max: 1, occupiedBy: ["clip", "cue", "cues"] },
+  "speech.verify-cleanup": { max: 1, occupiedBy: ["clip", "clips"], occupiedWhenTrue: ["all-spine"] },
+
+  "mix.polish-voice": { max: 1, occupiedBy: ["clips", "clip"] },
+  "mix.beat-align": { max: 1, occupiedBy: ["bgm-handle"] },
+
+  "monitor.frame": { max: 1, occupiedBy: ["at"] },
+
+  "render.draft_480p": { max: 1, occupiedBy: ["out"] },
+  "render.master_1080p": { max: 1, occupiedBy: ["out"] },
+
+  "extension.create": { max: 1, occupiedBy: ["name"] },
+  "extension.show": { max: 1, occupiedBy: ["name"] },
+  "extension.enable": { max: 1, occupiedBy: ["name"] },
+  "extension.disable": { max: 1, occupiedBy: ["name"] },
+  "extension.promote": { max: 1, occupiedBy: ["name"] },
+  "extension.remove": { max: 1, occupiedBy: ["name"] },
+  "extension.run": { max: 1, occupiedBy: ["name"] },
+};
+
+function restBudgetFor(group: string, action: string | undefined): RestBudget {
+  if (action) {
+    const specific = REST_BUDGETS[`${group}.${action}`];
+    if (specific) return specific;
+  }
+  return REST_BUDGETS[group] ?? { max: 0 };
+}
+
+/** Reject positionals the command does not read, instead of dropping them. */
+export function assertNoExtraPositionals(
+  group: string,
+  action: string | undefined,
+  rest: string[],
+  flags: Record<string, string | boolean>
+): void {
+  const spec = restBudgetFor(group, action);
+  if (spec.unbounded) return;
+  let max = spec.max;
+  const slotTaken =
+    (spec.occupiedBy ?? []).some((name) => flags[name] !== undefined) ||
+    (spec.occupiedWhenTrue ?? []).some((name) => boolFlag(flags, name) === true);
+  if (slotTaken) max = Math.max(0, max - 1);
+  const extraSlot = spec.extraWhenFirstIs;
+  if (extraSlot && rest[0] === extraSlot.token && flags[extraSlot.unlessFlag] === undefined) {
+    max += 1;
+  }
+  if (rest.length <= max) return;
+  const extra = rest.slice(max).join(" ");
+  const command = `${group}${action ? `.${action}` : ""}`;
+  const suggest = spec.suggest ?? `cuthol ${group}${action ? ` ${action}` : ""}`;
+  throw new CutholError(DIAGNOSTICS.UNKNOWN_FLAG(extra, command, suggest));
+}
+
+/** Split `a..b,c..d` into millisecond ranges. A piece without `..` names itself in the error. */
+export function parseExciseRanges(rangesRaw: string): Array<{ start_ms: number; end_ms: number }> {
+  return rangesRaw.split(",").map((raw) => {
+    const piece = raw.trim();
+    const sep = piece.indexOf("..");
+    const hasOneSeparator = sep > 0 && piece.indexOf("..", sep + 2) === -1 && !piece.endsWith("..");
+    const start = hasOneSeparator ? piece.slice(0, sep).trim() : "";
+    const end = hasOneSeparator ? piece.slice(sep + 2).trim() : "";
+    if (!piece || !hasOneSeparator || !start || !end) {
+      throw new CutholError(DIAGNOSTICS.INVALID_EXCISE_RANGE(piece || raw.trim() || rangesRaw));
+    }
+    try {
+      return { start_ms: parseTimeMs(start), end_ms: parseTimeMs(end) };
+    } catch (err) {
+      if (err instanceof CutholError && err.diagnostic.code === "CUTHOL-SYS02") {
+        throw new CutholError(DIAGNOSTICS.INVALID_EXCISE_RANGE(piece));
+      }
+      throw err;
+    }
+  });
 }

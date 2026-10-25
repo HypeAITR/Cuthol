@@ -21,7 +21,7 @@ import {
   transformSpineClip,
   trimSpineClip,
 } from "./sequence/spine.js";
-import { boolFlag, numFlag, strFlag } from "./cli_args.js";
+import { boolFlag, numFlag, parseExciseRanges, strFlag } from "./cli_args.js";
 import {
   CLI_NOT_HANDLED,
   CliCommandContext,
@@ -81,10 +81,7 @@ export function runSpineCommand(ctx: CliCommandContext): CliCommandResult {
     const clipId = strFlag(flags, "clip") ?? rest[0];
     const rangesRaw = strFlag(flags, "ranges");
     if (!clipId || !rangesRaw) throw new Error("Provide --clip <sp_XX> --ranges <a..b,c..d>.");
-    const ranges = rangesRaw.split(",").map((pair) => {
-      const [a, b] = pair.trim().split("..");
-      return { start_ms: parseTimeMs(a), end_ms: parseTimeMs(b) };
-    });
+    const ranges = parseExciseRanges(rangesRaw);
     const coordFlag = strFlag(flags, "coord") as "source" | "sequence" | "clip_local" | undefined;
     const res = exciseSpineRanges({
       workspaceDir,

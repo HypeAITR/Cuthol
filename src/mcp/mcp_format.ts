@@ -1,6 +1,7 @@
 // Turns CLI envelopes into short MCP text results: hints, diagnostics, compact tables (split out of server.ts).
 import fs from "node:fs";
 import path from "node:path";
+import { CUTHOL_PROGRESS_PREFIX } from "../core/progress.js";
 import {
   ActionSpec, findActionSpec,
   TOOL_SPECS
@@ -68,6 +69,17 @@ export function tryParseJson(text: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+/** Drops render progress lines so a stderr error envelope still parses. */
+export function stripCutholProgress(stderr: string): { text: string; lastLine: string | null } {
+  const kept: string[] = [];
+  let lastLine: string | null = null;
+  for (const line of stderr.split(/\r?\n/)) {
+    if (line.trim().startsWith(CUTHOL_PROGRESS_PREFIX)) lastLine = line.trim();
+    else kept.push(line);
+  }
+  return { text: kept.join("\n"), lastLine };
 }
 
 export function findValuesByKey(node: unknown, key: string, found: string[] = []): string[] {
@@ -168,6 +180,13 @@ function translateHints(node: unknown, key?: string): unknown {
   return node;
 }
 
+function cleanupCallTarget(env: Record<string, unknown>, values: Record<string, unknown>): string {
+  const cueId = typeof env.cue_id === "string" ? env.cue_id : "";
+  if (cueId.includes(",")) return `cues=${cueId}`;
+  if (cueId) return `cue=${cueId}`;
+  return `clip=${String(env.clip_id ?? values.clip ?? "sp_01")}`;
+}
+
 function formatCleanupCandidatesTable(
   env: Record<string, unknown>,
   values: Record<string, unknown>
@@ -200,12 +219,24 @@ function formatCleanupCandidatesTable(
   const repetitionCandidates = Array.isArray(env.repetition_candidates)
     ? (env.repetition_candidates as Array<Record<string, unknown>>)
     : [];
+  const distantRepetitions = Array.isArray(env.distant_repetition_candidates)
+    ? (env.distant_repetition_candidates as Array<Record<string, unknown>>)
+    : [];
+  const preservedUntranscribed = Array.isArray(env.preserved_untranscribed)
+    ? (env.preserved_untranscribed as Array<Record<string, unknown>>)
+    : [];
+  const tailCandidates = Array.isArray(env.tail_without_audio_candidates)
+    ? (env.tail_without_audio_candidates as Array<Record<string, unknown>>)
+    : [];
   const decisions = Array.isArray(trace?.decisions) ? trace!.decisions! : [];
   if (
     decisions.length === 0 &&
     cuts.length === 0 &&
     reviewCandidates.length === 0 &&
-    repetitionCandidates.length === 0
+    repetitionCandidates.length === 0 &&
+    distantRepetitions.length === 0 &&
+    preservedUntranscribed.length === 0 &&
+    tailCandidates.length === 0
   ) {
     return null;
   }
@@ -245,7 +276,16 @@ function formatCleanupCandidatesTable(
       const burstInfo = m.untranscribed_audio_spans
         ? `kept_audio=${String(m.untranscribed_audio_spans)}`
         : null;
-      const details = [`cut=${cutMs}ms`, origSpan, trimmedSpan, words, burstInfo]
+      const reqStart = cut?.requested_source_start_ms ?? m.requested_source_start_ms;
+      const reqEnd = cut?.requested_source_end_ms ?? m.requested_source_end_ms;
+      const appliedStart = cut?.applied_source_start_ms ?? m.applied_source_start_ms;
+      const appliedEnd = cut?.applied_source_end_ms ?? m.applied_source_end_ms;
+      const edgeReason = cut?.edge_reason ?? m.edge_reason;
+      const edgeInfo =
+        reqStart !== undefined && reqEnd !== undefined
+          ? `req=${reqStart}..${reqEnd}ms applied=${appliedStart ?? "?"}..${appliedEnd ?? "?"}ms${edgeReason ? ` edge=${String(edgeReason)}` : ""}`
+          : null;
+      const details = [`cut=${cutMs}ms`, origSpan, trimmedSpan, words, burstInfo, edgeInfo]
         .filter(Boolean)
         .join(", ");
       rows.push(`  #${i + 1} [${d.reason_code ?? "APPLIED"}] ${kind}${label} ${spanStr} (${details})`);
@@ -292,16 +332,16 @@ function formatCleanupCandidatesTable(
   const header = `Candidates (${rows.length > 0 ? `${offset + 1}..${nextOffset} of ${rows.length}` : "0"}${byReason ? ` · ${byReason}` : ""}):`;
   const outLines = [header, ...sliced];
   if (hasMore) {
-    const clipArg = String(env.clip_id ?? values.clip ?? "sp_01");
+    const targetArg = cleanupCallTarget(env, values);
     outLines.push(
-      `  … ${rows.length - nextOffset} more candidate(s); next page: speech(action=cleanup, clip=${clipArg}, dry_run=true, cursor="${nextOffset}", limit=${limit})`
+      `  … ${rows.length - nextOffset} more candidate(s); next page: speech(action=cleanup, ${targetArg}, dry_run=true, cursor="${nextOffset}", limit=${limit})`
     );
   }
   if (isDryRunOrVerbose && reviewCandidates.length > 0) {
-    const clipArg = String(env.clip_id ?? values.clip ?? "sp_01");
+    const targetArg = cleanupCallTarget(env, values);
     const firstCfId = String(reviewCandidates[0]?.id ?? "cf_01");
     outLines.push(
-      `Review candidates (${reviewCandidates.length} contextual filler(s) — not cut automatically; pass cut_candidates=["${firstCfId}", ...] to speech(action=cleanup, clip=${clipArg}, ...) to cut chosen ones in one call):`
+      `Review candidates (${reviewCandidates.length} contextual filler(s) — not cut automatically; pass cut_candidates=["${firstCfId}", ...] to speech(action=cleanup, ${targetArg}, ...) to cut chosen ones in one call):`
     );
     for (const rc of reviewCandidates) {
       const id = String(rc.id ?? "?");
@@ -323,20 +363,60 @@ function formatCleanupCandidatesTable(
       `Repetition / restart candidates (${repetitionCandidates.length} candidate(s) — not cut automatically; pass cut_candidates=["${firstRrId}", "${firstRrId}:keep=1", ...] to cut chosen ones):`
     );
     for (const rr of repetitionCandidates) {
-      const id = String(rr.id ?? "?");
-      const kind = String(rr.kind ?? "phrase_repeat");
-      const phrase = String(rr.matched_phrase ?? "");
-      const cStart = rr.suggested_cut_start_ms ?? "?";
-      const cEnd = rr.suggested_cut_end_ms ?? "?";
-      const cDur = rr.suggested_cut_duration_ms ?? "?";
-      const keepAtt = rr.suggested_keep_attempt ?? "?";
-      const ctx = String(rr.context ?? "");
+      outLines.push(formatRepetitionCandidateLine(rr));
+    }
+  }
+  if (isDryRunOrVerbose && distantRepetitions.length > 0) {
+    const firstRrId = String(distantRepetitions[0]?.id ?? "rr_01");
+    outLines.push(
+      `Distant repetition / restart candidates (${distantRepetitions.length} candidate(s), gap>8000ms — not cut automatically; pass cut_candidates=["${firstRrId}", ...] to cut chosen ones):`
+    );
+    for (const rr of distantRepetitions) {
+      outLines.push(formatRepetitionCandidateLine(rr));
+    }
+  }
+  if (preservedUntranscribed.length > 0) {
+    const shown = preservedUntranscribed.slice(0, 10);
+    const heading =
+      preservedUntranscribed.length > shown.length
+        ? `Preserved untranscribed audio (showing ${shown.length} of ${preservedUntranscribed.length}):`
+        : `Preserved untranscribed audio (${preservedUntranscribed.length}):`;
+    outLines.push(heading);
+    for (const span of shown) {
+      const near =
+        span.near_candidate_id !== undefined && span.near_candidate_id !== null
+          ? `, near=${String(span.near_candidate_id)}`
+          : "";
       outLines.push(
-        `  ${id} [${kind}] "${phrase}" suggested_cut=${cStart}..${cEnd}ms (${cDur}ms, keep=#${keepAtt}) · ${ctx}`
+        `  ${String(span.clip_id ?? "?")} ${String(span.source_start_ms)}..${String(span.source_end_ms)}ms (${String(span.duration_ms)}ms, max=${String(span.max_dbfs)}dBFS${near})`
+      );
+    }
+  }
+  if (isDryRunOrVerbose && tailCandidates.length > 0) {
+    const firstTailId = String(tailCandidates[0]?.id ?? "ta_01");
+    outLines.push(
+      `Image-only tail candidates (${tailCandidates.length} [tail_without_audio] — not cut automatically; pass cut_candidates=["${firstTailId}", ...] to cut chosen ones):`
+    );
+    for (const tail of tailCandidates) {
+      outLines.push(
+        `  ${String(tail.id ?? "?")} [tail_without_audio] ${String(tail.clip_id ?? "?")} source=${String(tail.source_start_ms)}..${String(tail.source_end_ms)}ms (${String(tail.duration_ms)}ms)`
       );
     }
   }
   return outLines.join("\n");
+}
+
+function formatRepetitionCandidateLine(rr: Record<string, unknown>): string {
+  const id = String(rr.id ?? "?");
+  const kind = String(rr.kind ?? "phrase_repeat");
+  const phrase = String(rr.matched_phrase ?? "");
+  const cStart = rr.suggested_cut_start_ms ?? "?";
+  const cEnd = rr.suggested_cut_end_ms ?? "?";
+  const cDur = rr.suggested_cut_duration_ms ?? "?";
+  const keepAtt = rr.suggested_keep_attempt ?? "?";
+  const gap = typeof rr.gap_ms === "number" ? `, gap=${rr.gap_ms}ms` : "";
+  const ctx = String(rr.context ?? "");
+  return `  ${id} [${kind}] "${phrase}" suggested_cut=${cStart}..${cEnd}ms (${cDur}ms, keep=#${keepAtt}${gap}) · ${ctx}`;
 }
 
 function summarizeReframeClipPlan(p: Record<string, unknown>): Record<string, unknown> {
@@ -422,6 +502,7 @@ function compactPayload(
 ): string | null {
   const payload: Record<string, unknown> = {};
   const isCleanup = spec.tool === "speech" && spec.action === "cleanup";
+  const isVerifyCleanup = spec.tool === "speech" && spec.action === "verify_cleanup";
   const isReframe = spec.tool === "spine" && spec.action === "reframe";
   for (const [k, v] of Object.entries(env)) {
     if (ENVELOPE_KEYS.has(k)) continue;
@@ -431,7 +512,17 @@ function compactPayload(
       (k === "cuts" ||
         k === "review_candidates" ||
         k === "repetition_candidates" ||
+        k === "distant_repetition_candidates" ||
         (!detailed && k === "clip_ids" && Array.isArray(v) && v.length > 8))
+    ) {
+      continue;
+    }
+    if (
+      isVerifyCleanup &&
+      (k === "missing_words" ||
+        k === "repeated_phrases" ||
+        k === "unexpected_words" ||
+        k === "substituted_words")
     ) {
       continue;
     }
@@ -474,6 +565,20 @@ function compactPayload(
           has_audio: probe.has_audio,
         };
       });
+      continue;
+    }
+    if (
+      spec.tool === "render" &&
+      k === "overlays" &&
+      v &&
+      typeof v === "object" &&
+      !Array.isArray(v)
+    ) {
+      const overlays = { ...(v as Record<string, unknown>) };
+      if (!detailed && Array.isArray(overlays.rerendered)) {
+        overlays.rerendered = (overlays.rerendered as unknown[]).slice(0, 5);
+      }
+      payload[k] = overlays;
       continue;
     }
     if (k === "decision_trace" && v && typeof v === "object") {
@@ -577,6 +682,110 @@ export function resolveActionSpecForCommand(
     params: [],
     mutates: false,
   };
+}
+
+function formatRenderChecks(env: Record<string, unknown>): string | null {
+  const blank = env.blank_scan as { blank_frames_count?: number; total_frames?: number } | undefined;
+  const audio = env.audio_health as {
+    checked_points?: number;
+    points?: unknown[];
+    issues?: unknown[];
+  } | undefined;
+  if (!blank && !audio && typeof env.encoder !== "string") return null;
+  const blankCount = typeof blank?.blank_frames_count === "number" ? blank.blank_frames_count : 0;
+  const totalFrames = typeof blank?.total_frames === "number" ? blank.total_frames : 0;
+  const points =
+    typeof audio?.checked_points === "number"
+      ? audio.checked_points
+      : Array.isArray(audio?.points)
+        ? audio.points.length
+        : 0;
+  const issueCount = Array.isArray(audio?.issues) ? audio.issues.length : 0;
+  const audioText =
+    issueCount > 0 ? `audio ${issueCount} issues (${points} points)` : `audio ok (${points} points)`;
+  const encoder = typeof env.encoder === "string" && env.encoder ? env.encoder : "?";
+  return `Checks: blank ${blankCount}/${totalFrames} · ${audioText} · encoder ${encoder}`;
+}
+
+function verifyMs(value: unknown): string {
+  return typeof value === "number" ? String(value) : "?";
+}
+
+function formatVerifyCleanupSummary(env: Record<string, unknown>): string | null {
+  if (typeof env.match_rate !== "number" && !Array.isArray(env.missing_words)) return null;
+  const missing = Array.isArray(env.missing_words)
+    ? (env.missing_words as Array<Record<string, unknown>>)
+    : [];
+  const repeated = Array.isArray(env.repeated_phrases)
+    ? (env.repeated_phrases as Array<Record<string, unknown>>)
+    : [];
+  const unexpected = Array.isArray(env.unexpected_words)
+    ? (env.unexpected_words as Array<Record<string, unknown>>)
+    : [];
+  const substituted = Array.isArray(env.substituted_words)
+    ? (env.substituted_words as Array<Record<string, unknown>>)
+    : [];
+  const expected = typeof env.expected_word_count === "number" ? env.expected_word_count : 0;
+  const matched = typeof env.matched_word_count === "number" ? env.matched_word_count : 0;
+  const rate = typeof env.match_rate === "number" ? env.match_rate : 0;
+  const lenient =
+    typeof env.match_rate_lenient === "number" ? ` · lenient ${env.match_rate_lenient}` : "";
+  const provider = typeof env.provider === "string" ? env.provider : "?";
+  const cached = env.cached === true ? "cached" : "live";
+  const lines = [
+    `Verify cleanup: match ${matched}/${expected} (${rate})${lenient} · missing ${missing.length} · repeated ${repeated.length} · unexpected ${unexpected.length} · substituted ${substituted.length} · ${provider} · ${cached}`,
+  ];
+  const pushPage = (title: string, rows: string[], total: number): void => {
+    if (total === 0) return;
+    lines.push(`${title} (${total}${total > rows.length ? `, showing ${rows.length}` : ""}):`);
+    lines.push(...rows);
+    if (total > rows.length) lines.push(`  … ${total - rows.length} more`);
+  };
+  pushPage(
+    "Missing words",
+    missing.slice(0, 10).map((word) => {
+      const cut = word.neighbor_cut_id ? ` cut=${String(word.neighbor_cut_id)}` : "";
+      const clip = word.clip_id ? ` clip=${String(word.clip_id)}` : "";
+      return `  ${String(word.word)} seq=${verifyMs(word.sequence_start_ms)}..${verifyMs(word.sequence_end_ms)}ms src=${verifyMs(word.source_start_ms)}..${verifyMs(word.source_end_ms)}ms${clip}${cut}`;
+    }),
+    missing.length
+  );
+  pushPage(
+    "Repeated phrases",
+    repeated.slice(0, 10).map((phrase) => {
+      const repeats = Array.isArray(phrase.repeats)
+        ? (phrase.repeats as Array<Record<string, unknown>>)
+        : [];
+      const times = repeats
+        .map((span) => `${verifyMs(span.sequence_start_ms)}..${verifyMs(span.sequence_end_ms)}ms`)
+        .join(" then ");
+      const preserved = phrase.preserved_untranscribed as Record<string, unknown> | undefined;
+      const link = preserved
+        ? ` preserved=${String(preserved.clip_id)} src=${verifyMs(preserved.source_start_ms)}..${verifyMs(preserved.source_end_ms)}ms`
+        : "";
+      const n = typeof phrase.occurrences === "number" ? phrase.occurrences : repeats.length;
+      return `  "${String(phrase.phrase)}" ×${n} ${times}${link}`;
+    }),
+    repeated.length
+  );
+  pushPage(
+    "Unexpected words",
+    unexpected.slice(0, 10).map((word) => {
+      const frag = word.fragment_candidate === true ? ", fragment" : "";
+      return `  ${String(word.word)} seq=${verifyMs(word.sequence_start_ms)}..${verifyMs(word.sequence_end_ms)}ms (${verifyMs(word.duration_ms)}ms${frag})`;
+    }),
+    unexpected.length
+  );
+  pushPage(
+    "Substituted words",
+    substituted.slice(0, 5).map((word) => {
+      const sim = typeof word.similarity === "number" ? ` sim=${word.similarity}` : "";
+      const clip = word.clip_id ? ` clip=${String(word.clip_id)}` : "";
+      return `  ${String(word.expected)} → ${String(word.heard)}${sim} seq=${verifyMs(word.sequence_start_ms)}..${verifyMs(word.sequence_end_ms)}ms src=${verifyMs(word.source_start_ms)}..${verifyMs(word.source_end_ms)}ms${clip}`;
+    }),
+    substituted.length
+  );
+  return lines.join("\n");
 }
 
 export interface FormatEnvelopeCompactOptions {
@@ -740,9 +949,18 @@ export function formatEnvelopeCompact(options: FormatEnvelopeCompactOptions): {
     const table = formatCleanupCandidatesTable(env, values);
     if (table) lines.push(table);
   }
+  if (spec.tool === "speech" && spec.action === "verify_cleanup") {
+    const summary = formatVerifyCleanupSummary(env);
+    if (summary) lines.push(summary);
+  }
   if (spec.tool === "spine" && spec.action === "reframe") {
     const reframeTable = formatReframeSummaryTable(env);
     if (reframeTable) lines.push(reframeTable);
+  }
+
+  if (ok && spec.tool === "render") {
+    const checks = formatRenderChecks(env);
+    if (checks) lines.push(checks);
   }
 
   const payload = compactPayload(env, spec, dryRun || values.verbose === true, values);

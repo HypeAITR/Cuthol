@@ -24,7 +24,7 @@ Allowed top-level fields:
 - `helper` (optional): relative `.js` path (e.g. `"helper.js"` or `{ "entry": "helper.js" }`)
 - `assets` (optional): relative folder path (e.g. `"assets"` or `{ "dir": "assets" }`)
 - `processors` (optional): map of processor definitions (`Record<string, ExtensionProcessorSpec>`)
-- `planners` (optional): map of planner definitions (`Record<string, ExtensionPlannerSpec>`, each with `script`, optional `description`, and `params`)
+- `planners` (optional): map of planner definitions (`Record<string, ExtensionPlannerSpec>`, each with `script`, optional `description`, `params`, and `timeout_sec`)
 - `recipes` (optional): map of recipe definitions (`Record<string, ExtensionRecipeSpec>`)
 - `guide` (optional): relative markdown path (default `"README.md"`), readable via `guide(topic="ext:<name>")`
 
@@ -107,8 +107,12 @@ Example `cuthol-extension.json`:
 ### 3. Media processors (`processors`)
 Transforms an input library handle (`aud_01`, `vid_01`, `img_01`, `vo_01`) or file path into a new library asset:
 - **`kind: "ffmpeg"`**: Declarative filter chain (`audio_filter` / `filter` / `video_filter` / `ffmpeg_args`) with `{{param}}` interpolation. `atempo` values above `2.0` or below `0.5` are automatically chained into valid stages.
-- **`kind: "node"`**: Runs `script` in an isolated child process (`node <script> <inputPath> <outputPath> <paramsJson>`). Must exit with `0`, write the output file to `<outputPath>`, and print a single-line JSON summary to `stdout`.
-- **Caching & Journal:** Outputs are cached in `.cuthol/ledger.sqlite` (and the shared cache if enabled) keyed by `sha256(input_sha256 | ext_name | ext_version | ext_content_hash | processor | canonical_params)`. The resulting file is probed and added to `seq.library` inside `JournalGuard` so `workspace(action="undo")` cleanly reverts the library addition.
+- **`kind: "node"`**: Runs `script` in an isolated child process (`node <script> <inputPath> <outputPath> <paramsJson>`). Must exit with `0`, write the output file to `<outputPath>`, and print a single-line JSON summary to `stdout`. The child receives `CUTHOL_EXT_TMP`, a `tmp/` directory inside the sandbox, for side files (for example an ffmpeg `sendcmd` file). Files there are allowed; the directory is deleted when the run ends, whether it succeeds or fails.
+- **`asset_kind`** (optional): `footage`, `audio`, `graphic`, `voiceover`, or `composition`. Any other value is `[CUTHOL-G112]` and is not remapped. Omitted processors keep the probed kind.
+- **`audio`** (optional, `kind: "ffmpeg"` only): `"copy"` (default, same as omitting the field) or `"drop"`. `drop` passes `-an` and removes the audio stream. A value other than those two, or `audio` on a node processor, is `[CUTHOL-G112]`.
+- **`timeout_sec`** (optional, processors and planners): integer ≥ 0. Omitted node processors and planners are killed after 120 seconds. `0` means no limit. An invalid value is `[CUTHOL-G112]`. On timeout the error names the limit that was exceeded and `timeout_sec`. An omitted ffmpeg processor is not given a wall-clock limit; a set `timeout_sec` applies to that ffmpeg run too.
+- **A/V duration:** After every processor run (including a cache hit) Cuthol probes the output streams. If both video and audio exist and their durations differ by more than one frame (40 ms when the output has no frame rate), the result includes `WARN [CUTHOL-G209]` with both durations. Fix it with `"audio": "drop"` or an `audio_filter` that keeps the streams aligned. A `video_filter` that does not change duration (for example `hue=s=0`) stays silent and still copies audio.
+- **Caching & Journal:** Outputs are cached in `.cuthol/ledger.sqlite` (and the shared cache if enabled) keyed by `sha256(input_sha256 | ext_name | ext_version | ext_content_hash | processor | canonical_params)`. `audio` and `timeout_sec` are appended to that key only when the manifest sets them, so existing processors keep their cache key. A library hit is reused only when the stored item's kind matches the processor's resolved kind. The resulting file is probed and added to `seq.library` inside `JournalGuard` so `workspace(action="undo")` cleanly reverts the library addition.
 
 ### 4. Recipes (`recipes`)
 - Parameterized sequences of Cuthol actions (`steps`). Step arguments can interpolate `{{param}}`, `{{last_handle}}`, or `{{steps.<step_id>.handle}}`.
@@ -129,6 +133,7 @@ When an edit needs a **data-dependent, variable number of cues** (for example, p
   3. HTML attributes on elements in `index.html`: `<div data-cuthol-event="paper_drop" data-cuthol-at="800ms" data-cuthol-meta='{"gain_db":-5}'></div>` (or `data-start="0.8"`).
   4. Static JS calls in `index.html`: `C.event("paper_drop", 0.8, { gain_db: -4 })`.
   Every local timestamp (`local_ms`) is automatically converted to timeline coordinates (`sequence_ms = cueStartMs + local_ms`).
+- **`timeout_sec`** and **`CUTHOL_EXT_TMP`**: same as processors. Omitted planners use a 120 second limit; `0` removes it. `CUTHOL_EXT_TMP` is a `tmp/` directory in the sandbox and is deleted when the run ends.
 - **Output (Cue Sheet patch), dry-run plan & atomic apply:**
   The planner script writes `{ "cues": [...], "notes": [...] }` (a `CutholCueSheet` patch; `id` is optional on new cues and auto-allocated as `cue_XX`) to `<outputPatchJsonPath>`. Cuthol validates the patch with `planCueSheet` (`mergeCueSheetIntoSequence` + `verifySequence`):
   - If `dry_run=true`, Cuthol returns the planned diff (`would_commit`, `cues_added`, `cues_updated`, `cues_removed`, `snapshot_summary`) without modifying the sequence.
@@ -199,7 +204,7 @@ When an edit needs a **data-dependent, variable number of cues** (for example, p
 
 - Node processors never run via `eval` or in-process `import()`; they execute in a separate `node` child process with an isolated temporary working directory.
 - Every `extension.run` processor result reports `security_notice: { manifest_path, script_path, network_declared }`.
-- Extensions are forbidden from writing into their own extension folder, into the workspace folder, or outside the designated output path (`[CUTHOL-G206]`).
+- Extensions are forbidden from writing into their own extension folder, into the workspace folder, or outside the designated output path (`[CUTHOL-G206]`). Node processor and planner scripts may also write inside `CUTHOL_EXT_TMP` (`tmp/` in the sandbox). That directory is removed when the run finishes. Writes beside the output (and, for planners, beside `snapshot.json` / `patch.json`) are still `[CUTHOL-G206]`.
 - Node processor and planner scripts whose manifest has `network: false` (default) are forbidden from using network APIs (`fetch`, `node:http`, `node:https`, `node:net`, `WebSocket`) (`[CUTHOL-G206]`).
 
 ## Commands (`extension` MCP tool / `cuthol extension`)

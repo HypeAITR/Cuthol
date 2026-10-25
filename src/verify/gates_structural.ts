@@ -24,12 +24,28 @@ import {
 import { validateHyperFramesCompositionContract } from "../compositor/hyperframes_bridge.js";
 import { resolveExtension } from "../extensions/manager.js";
 import { MediaLedger } from "../library/ledger.js";
+import { peekCachedAcousticProfile } from "../speech/cleanup_acoustic.js";
 import {
   ensureLibraryItemVideoProbe,
   isProbeMetadataComplete,
   isVariableFrameRate,
   resolveLibraryItemPath,
 } from "../library/probe.js";
+
+/** Assets that actually play: spine clips, plus cues on lanes that are not muted. */
+function assetHandlesPlayedInEdit(seq: CutholSequence): Set<string> {
+  const used = new Set<string>();
+  for (const clip of seq.spine.clips) {
+    if (clip.asset_handle) used.add(clip.asset_handle);
+  }
+  for (const lane of seq.lanes) {
+    if (lane.muted) continue;
+    for (const cue of lane.cues) {
+      if (cue.asset_handle) used.add(cue.asset_handle);
+    }
+  }
+  return used;
+}
 
 export function verifyG1Schema(
   seq: CutholSequence,
@@ -77,6 +93,7 @@ export function verifyG2Assets(
   libMap: Map<string, LibraryItem>,
   diagnostics: CutholDiagnostic[]
 ): void {
+  const playedHandles = assetHandlesPlayedInEdit(seq);
   let g2Ledger: MediaLedger | null = null;
   try {
     if (paths) {
@@ -95,7 +112,12 @@ export function verifyG2Assets(
               // ignore probe failure
             }
           }
-          if (item.probe.fps > 0 && !isStillGraphic(item) && item.probe.is_vfr) {
+          if (
+            playedHandles.has(item.handle) &&
+            item.probe.fps > 0 &&
+            !isStillGraphic(item) &&
+            item.probe.is_vfr
+          ) {
             diagnostics.push(
               DIAGNOSTICS.VARIABLE_FRAME_RATE_SOURCE(
                 item.handle,
@@ -207,7 +229,7 @@ export function verifyG2Assets(
     } else {
       for (const item of seq.library) {
         if (item.probe.has_video) {
-          if (item.probe.fps > 0 && !isStillGraphic(item)) {
+          if (playedHandles.has(item.handle) && item.probe.fps > 0 && !isStillGraphic(item)) {
             const vfr =
               item.probe.is_vfr ??
               isVariableFrameRate(item.probe.r_frame_rate, item.probe.avg_frame_rate);
@@ -316,6 +338,20 @@ export function verifyG2Assets(
   }
 }
 
+/** True when a cached cleanup profile has an above-floor window inside the clip. No profile: false. */
+function cachedClipHasSpeechAboveFloor(seq: CutholSequence, clip: SpineClip): boolean {
+  const asset = seq.library.find((item) => item.handle === clip.asset_handle);
+  if (!asset) return false;
+  const profile = peekCachedAcousticProfile(asset.digest_sha256);
+  if (!profile || profile.window_ms <= 0) return false;
+  const startW = Math.max(0, Math.floor(clip.source_in_ms / profile.window_ms));
+  const endW = Math.min(profile.window_dbfs.length, Math.ceil(clip.source_out_ms / profile.window_ms));
+  for (let w = startW; w < endW; w++) {
+    if (profile.window_dbfs[w] > profile.silence_floor_dbfs) return true;
+  }
+  return false;
+}
+
 export function verifyG3Timing(
   seq: CutholSequence,
   diagnostics: CutholDiagnostic[]
@@ -330,12 +366,23 @@ export function verifyG3Timing(
     }
     if (!Number.isFinite(clip.duration_ms) || clip.duration_ms < minMs) {
       diagnostics.push(DIAGNOSTICS.SUB_FRAME_DURATION(clip.id, clip.duration_ms, minMs));
-    } else if (clip.duration_ms < OPEN_STANDARDS.SIGNAL_SANITY.MIN_RECOMMENDED_SPINE_CLIP_MS) {
+    } else if (clip.duration_ms <= OPEN_STANDARDS.SIGNAL_SANITY.MIN_RECOMMENDED_SPINE_CLIP_MS) {
       diagnostics.push(
         DIAGNOSTICS.SHORT_SPINE_CLIP(
           clip.id,
           clip.duration_ms,
           OPEN_STANDARDS.SIGNAL_SANITY.MIN_RECOMMENDED_SPINE_CLIP_MS
+        )
+      );
+    } else if (
+      clip.duration_ms < OPEN_STANDARDS.SIGNAL_SANITY.SHORT_SPEECH_FRAGMENT_MAX_MS &&
+      cachedClipHasSpeechAboveFloor(seq, clip)
+    ) {
+      diagnostics.push(
+        DIAGNOSTICS.SHORT_SPEECH_FRAGMENT(
+          clip.id,
+          clip.duration_ms,
+          OPEN_STANDARDS.SIGNAL_SANITY.SHORT_SPEECH_FRAGMENT_MAX_MS
         )
       );
     }

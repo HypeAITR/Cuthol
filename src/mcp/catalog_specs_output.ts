@@ -70,8 +70,16 @@ export const OUTPUT_ACTION_SPECS: ActionSpec[] = [
     long: true,
     params: [
       { name: "preset", type: "string", description: "draft_480p (quick check) or master_1080p (default).", enum: ["draft_480p", "master_1080p"] },
+      {
+        name: "overlay_res",
+        type: "string",
+        description:
+          "draft (default) captures overlays at the draft frame size. native captures them at master size and quality so a following master_1080p reuses the cache; that draft takes longer. Ignored on master_1080p. CUTHOL_DRAFT_OVERLAY_RES is the same switch; this flag wins.",
+        enum: ["draft", "native"],
+        flag: "overlay-res",
+      },
       p.out("Output MP4 path (default under the project folder)."),
-      { name: "workers", type: "number", description: "Parallel HyperFrames browser workers (default: hardware-calibrated, e.g. 6 on 12 cores).", flag: "--workers" },
+      { name: "workers", type: "number", description: "Parallel HyperFrames browser workers (default: hardware-calibrated, e.g. 6 on 12 cores).", flag: "workers" },
     ],
   },
 

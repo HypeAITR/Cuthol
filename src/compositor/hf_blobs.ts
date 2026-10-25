@@ -1,7 +1,7 @@
 // Overlay blob files on disk: PNG-sequence/video validation, cached blob lookup, render staging directory (split out of hyperframes_bridge.ts).
 import fs from "node:fs";
 import path from "node:path";
-import { syncScalarVarsAndComputeCompositionHash, readCompositionCacheState, areStillBackdropsVisuallyEquivalent } from "./hf_cache_state.js";
+import { syncScalarVarsAndComputeCompositionHash, readCompositionCacheState, areStillBackdropsVisuallyEquivalent, rendererVersionOfFilesHash } from "./hf_cache_state.js";
 import { copyDirRecursiveSync } from "./hf_common.js";
 import { OverlayCacheReason } from "./hf_overlay_tracking.js";
 
@@ -117,7 +117,6 @@ export function resolveCachedCompositionVideoBlob(params: {
 } {
   const {
     absCompDir,
-    entryPath,
     blobsDir,
     ext,
     expectedFrames,
@@ -139,7 +138,6 @@ export function resolveCachedCompositionVideoBlob(params: {
     backdropDigest,
     legacyDirHash,
     validLegacyDirHashes,
-    lastDataChangeReason,
     nativeWidth,
     nativeHeight,
     targetWidth,
@@ -170,7 +168,13 @@ export function resolveCachedCompositionVideoBlob(params: {
   }
 
   const prevState = readCompositionCacheState(blobsDir, absCompDir);
+  // Hashes can match while the file itself is gone. That is not a backdrop change.
+  let backdropMatched = false;
   if (prevState) {
+    // Renderer version is tagged onto filesHash (`<digest>|hf:<version>`). That miss is not an HTML edit.
+    if (rendererVersionOfFilesHash(prevState.filesHash) !== rendererVersionOfFilesHash(filesHash)) {
+      return { cachedBlobPath: null, isExactTargetRes: false, missReason: "renderer_version_changed" };
+    }
     if (prevState.filesHash !== filesHash) {
       return { cachedBlobPath: null, isExactTargetRes: false, missReason: "html_changed" };
     }
@@ -212,13 +216,13 @@ export function resolveCachedCompositionVideoBlob(params: {
       };
     }
 
-    const backdropMatches =
+    backdropMatched =
       prevState.backdropDigest === backdropDigest ||
       (!transparent &&
         Boolean(backdropImagePath && prevState.backdropImagePath) &&
         areStillBackdropsVisuallyEquivalent(backdropImagePath, prevState.backdropImagePath));
 
-    if (backdropMatches) {
+    if (backdropMatched) {
       const targetResKey = `${targetWidth}x${targetHeight}:${ext}`;
       const nativeResKey = `${nativeWidth}x${nativeHeight}:${ext}`;
       const savedTarget = prevState.cachedBlobs?.[targetResKey];
@@ -240,14 +244,6 @@ export function resolveCachedCompositionVideoBlob(params: {
         };
       }
     }
-  }
-
-  if (lastDataChangeReason) {
-    return {
-      cachedBlobPath: null,
-      isExactTargetRes: false,
-      missReason: lastDataChangeReason,
-    };
   }
 
   // Backward-compatible lookup for pre-existing `.cuthol/blobs/hf_comp_<legacyHash>` caches
@@ -348,34 +344,15 @@ export function resolveCachedCompositionVideoBlob(params: {
   }
 
   if (prevState) {
-    return { cachedBlobPath: null, isExactTargetRes: false, missReason: "backdrop_changed" };
+    return {
+      cachedBlobPath: null,
+      isExactTargetRes: false,
+      missReason: backdropMatched ? "blob_missing" : "backdrop_changed",
+    };
   }
 
-  // Determine initial miss reason when no prior state file existed
-  let missReason: OverlayCacheReason = "new";
-  const dataJsonPath = path.join(absCompDir, "assets/cuthol-data.json");
-  if (fs.existsSync(blobsDir) && fs.existsSync(dataJsonPath)) {
-    try {
-      const hasAnyExistingCompBlobs = fs
-        .readdirSync(blobsDir)
-        .some(
-          (f) =>
-            f.startsWith("hf_comp_") &&
-            (f.endsWith(".mp4") || f.endsWith(".mov") || f.endsWith(".pngseq"))
-        );
-      if (hasAnyExistingCompBlobs) {
-        const htmlMtime = fs.statSync(entryPath).mtimeMs;
-        const dataMtime = fs.statSync(dataJsonPath).mtimeMs;
-        if (htmlMtime > dataMtime + 50) {
-          missReason = "html_changed";
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  return { cachedBlobPath: null, isExactTargetRes: false, missReason };
+  // No state file for this composition: other blobs and bridge flags do not describe it.
+  return { cachedBlobPath: null, isExactTargetRes: false, missReason: "new" };
 }
 
 export function stageCompositionRenderDir(options: {

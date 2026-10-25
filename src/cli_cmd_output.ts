@@ -1,8 +1,9 @@
 // CLI 'verify', 'monitor', 'render', and 'brief' command group handlers (split out of cli.ts).
 import { BriefLens, renderSequenceBrief } from "./brief/inspector.js";
 import { RenderPreset } from "./compositor/compiler.js";
-import { VerificationGateId } from "./core/diagnostics.js";
+import { CutholDiagnostic, DIAGNOSTICS, VerificationGateId } from "./core/diagnostics.js";
 import { parseTimeMs } from "./core/time.js";
+import { computeSequenceDurationMs } from "./core/timeline.js";
 import { loadSequence } from "./core/workspace.js";
 import { captureMonitorFrame, captureMonitorSheet } from "./monitor/preview.js";
 import { captureMonitorTimeline } from "./monitor/timeline_view.js";
@@ -15,6 +16,33 @@ import {
   CliCommandResult,
   emitEnvelopeJson,
 } from "./cli_output.js";
+
+const BARE_NUMBER = /^[+-]?\d+(?:\.\d+)?$/;
+const NUMBER_WITH_UNIT = /^[+-]?\d+(?:\.\d+)?\s*(?:ms|s|sec|min|us)$/i;
+
+/** Warn when several bare numbers are all under 1000 ms on a sequence of at least 10s. */
+function unitlessAtWarning(atRaw: string | undefined, sequenceDurationMs: number): CutholDiagnostic | null {
+  if (!atRaw || sequenceDurationMs < 10_000) return null;
+  const bare: number[] = [];
+  for (const token of atRaw.split(",").map((s) => s.trim()).filter(Boolean)) {
+    if (token.includes(":") || NUMBER_WITH_UNIT.test(token)) continue;
+    if (!BARE_NUMBER.test(token)) continue;
+    bare.push(Number(token));
+  }
+  if (bare.length < 2 || !bare.every((n) => n < 1000)) return null;
+  return DIAGNOSTICS.UNITLESS_TIME_AS_MS();
+}
+
+function attachAtWarning<T extends { diagnostics: CutholDiagnostic[] }>(
+  workspaceDir: string,
+  atRaw: string | undefined,
+  result: T
+): T {
+  const durationMs = computeSequenceDurationMs(loadSequence(workspaceDir).sequence);
+  const warning = unitlessAtWarning(atRaw, durationMs);
+  if (!warning) return result;
+  return { ...result, diagnostics: [...result.diagnostics, warning] };
+}
 
 export function runVerifyCommand(ctx: CliCommandContext): CliCommandResult {
   const { flags, workspaceDir } = ctx;
@@ -41,7 +69,7 @@ export function runMonitorCommand(ctx: CliCommandContext): CliCommandResult {
       showBoxes: boolFlag(flags, "boxes", true),
       outputPath: strFlag(flags, "out"),
     });
-    emitEnvelopeJson(workspaceDir, "monitor.frame", { ...res });
+    emitEnvelopeJson(workspaceDir, "monitor.frame", { ...attachAtWarning(workspaceDir, atRaw, res) });
     return;
   }
 
@@ -71,7 +99,7 @@ export function runMonitorCommand(ctx: CliCommandContext): CliCommandResult {
       showBoxes: boolFlag(flags, "boxes", true),
       outputPath: strFlag(flags, "out"),
     });
-    emitEnvelopeJson(workspaceDir, "monitor.sheet", { ...res });
+    emitEnvelopeJson(workspaceDir, "monitor.sheet", { ...attachAtWarning(workspaceDir, atRaw, res) });
     return;
   }
 
@@ -97,19 +125,21 @@ export function runRenderCommand(ctx: CliCommandContext): CliCommandResult {
   const outPath = strFlag(flags, "out") ?? (isActionPreset ? rest[0] : action ?? rest[0]);
   const workers = numFlag(flags, "workers");
   const encoderRaw = strFlag(flags, "encoder") as "auto" | "nvenc" | "libx264" | undefined;
+  const overlayRes = strFlag(flags, "overlay-res");
   const res = renderSequenceToMp4({
     workspaceDir,
     preset,
     outputPath: outPath,
     workers,
     encoder: encoderRaw,
+    overlayRes,
   });
   emitEnvelopeJson(workspaceDir, "render", { ...res });
   return;
 }
 
 export function runBriefCommand(ctx: CliCommandContext): CliCommandResult {
-  const { action, flags, workspaceDir } = ctx;
+  const { action, flags, workspaceDir, formatFlag } = ctx;
   const { sequence } = loadSequence(workspaceDir);
   const lens = (strFlag(flags, "lens", (action as BriefLens) || "overview") as BriefLens) ?? "overview";
   const idRaw = strFlag(flags, "id");
@@ -124,7 +154,7 @@ export function runBriefCommand(ctx: CliCommandContext): CliCommandResult {
     if (b) windowEndMs = parseTimeMs(b);
   }
 
-  if (flags["json"]) {
+  if (flags["json"] || formatFlag === "json") {
     emitEnvelopeJson(workspaceDir, "brief", { lens, sequence });
     return;
   }

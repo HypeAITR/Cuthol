@@ -86,6 +86,12 @@ export function collectClipRawCandidates(params: {
         acousticEdgeTrimmed: refined.acousticEdgeTrimmed,
         splitAroundUntranscribedAudio: refined.splitAroundUntranscribedAudio,
         untranscribedAudioSpans: refined.untranscribedAudioSpans,
+        requestedSourceStart: clampedStart,
+        requestedSourceEnd: clampedEnd,
+        edgeReason: refined.edgeReason,
+        edgeGuardStart: refined.startMs,
+        edgeGuardEnd: refined.preservedSpeechStartMs ?? refined.endMs,
+        trailingSilenceGuardEnd: refined.trailingSilenceGuardEndMs,
       });
     }
   }
@@ -521,10 +527,84 @@ export function applyCollarAndBoundaryRemnantGuard(params: {
             untranscribed_audio_spans: cand.untranscribedAudioSpans,
           }
         : {}),
+      ...(acousticProfile ? { silence_floor_dbfs: acousticProfile.silence_floor_dbfs } : {}),
+      ...(typeof cand.requestedSourceStart === "number" && typeof cand.requestedSourceEnd === "number"
+        ? {
+            requested_source_start_ms: cand.requestedSourceStart,
+            requested_source_end_ms: cand.requestedSourceEnd,
+            applied_source_start_ms: paddedStart,
+            applied_source_end_ms: paddedEnd,
+            edge_reason: cand.edgeReason ?? "unchanged",
+            edge_guard_start_ms: cand.edgeGuardStart ?? paddedStart,
+            edge_guard_end_ms: cand.edgeGuardEnd ?? paddedEnd,
+            edge_guard_window_ms: acousticProfile?.window_ms ?? 25,
+            ...(typeof cand.trailingSilenceGuardEnd === "number"
+              ? { trailing_silence_guard_end_ms: cand.trailingSilenceGuardEnd }
+              : {}),
+          }
+        : {}),
     });
   }
 
   return plannedCuts;
+}
+
+function enforceSelectedEdgeGuards(clip: SpineClip, plannedCuts: PlannedCutInterval[]): void {
+  const guarded = plannedCuts.filter(
+    (c) => typeof c.edge_guard_start_ms === "number" && typeof c.edge_guard_end_ms === "number"
+  );
+  if (guarded.length === 0) return;
+
+  for (const g of guarded) {
+    const gStart = g.edge_guard_start_ms as number;
+    const gEnd = g.edge_guard_end_ms as number;
+    const margin = g.edge_guard_window_ms ?? 25;
+    // Boundary-sliver absorption may extend this cut through a wordless remnant.
+    // Only a neighboring pause is pulled back, so it cannot cross the guarded edge.
+
+    for (const other of plannedCuts) {
+      if (other === g || other.kind !== "pause") continue;
+      if (other.padded_source_end_ms > gEnd && other.padded_source_start_ms < gEnd + margin) {
+        other.padded_source_end_ms = gEnd;
+      }
+      if (
+        other.padded_source_start_ms < gStart &&
+        other.padded_source_end_ms > gStart &&
+        other.padded_source_start_ms > gStart - margin
+      ) {
+        other.padded_source_start_ms = gStart;
+      }
+      const trailGuard = g.trailing_silence_guard_end_ms;
+      if (typeof trailGuard !== "number") continue;
+      const preservedEnd = (g.untranscribed_audio_spans ?? []).reduce(
+        (max, span) => Math.max(max, span.end_ms),
+        gEnd
+      );
+      const slack = Math.max(margin * 3, 75);
+      if (
+        other.padded_source_end_ms > trailGuard &&
+        other.padded_source_start_ms < trailGuard &&
+        other.padded_source_start_ms >= preservedEnd - slack
+      ) {
+        other.padded_source_end_ms = trailGuard;
+      }
+    }
+  }
+
+  for (let i = plannedCuts.length - 1; i >= 0; i--) {
+    const c = plannedCuts[i];
+    if (c.padded_source_end_ms <= c.padded_source_start_ms) {
+      plannedCuts.splice(i, 1);
+      continue;
+    }
+    c.cut_duration_ms = c.padded_source_end_ms - c.padded_source_start_ms;
+    c.sequence_start_ms = sourceMsToSequenceMs(clip, c.padded_source_start_ms);
+    c.sequence_end_ms = sourceMsToSequenceMs(clip, c.padded_source_end_ms);
+    if (typeof c.requested_source_start_ms === "number") {
+      c.applied_source_start_ms = c.padded_source_start_ms;
+      c.applied_source_end_ms = c.padded_source_end_ms;
+    }
+  }
 }
 
 export function bridgeInterCutSliversAndSummarizeClip(params: {
@@ -551,6 +631,9 @@ export function bridgeInterCutSliversAndSummarizeClip(params: {
     minRemainderTimelineMs,
     hasKeptWordInSpan,
   } = params;
+
+  // Keep a pause that shares a boundary with a selected cut from crossing that cut's guarded edge.
+  enforceSelectedEdgeGuards(clip, plannedCuts);
 
   // Sort cuts chronologically and absorb/bridge any < 150ms (`minRemainderTimelineMs`) remnant between adjacent cuts
   plannedCuts.sort(
@@ -631,6 +714,8 @@ export function bridgeInterCutSliversAndSummarizeClip(params: {
       }
     }
   }
+
+  enforceSelectedEdgeGuards(clip, plannedCuts);
 
   // Compute non-overlapping merged cut intervals for exact saved duration metrics on this clip
   const mergedRanges: Array<{ start_ms: number; end_ms: number }> = [];
@@ -789,6 +874,7 @@ export function planTargetClipsCuts(params: {
         sequence_end_ms: clip.timeline_in_ms + clip.duration_ms,
         cut_duration_ms: clip.source_out_ms - clip.source_in_ms,
         bridged_sliver_ms: clip.duration_ms,
+        ...(acousticProfile ? { silence_floor_dbfs: acousticProfile.silence_floor_dbfs } : {}),
       };
       allPlannedCuts.push(cutInterval);
       totalSavedSourceMs += clip.source_out_ms - clip.source_in_ms;
@@ -864,6 +950,12 @@ export function planTargetClipsCuts(params: {
 
     totalSavedSourceMs += clipSavedSourceMs;
     totalSavedSeqMs += clipSavedSeqMs;
+    for (const c of plannedCuts) {
+      delete c.edge_guard_start_ms;
+      delete c.edge_guard_end_ms;
+      delete c.edge_guard_window_ms;
+      delete c.trailing_silence_guard_end_ms;
+    }
     allPlannedCuts.push(...plannedCuts);
     allRejectedNearMisses.push(...rejectedNearMisses);
     if (mergedRanges.length > 0) {

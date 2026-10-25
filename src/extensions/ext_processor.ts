@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
+import { CutholDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import {
   allocateNextHandle,
   AssetKind,
@@ -145,6 +145,85 @@ function interpolateFilterTemplate(
   });
 }
 
+const DEFAULT_CHILD_TIMEOUT_SEC = 120;
+const SANDBOX_TMP_DIR = "tmp";
+
+/** Child timeout in milliseconds. `undefined` means no limit (`timeout_sec: 0`, or ffmpeg when omitted). */
+export function resolveExtensionTimeoutMs(
+  timeoutSec: number | undefined,
+  whenOmitted: "120" | "none"
+): number | undefined {
+  const sec = timeoutSec === undefined ? (whenOmitted === "120" ? DEFAULT_CHILD_TIMEOUT_SEC : 0) : timeoutSec;
+  if (sec === 0) return undefined;
+  return sec * 1000;
+}
+
+export function extensionTimeoutFailureDetail(
+  subject: string,
+  timeoutSec: number | undefined,
+  whenOmitted: "120" | "none"
+): string {
+  const sec = timeoutSec === undefined ? (whenOmitted === "120" ? DEFAULT_CHILD_TIMEOUT_SEC : 0) : timeoutSec;
+  const which =
+    timeoutSec === undefined ? `varsayılan sınır ${sec} sn` : `'timeout_sec' sınırı ${sec} sn`;
+  return `${subject} zaman aşımına uğradı (${which} aşıldı). Sınırı manifestteki 'timeout_sec' alanıyla değiştirin (tam sayı, saniye; 0 = sınır yok).`;
+}
+
+export function isSpawnTimeout(result: { error?: Error | null }): boolean {
+  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ETIMEDOUT";
+}
+
+function streamDurationMs(stream: Record<string, unknown>): number | null {
+  const direct = Number(stream.duration);
+  if (Number.isFinite(direct) && direct >= 0) return direct * 1000;
+  const ts = Number(stream.duration_ts);
+  const timeBase = typeof stream.time_base === "string" ? stream.time_base : "";
+  const match = /^(\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)$/.exec(timeBase);
+  if (Number.isFinite(ts) && ts >= 0 && match) {
+    const den = Number(match[2]);
+    if (den > 0) return ((ts * Number(match[1])) / den) * 1000;
+  }
+  return null;
+}
+
+function probeAvStreamDurations(filePath: string): { videoMs: number | null; audioMs: number | null } {
+  const proc = spawnSync(
+    "ffprobe",
+    [
+      "-v",
+      "error",
+      "-show_entries",
+      "stream=codec_type,duration,duration_ts,time_base",
+      "-of",
+      "json",
+      filePath,
+    ],
+    { encoding: "utf8", windowsHide: true, maxBuffer: 4 * 1024 * 1024 }
+  );
+  if (proc.status !== 0 || !proc.stdout) return { videoMs: null, audioMs: null };
+  try {
+    const parsed = JSON.parse(proc.stdout) as { streams?: Array<Record<string, unknown>> };
+    const streams = parsed.streams ?? [];
+    const video = streams.find((stream) => stream.codec_type === "video");
+    const audio = streams.find((stream) => stream.codec_type === "audio");
+    return {
+      videoMs: video ? streamDurationMs(video) : null,
+      audioMs: audio ? streamDurationMs(audio) : null,
+    };
+  } catch {
+    return { videoMs: null, audioMs: null };
+  }
+}
+
+function avDurationDiagnostics(filePath: string, fps: number, handle: string): CutholDiagnostic[] {
+  const { videoMs, audioMs } = probeAvStreamDurations(filePath);
+  if (videoMs == null || audioMs == null) return [];
+  const frameMs = fps > 0 ? 1000 / fps : 40;
+  if (Math.abs(videoMs - audioMs) <= frameMs) return [];
+  return [DIAGNOSTICS.AV_STREAM_DURATION_MISMATCH(videoMs, audioMs, frameMs, handle)];
+}
+
 function buildAtEmpoChainIfNeeded(filterExpr: string): string {
   return filterExpr.replace(/\batempo\s*=\s*([0-9]+(?:\.[0-9]+)?)/gi, (_, rawRate: string) => {
     let rate = Number(rawRate);
@@ -191,6 +270,7 @@ export function runExtensionProcessor(options: {
     network_declared: boolean;
   };
   script_output?: Record<string, unknown> | null;
+  diagnostics?: CutholDiagnostic[];
   dry_run?: boolean;
 } {
   const startedAt = Date.now();
@@ -256,7 +336,7 @@ export function runExtensionProcessor(options: {
     const canonicalParams: Record<string, unknown> = {};
     for (const k of sortedParamsKeys) canonicalParams[k] = resolvedParams[k];
 
-    const rawCacheKey = [
+    const cacheParts = [
       "cuthol.ext.proc/1",
       inputSha256,
       ext.name,
@@ -264,7 +344,10 @@ export function runExtensionProcessor(options: {
       ext.contentHash,
       procName,
       JSON.stringify(canonicalParams),
-    ].join("|");
+    ];
+    if (proc.audio !== undefined) cacheParts.push(`audio=${proc.audio}`);
+    if (proc.timeout_sec !== undefined) cacheParts.push(`timeout_sec=${proc.timeout_sec}`);
+    const rawCacheKey = cacheParts.join("|");
     const cacheKey = crypto.createHash("sha256").update(rawCacheKey).digest("hex");
 
     const scriptAbsPath =
@@ -357,7 +440,9 @@ export function runExtensionProcessor(options: {
             ffArgs.push(interpolateFilterTemplate(argTpl, resolvedParams, ext.name, procName));
           }
         }
-        if (vfRaw && !afRaw && inputProbe.has_audio && [".mp4", ".mov", ".mkv"].includes(outExt.toLowerCase())) {
+        if (proc.audio === "drop") {
+          ffArgs.push("-an");
+        } else if (vfRaw && !afRaw && inputProbe.has_audio && [".mp4", ".mov", ".mkv"].includes(outExt.toLowerCase())) {
           ffArgs.push("-c:a", "copy");
         }
         if (afRaw && !vfRaw && inputProbe.has_video && [".mp4", ".mov", ".mkv"].includes(outExt.toLowerCase())) {
@@ -365,12 +450,14 @@ export function runExtensionProcessor(options: {
         }
         ffArgs.push(tmpOutputPath);
 
+        const ffTimeoutMs = resolveExtensionTimeoutMs(proc.timeout_sec, "none");
         const ffProc = spawnSync("ffmpeg", ffArgs, {
           encoding: "utf8",
           maxBuffer: 16 * 1024 * 1024,
           windowsHide: true,
+          ...(ffTimeoutMs !== undefined ? { timeout: ffTimeoutMs } : {}),
         });
-        if (ffProc.status !== 0 || !fs.existsSync(tmpOutputPath)) {
+        if (isSpawnTimeout(ffProc) || ffProc.status !== 0 || !fs.existsSync(tmpOutputPath)) {
           if (fs.existsSync(tmpOutputPath)) {
             try {
               fs.unlinkSync(tmpOutputPath);
@@ -378,12 +465,11 @@ export function runExtensionProcessor(options: {
               // ignore
             }
           }
+          const detail = isSpawnTimeout(ffProc)
+            ? extensionTimeoutFailureDetail("ffmpeg işlemi", proc.timeout_sec, "none")
+            : `ffmpeg hatası: ${(ffProc.stderr || ffProc.stdout || "bilinmeyen hata").trim()}`;
           throw new CutholError(
-            DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
-              ext.name,
-              procName,
-              `ffmpeg hatası: ${(ffProc.stderr || ffProc.stdout || "bilinmeyen hata").trim()}`
-            )
+            DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(ext.name, procName, detail)
           );
         }
       } else {
@@ -398,6 +484,9 @@ export function runExtensionProcessor(options: {
         const extHashBefore = hashExtensionDirectory(ext.dir);
         const isolatedTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `cuthol-ext-node-${ext.name}-`));
         const sandboxOutPath = path.join(isolatedTmpDir, `out${outExt}`);
+        const extTmpDir = path.join(isolatedTmpDir, SANDBOX_TMP_DIR);
+        fs.mkdirSync(extTmpDir);
+        const nodeTimeoutMs = resolveExtensionTimeoutMs(proc.timeout_sec, "120");
 
         try {
           const nodeProc = spawnSync(
@@ -412,9 +501,10 @@ export function runExtensionProcessor(options: {
                 CUTHOL_EXT_INPUT: inputAbsPath,
                 CUTHOL_EXT_OUTPUT: sandboxOutPath,
                 CUTHOL_EXT_PARAMS: JSON.stringify(resolvedParams),
+                CUTHOL_EXT_TMP: extTmpDir,
               },
               encoding: "utf8",
-              timeout: 120_000,
+              ...(nodeTimeoutMs !== undefined ? { timeout: nodeTimeoutMs } : {}),
               maxBuffer: 8 * 1024 * 1024,
               windowsHide: true,
             }
@@ -440,14 +530,26 @@ export function runExtensionProcessor(options: {
             );
           }
 
-          // Check if the script wrote any unauthorized files in isolatedTmpDir other than sandboxOutPath
+          // `tmp/` is the script scratch directory; anything else beside the output is a violation.
           const sandboxEntries = fs.readdirSync(isolatedTmpDir);
-          const extraEntries = sandboxEntries.filter((e) => e !== path.basename(sandboxOutPath));
+          const extraEntries = sandboxEntries.filter(
+            (entry) => entry !== path.basename(sandboxOutPath) && entry !== SANDBOX_TMP_DIR
+          );
           if (extraEntries.length > 0) {
             throw new CutholError(
               DIAGNOSTICS.EXTENSION_SECURITY_VIOLATION(
                 ext.name,
                 `İşlemci betiği Cuthol'un verdiği çıktı yolu dışına ('${extraEntries.join(", ")}') dosya yazdı.`
+              )
+            );
+          }
+
+          if (isSpawnTimeout(nodeProc)) {
+            throw new CutholError(
+              DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+                ext.name,
+                procName,
+                extensionTimeoutFailureDetail("Node betiği", proc.timeout_sec, "120")
               )
             );
           }
@@ -493,6 +595,7 @@ export function runExtensionProcessor(options: {
 
           fs.copyFileSync(sandboxOutPath, tmpOutputPath);
         } finally {
+          fs.rmSync(extTmpDir, { recursive: true, force: true });
           fs.rmSync(isolatedTmpDir, { recursive: true, force: true });
         }
       }
@@ -520,6 +623,7 @@ export function runExtensionProcessor(options: {
         const existing = seq.library.find(
           (item) =>
             item.digest_sha256 === outSha256 &&
+            item.kind === finalKind &&
             (!options.targetHandle || item.handle === options.targetHandle)
         );
         if (existing) {
@@ -559,6 +663,7 @@ export function runExtensionProcessor(options: {
       output_asset: outputAsset,
       params: resolvedParams,
       security_notice: securityNotice,
+      diagnostics: avDurationDiagnostics(finalOutputPath, outProbe.fps, outputAsset.handle),
       ...(scriptOutput ? { script_output: scriptOutput } : {}),
     };
   } finally {

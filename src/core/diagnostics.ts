@@ -237,6 +237,16 @@ export const DIAGNOSTICS = {
     );
   },
 
+  AV_STREAM_DURATION_MISMATCH: (videoMs: number, audioMs: number, frameMs: number, handle?: string) =>
+    createDiagnostic(
+      "CUTHOL-G209",
+      "G2_ASSETS",
+      "WARN",
+      `İşlemci çıktısında video akışı ${Math.round(videoMs)} ms, ses akışı ${Math.round(audioMs)} ms; fark bir kareden (${Math.max(1, Math.round(frameMs))} ms) büyük.`,
+      `Süreyi değiştiren video filtresinde sesi çıkarmak için işlemciye "audio": "drop" ekleyin ya da süreleri eşitleyen bir audio_filter yazın.`,
+      handle
+    ),
+
   // --- Gate 3: Temporal Continuity & Frame Budget (G3_TIMING) ---
   SUB_FRAME_DURATION: (itemId: string, durationMs: number, minMs: number) =>
     createDiagnostic(
@@ -321,8 +331,18 @@ export const DIAGNOSTICS = {
       "CUTHOL-G309",
       "G3_TIMING",
       "WARN",
-      `'${clipId}' omurga klibinin süresi (${durationMs}ms), önerilen alt sınırın (${recommendedMinMs}ms) altında; kesimler arasında artık parça kalmış olabilir.`,
+      `'${clipId}' omurga klibinin süresi (${durationMs}ms) en fazla ${recommendedMinMs}ms; kesimler arasında artık parça kalmış olabilir.`,
       `Artık bir parça ise 'cuthol spine remove --clips ${clipId}' ile silin veya komşu kesimle birleştirin.`,
+      clipId
+    ),
+
+  SHORT_SPEECH_FRAGMENT: (clipId: string, durationMs: number, maxMs: number) =>
+    createDiagnostic(
+      "CUTHOL-G312",
+      "G3_TIMING",
+      "INFO",
+      `'${clipId}' omurga klibi (${durationMs}ms) kısa konuşma parçası, yeniden başlama kalıntısı olabilir.`,
+      `Süre 150 ms ile ${maxMs} ms arasında ve kayıt eşiğinin üstünde ses var. Yeniden başlama kalıntısıysa 'cuthol spine remove --clips ${clipId}' ile silin; kasıtlıysa bu bilgi yok sayılır.`,
       clipId
     ),
 
@@ -383,6 +403,16 @@ export const DIAGNOSTICS = {
         ? fixHint.trim()
         : `Kompozisyon HTML/GSAP kodunu '${ruleCode}' kuralına göre düzeltin.`,
       cueId
+    ),
+
+  RENDER_FIELD_NOT_APPLIED: (itemId: string, field: string) =>
+    createDiagnostic(
+      "CUTHOL-G409",
+      "G4_STAGE",
+      "WARN",
+      `'${itemId}' üzerindeki '${field}' bu sürümde render'a uygulanmıyor.`,
+      `Bu alanı varsayılanında bırakın. Sabit parlaklık, kontrast ve doygunluk render'a girer; hareket bulanıklığı, maske, renk sıcaklığı, LUT ve renk zarfları girmez.`,
+      itemId
     ),
 
   // --- Gate 5: Audio Signal & Render Frame Sanity (G5_SIGNAL) ---
@@ -585,7 +615,7 @@ export const DIAGNOSTICS = {
       "G2_ASSETS",
       "ERROR",
       `'${name}' eklentisi güvenlik sınırını ihlal etti: ${detail}`,
-      `Eklenti yalnızca kendi klasörü içindeki dosyaları okuyabilir ve yalnızca Cuthol'un verdiği çıktı yoluna yazabilir.`,
+      `Eklenti yalnızca kendi klasörü içindeki dosyaları okuyabilir ve yalnızca Cuthol'un verdiği çıktı yoluna veya CUTHOL_EXT_TMP klasörüne yazabilir.`,
       name
     ),
 
@@ -638,6 +668,33 @@ export const DIAGNOSTICS = {
     );
   },
 
+  INVALID_EXCISE_RANGE: (piece: string) =>
+    createDiagnostic(
+      "CUTHOL-G311",
+      "G3_TIMING",
+      "ERROR",
+      `'${piece}' bir kesim aralığı değil; her parça 'başlangıç..bitiş' biçiminde olmalı.`,
+      `Bozuk parçayı '2s..3s' biçiminde yazın. Birden çok aralığı virgülle ayırın: '--ranges 2s..3s,6s..7s'.`
+    ),
+
+  UNITLESS_TIME_AS_MS: () =>
+    createDiagnostic(
+      "CUTHOL-G114",
+      "G1_SCHEMA",
+      "WARN",
+      "Birimsiz değerler milisaniye sayıldı; saniye mi demek istediniz? (ör. 21.1s)",
+      "Zaman değerlerine birim ekleyin (ör. '21.1s' veya '00:21.1'). Birimsiz sayılar milisaniye olarak kalır."
+    ),
+
+  QUERY_PAGE_TOKEN_TRUNCATED: (returned: number, nextCursor: string) =>
+    createDiagnostic(
+      "CUTHOL-G115",
+      "G1_SCHEMA",
+      "WARN",
+      `Sayfa token bütçesinde kesildi, ${returned} öğe döndü; devam için next_cursor=${nextCursor} kullanın`,
+      `Kaldığınız yerden devam etmek için '--cursor ${nextCursor}' kullanın veya '--max-tokens' bütçesini yükseltin.`
+    ),
+
   INVALID_CUE_EXCISE_KIND: (cueId: string, kind: string) =>
     createDiagnostic(
       "CUTHOL-G310",
@@ -646,6 +703,34 @@ export const DIAGNOSTICS = {
       `'${cueId}' öğesi ('${kind}') doğrusal kaynak medya akışına sahip olmadığı için 'lane excise' ile içinden aralık çıkarılamaz.`,
       `'lane excise' yalnızca ses ('voiceover', 'music', 'sfx') ve video ('broll') medya cue'larında çalışır. Kompozisyon, başlık, altyazı veya durağan görsellerin süresini değiştirmek için 'cuthol lane update-cue --cue ${cueId} --duration <süre>' veya silmek için 'cuthol lane remove-cue --cues ${cueId}' kullanın.`,
       cueId
+    ),
+
+  CLEANUP_CUE_NOT_AUDIO: (cueId: string, kind: string) =>
+    createDiagnostic(
+      "CUTHOL-G313",
+      "G3_TIMING",
+      "ERROR",
+      `'${cueId}' ('${kind}') bir ses cue'su değil; konuşma temizliği yalnız ses dosyası taşıyan 'voiceover', 'music' ve 'sfx' cue'larında çalışır.`,
+      `Ses kaydını 'cuthol lane add-cue --lane ln_vo --kind voiceover --asset <aud_XX>' ile yerleştirin. Omurgadaki görüntüyü temizlemek için 'cuthol speech cleanup --clip <sp_XX>' kullanın. Kompozisyon, başlık, altyazı, b-roll ve durağan görsel bu komutla kesilmez.`,
+      cueId
+    ),
+
+  CLEANUP_TARGET_CONFLICT: () =>
+    createDiagnostic(
+      "CUTHOL-G314",
+      "G3_TIMING",
+      "ERROR",
+      "Konuşma temizliği aynı çağrıda hem omurga klibi hem ses cue'su alamaz.",
+      `Ses cue'su için 'cuthol speech cleanup --cue <cue_XX>' (veya '--cues a,b'), omurga için 'cuthol speech cleanup --clip <sp_XX>' kullanın.`
+    ),
+
+  CLEANUP_BAD_ACROSS: (value: string) =>
+    createDiagnostic(
+      "CUTHOL-G315",
+      "G3_TIMING",
+      "ERROR",
+      `'${value}' geçerli bir kayma kapsamı değil.`,
+      `Ses cue'su temizliğinde '--across' değeri 'lane' (varsayılan), 'all_lanes', 'all', 'spine' veya 'none' olmalıdır. Bu, 'lane excise --across' ile aynı anlamdadır.`
     ),
 } as const;
 

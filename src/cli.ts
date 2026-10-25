@@ -17,7 +17,15 @@ import {
   resolveActionSpecForCommand,
   startMcpStdioServer,
 } from "./mcp/server.js";
-import { parseArgv, boolFlag, KNOWN_CLI_FLAGS, suggestFlagFix, strFlag, numFlag } from "./cli_args.js";
+import {
+  assertNoExtraPositionals,
+  parseArgv,
+  boolFlag,
+  KNOWN_CLI_FLAGS,
+  suggestFlagFix,
+  strFlag,
+  numFlag,
+} from "./cli_args.js";
 import { printHelp } from "./cli_help.js";
 import {
   activeCliAction,
@@ -57,8 +65,9 @@ async function main(): Promise<void> {
 
   const formatFlag = typeof flags["format"] === "string" ? flags["format"].trim().toLowerCase() : "";
   const isLibraryQuery = group === "library" && action === "query";
+  const wantsJsonOutput = Boolean(flags["json"]) || formatFlag === "json";
   setActiveCliCompactMode(
-    !flags["json"] &&
+    !wantsJsonOutput &&
       (boolFlag(flags, "compact", false) === true ||
         formatFlag === "text" ||
         (formatFlag === "compact" && !isLibraryQuery))
@@ -135,6 +144,8 @@ async function main(): Promise<void> {
     printHelp();
     return;
   }
+
+  assertNoExtraPositionals(group, action, rest, flags);
 
   const ctx: CliCommandContext = {
     group,

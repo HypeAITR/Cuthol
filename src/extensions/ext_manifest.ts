@@ -33,6 +33,10 @@ export interface ExtensionProcessorSpec {
   audio_filter?: string;
   video_filter?: string;
   ffmpeg_args?: string[];
+  /** ffmpeg only. `copy` (default) keeps audio; `drop` strips it with `-an`. */
+  audio?: "copy" | "drop";
+  /** Seconds before the child is killed. `0` means no limit. Omitted node processors use 120. */
+  timeout_sec?: number;
   /** Relative path to Node script inside the extension directory for `kind: "node"`. */
   script?: string;
 }
@@ -55,6 +59,8 @@ export interface ExtensionPlannerSpec {
   description?: string;
   script: string;
   params?: Record<string, ExtensionParamDef>;
+  /** Seconds before the planner child is killed. `0` means no limit. Omitted planners use 120. */
+  timeout_sec?: number;
 }
 
 export interface ExtensionManifest {
@@ -125,7 +131,7 @@ const ALLOWED_MANIFEST_KEYS = new Set([
   "guide",
 ]);
 
-const ALLOWED_PLANNER_KEYS = new Set(["kind", "description", "script", "params"]);
+const ALLOWED_PLANNER_KEYS = new Set(["kind", "description", "script", "params", "timeout_sec"]);
 
 const ALLOWED_PROCESSOR_KEYS = new Set([
   "kind",
@@ -138,6 +144,8 @@ const ALLOWED_PROCESSOR_KEYS = new Set([
   "video_filter",
   "ffmpeg_args",
   "script",
+  "audio",
+  "timeout_sec",
 ]);
 
 const ALLOWED_PARAM_KEYS = new Set([
@@ -218,6 +226,55 @@ export function assertScriptRespectsNetworkPolicy(
       );
     }
   }
+}
+
+const ASSET_KINDS: readonly AssetKind[] = ["footage", "audio", "graphic", "voiceover", "composition"];
+
+function parseAssetKind(value: unknown, procName: string, extName: string): AssetKind | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string" && (ASSET_KINDS as readonly string[]).includes(value)) {
+    return value as AssetKind;
+  }
+  throw new CutholError(
+    DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
+      extName,
+      `'processors.${procName}.asset_kind' geçersiz (${JSON.stringify(value)}). Geçerli türler: ${ASSET_KINDS.join(", ")}.`
+    )
+  );
+}
+
+function parseProcessorAudio(value: unknown, kind: string, procName: string, extName: string): "copy" | "drop" | undefined {
+  if (value === undefined) return undefined;
+  if (kind !== "ffmpeg") {
+    throw new CutholError(
+      DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
+        extName,
+        `'processors.${procName}.audio' yalnız 'kind: "ffmpeg"' işlemcilerinde kullanılabilir ('copy' veya 'drop').`
+      )
+    );
+  }
+  if (value !== "copy" && value !== "drop") {
+    throw new CutholError(
+      DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
+        extName,
+        `'processors.${procName}.audio' değeri 'copy' veya 'drop' olmalıdır (verilen: ${JSON.stringify(value)}).`
+      )
+    );
+  }
+  return value;
+}
+
+function parseTimeoutSec(value: unknown, owner: string, extName: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new CutholError(
+      DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
+        extName,
+        `'${owner}.timeout_sec' 0 veya daha büyük bir tam sayı olmalıdır (0 = sınır yok).`
+      )
+    );
+  }
+  return value;
 }
 
 function validateParamsMap(
@@ -474,11 +531,14 @@ export function validateExtensionManifest(
           );
         }
       }
+      const assetKind = parseAssetKind(pObj.asset_kind, procName, name);
+      const audioMode = parseProcessorAudio(pObj.audio, pObj.kind, procName, name);
+      const timeoutSec = parseTimeoutSec(pObj.timeout_sec, `processors.${procName}`, name);
       processorsSpec[procName] = {
         kind: pObj.kind,
         ...(typeof pObj.description === "string" ? { description: pObj.description } : {}),
         ...(typeof pObj.output_ext === "string" ? { output_ext: pObj.output_ext } : {}),
-        ...(typeof pObj.asset_kind === "string" ? { asset_kind: pObj.asset_kind as AssetKind } : {}),
+        ...(assetKind !== undefined ? { asset_kind: assetKind } : {}),
         ...(Object.keys(params).length > 0 ? { params } : {}),
         ...(typeof pObj.filter === "string" ? { filter: pObj.filter.trim() } : {}),
         ...(typeof pObj.audio_filter === "string" ? { audio_filter: pObj.audio_filter.trim() } : {}),
@@ -486,6 +546,8 @@ export function validateExtensionManifest(
         ...(Array.isArray(pObj.ffmpeg_args)
           ? { ffmpeg_args: pObj.ffmpeg_args.map((x) => String(x)) }
           : {}),
+        ...(audioMode !== undefined ? { audio: audioMode } : {}),
+        ...(timeoutSec !== undefined ? { timeout_sec: timeoutSec } : {}),
         ...(typeof pObj.script === "string" ? { script: pObj.script.trim() } : {}),
       };
     }
@@ -539,11 +601,13 @@ export function validateExtensionManifest(
         );
       }
       const params = validateParamsMap(plObj.params, name, `planners.${planName}`);
+      const timeoutSec = parseTimeoutSec(plObj.timeout_sec, `planners.${planName}`, name);
       plannersSpec[planName] = {
         ...(typeof plObj.kind === "string" ? { kind: plObj.kind as "node" | "planner" } : {}),
         ...(typeof plObj.description === "string" ? { description: plObj.description } : {}),
         script,
         ...(Object.keys(params).length > 0 ? { params } : {}),
+        ...(timeoutSec !== undefined ? { timeout_sec: timeoutSec } : {}),
       };
     }
   }

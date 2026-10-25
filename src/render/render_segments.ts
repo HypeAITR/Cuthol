@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { progressBegin, progressFinish } from "../core/progress.js";
 import {
   type ParallelFfmpegJob
 } from "../core/subprocess.js";
@@ -298,6 +299,8 @@ export function buildOrRenderSequenceAudioForMixOrRender(
 
   const pending = tasks.filter((t) => t.needsEncode);
   if (pending.length > 0) {
+    progressBegin("audio segment", pending.length, { mode: "ffmpeg-jobs" });
+    try {
     for (const t of pending) {
       fs.writeFileSync(t.filterPath, (() => {
         const segPlan = compileSequenceAudioPlan(seq, paths, undefined, {
@@ -363,6 +366,9 @@ export function buildOrRenderSequenceAudioForMixOrRender(
           }
         }
       }
+    }
+    } finally {
+      progressFinish("audio segment");
     }
   }
 

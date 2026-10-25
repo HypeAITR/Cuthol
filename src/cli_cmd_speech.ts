@@ -1,11 +1,13 @@
 // CLI 'speech' command group handler (split out of cli.ts).
+import { CutholError, DIAGNOSTICS } from "./core/diagnostics.js";
 import { parseTimeMs } from "./core/time.js";
 import { formatCaptionsDigest, formatTranscribeDigest } from "./library/query.js";
 import { CaptionStylePreset, generateSequenceCaptions } from "./speech/captions.js";
-import { cleanupClipDialogue } from "./speech/cleanup.js";
+import { cleanupClipDialogue, cleanupLaneCueDialogue } from "./speech/cleanup.js";
 import { AsrProviderId, TtsProviderId } from "./speech/providers.js";
 import { synthesizeVoiceover } from "./speech/synthesize.js";
 import { transcribeLibraryAsset } from "./speech/transcribe.js";
+import { verifyCleanup } from "./speech/verify_cleanup.js";
 import { boolFlag, numFlag, strFlag } from "./cli_args.js";
 import {
   CLI_NOT_HANDLED,
@@ -71,6 +73,21 @@ export async function runSpeechCommand(ctx: CliCommandContext): Promise<CliComma
       "all-spine",
       !clipId && (!clipIds || clipIds.length === 0)
     );
+    const cueRaw = strFlag(flags, "cue");
+    const cuesRaw = strFlag(flags, "cues");
+    const requestedCueIds = [
+      ...new Set(
+        [...(cuesRaw ? cuesRaw.split(",") : []), ...(cueRaw ? cueRaw.split(",") : [])]
+          .map((part) => part.trim())
+          .filter(Boolean)
+      ),
+    ];
+    const explicitAllSpine = boolFlag(flags, "all-spine") === true;
+    const hasClipTarget =
+      Boolean(clipId) || Boolean(clipIds && clipIds.length > 0) || explicitAllSpine;
+    if (requestedCueIds.length > 0 && hasClipTarget) {
+      throw new CutholError(DIAGNOSTICS.CLEANUP_TARGET_CONFLICT());
+    }
     const minPauseRaw = strFlag(flags, "min-pause");
     const padRaw = strFlag(flags, "pad");
     const cutCandRaw = strFlag(flags, "cut-candidates");
@@ -80,11 +97,8 @@ export async function runSpeechCommand(ctx: CliCommandContext): Promise<CliComma
           .map((s) => s.trim())
           .filter(Boolean)
       : undefined;
-    const res = cleanupClipDialogue({
+    const shared = {
       workspaceDir,
-      clipId,
-      clipIds,
-      allSpine,
       minPauseMs: minPauseRaw ? parseTimeMs(minPauseRaw) : undefined,
       padMs: padRaw ? parseTimeMs(padRaw) : undefined,
       removePauses: boolFlag(flags, "remove-pauses", true),
@@ -93,9 +107,51 @@ export async function runSpeechCommand(ctx: CliCommandContext): Promise<CliComma
       cutCandidates,
       language: strFlag(flags, "lang", "tr"),
       dryRun: boolFlag(flags, "dry-run", false),
-    });
+    };
+    const res =
+      requestedCueIds.length > 0
+        ? cleanupLaneCueDialogue({
+            ...shared,
+            cueIds: requestedCueIds,
+            across: strFlag(flags, "across"),
+          })
+        : cleanupClipDialogue({
+            ...shared,
+            clipId,
+            clipIds,
+            allSpine,
+          });
     emitEnvelopeJson(workspaceDir, "speech.cleanup", {
       action: "speech.cleanup",
+      ...res,
+    });
+    return;
+  }
+
+  if (action === "verify-cleanup") {
+    const clipId = strFlag(flags, "clip") ?? rest[0];
+    const clipsRaw = strFlag(flags, "clips");
+    const clipIds = clipsRaw
+      ? clipsRaw
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : undefined;
+    const allSpine = boolFlag(
+      flags,
+      "all-spine",
+      !clipId && (!clipIds || clipIds.length === 0)
+    );
+    const res = await verifyCleanup({
+      workspaceDir,
+      clipId,
+      clipIds,
+      allSpine,
+      provider: strFlag(flags, "provider"),
+      language: strFlag(flags, "lang", "tr"),
+    });
+    emitEnvelopeJson(workspaceDir, "speech.verify-cleanup", {
+      action: "speech.verify-cleanup",
       ...res,
     });
     return;

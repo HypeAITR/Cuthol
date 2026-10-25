@@ -7,6 +7,7 @@ import {
   resolveAlphaOverlayFormat,
   resolveHyperFramesWorkers
 } from "../core/env.js";
+import { progressWatch } from "../core/progress.js";
 import {
   spawnWatchedSync
 } from "../core/subprocess.js";
@@ -15,6 +16,34 @@ import { syncScalarVarsAndComputeCompositionHash, readCompositionCacheState, wri
 import { findLocalHyperFramesCliMjs, renameWithRetrySync } from "./hf_common.js";
 import { recordCompositionAlphaBboxSidecar } from "./hf_frames.js";
 import { overlayCollector, readBlobMetaSummary, recordOverlayRenderOutcome, parseHyperFramesPipelineSummary, buildHyperFramesFailureError } from "./hf_overlay_tracking.js";
+
+export type DraftOverlayRes = "draft" | "native";
+
+let captureDraftOverlaysAtNative = false;
+
+/** Draft renders capture at the draft frame size unless this is set for the current render. */
+export function setDraftNativeOverlayCapture(enabled: boolean): void {
+  captureDraftOverlaysAtNative = enabled;
+}
+
+export function isDraftNativeOverlayCapture(): boolean {
+  return captureDraftOverlaysAtNative;
+}
+
+/** The explicit flag wins over `CUTHOL_DRAFT_OVERLAY_RES`. Missing or `draft` keeps the smaller capture. */
+export function resolveDraftOverlayRes(explicit?: string | null): DraftOverlayRes {
+  const flag = typeof explicit === "string" ? explicit.trim().toLowerCase() : "";
+  const raw = flag || (process.env.CUTHOL_DRAFT_OVERLAY_RES ?? "").trim().toLowerCase();
+  if (!raw || raw === "draft") return "draft";
+  if (raw === "native") return "native";
+  throw new CutholError(
+    DIAGNOSTICS.UNKNOWN_FLAG(
+      `--overlay-res ${raw}`,
+      "render",
+      "cuthol render --overlay-res draft|native"
+    )
+  );
+}
 
 /**
  * Renders a HyperFrames composition into a cached overlay blob in `blobsDir`:
@@ -76,7 +105,7 @@ export function renderHyperFramesCompositionToMp4(options: {
     fs.writeFileSync(entryPath, htmlSource, "utf8");
   }
 
-  const hashInfo = syncScalarVarsAndComputeCompositionHash({
+  const hashOptions = {
     absCompDir,
     entryHtml: options.entryHtml,
     htmlSource,
@@ -90,7 +119,20 @@ export function renderHyperFramesCompositionToMp4(options: {
     backdropVideoPath: options.backdropVideoPath,
     opaqueBackdropColor: options.opaqueBackdropColor,
     backdropImagePath: options.backdropImagePath,
-  });
+  };
+  let hashInfo = syncScalarVarsAndComputeCompositionHash(hashOptions);
+  // Capture at the composition's own size so the cache key, quality and CRF match a master render.
+  // The draft picture still scales that blob to the draft frame.
+  if (
+    captureDraftOverlaysAtNative &&
+    (hashInfo.targetWidth !== hashInfo.nativeWidth || hashInfo.targetHeight !== hashInfo.nativeHeight)
+  ) {
+    hashInfo = syncScalarVarsAndComputeCompositionHash({
+      ...hashOptions,
+      width: hashInfo.nativeWidth,
+      height: hashInfo.nativeHeight,
+    });
+  }
   const { hash, scalarVars, isSceneHost, nativeWidth, nativeHeight, targetWidth, targetHeight } = hashInfo;
 
   fs.mkdirSync(options.blobsDir, { recursive: true });
@@ -443,6 +485,11 @@ export function renderHyperFramesCompositionToMp4(options: {
 
     // No wall-clock limit: render time grows with composition length (long videos take hours).
     // A large output buffer keeps progress logging of long renders from killing the process (ENOBUFS).
+    progressWatch({
+      mode: "watch",
+      paths: [watchTargetPath],
+      expectedFrames: [expectedFramesCheck ?? 0],
+    });
     const hfProc = spawnWatchedSync(process.execPath, renderArgs, {
       encoding: "utf8",
       maxBuffer: 512 * 1024 * 1024,

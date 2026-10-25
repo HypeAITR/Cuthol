@@ -1,5 +1,6 @@
 // Post-render audio health check against the source audio (split out of renderer.ts).
 import os from "node:os";
+import { progressBegin, progressFinish, progressSet, progressWatch } from "../core/progress.js";
 import {
   type ParallelFfmpegJob, spawnWatchedSync
 } from "../core/subprocess.js";
@@ -180,6 +181,8 @@ export function scanRenderedMp4AudioHealth(
   paths: WorkspacePaths,
   options?: { maxItemsPerSegment?: number }
 ): PostRenderAudioHealthResult {
+  progressBegin("audio health", 1);
+  try {
   const t0 = Date.now();
   const sampleRate = 16000;
   const totalDurationMs = computeRenderDurationMs(seq);
@@ -472,6 +475,8 @@ export function scanRenderedMp4AudioHealth(
     };
   });
 
+  progressSet(0, candidates.length);
+  progressWatch({ mode: "ffmpeg-jobs" });
   const sourceResults = runParallelFfmpegJobsSync(
     sourceJobs,
     candidates.map(() => 4 * 1024 * 1024),
@@ -484,7 +489,10 @@ export function scanRenderedMp4AudioHealth(
   for (let idx = 0; idx < candidates.length; idx++) {
     const c = candidates[idx];
     const srRes = sourceResults[idx];
-    if (!srRes || srRes.status !== 0 || srRes.stdout.byteLength < 256) continue;
+    if (!srRes || srRes.status !== 0 || srRes.stdout.byteLength < 256) {
+      progressSet(idx + 1, candidates.length);
+      continue;
+    }
 
     const srcPcm = new Float32Array(
       srRes.stdout.buffer,
@@ -623,6 +631,7 @@ export function scanRenderedMp4AudioHealth(
         detail,
       });
     }
+    progressSet(idx + 1, candidates.length);
   }
 
   const diagnostics: CutholDiagnostic[] =
@@ -635,4 +644,7 @@ export function scanRenderedMp4AudioHealth(
     issues,
     diagnostics,
   };
+  } finally {
+    progressFinish("audio health");
+  }
 }

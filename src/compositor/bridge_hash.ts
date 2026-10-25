@@ -7,6 +7,7 @@ import {
   CUTHOL_BRIDGE_SCHEMA,
   CUTHOL_RUNTIME_VERSION, CutholBridgeV1
 } from "./cuthol_runtime.js";
+import { readInvokedHyperFramesVersion } from "./hf_common.js";
 
 const BRIDGE_PACKAGE_ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -40,13 +41,16 @@ function safeRealpath(p: string): string {
 /**
  * Deterministically hashes an entire composition directory tree (including `assets/`,
  * `compositions/`, fonts, images, CSS, JS, HTML) while ignoring transient output directories.
+ * The invoked HyperFrames package version is part of the digest.
  */
 export function hashDirectoryRecursive(rootDir: string): string {
   const absRoot = path.resolve(rootDir);
   const visitedDirs = new Set<string>([safeRealpath(absRoot)]);
+  const rendererVersion = readInvokedHyperFramesVersion();
   const hash = crypto
     .createHash("sha256")
-    .update(`cuthol-runtime-v:${CUTHOL_RUNTIME_VERSION}\n`);
+    .update(`cuthol-runtime-v:${CUTHOL_RUNTIME_VERSION}\n`)
+    .update(`hf-renderer-v:${rendererVersion}\n`);
 
   const walk = (currentDir: string, relPrefix: string): void => {
     let entries: fs.Dirent[];
@@ -297,13 +301,16 @@ export function analyzeCompositionDataUsage(
 /**
  * Hashes all files in a composition directory EXCEPT `assets/cuthol-data.json`,
  * `assets/cuthol-data.js`, `assets/cuthol-bbox.json`, and `.cuthol-*` metadata sidecars.
+ * The invoked HyperFrames package version is part of the digest.
  */
 export function hashCompositionFilesExcludingBridgeData(rootDir: string): string {
   const absRoot = path.resolve(rootDir);
   const visitedDirs = new Set<string>([safeRealpath(absRoot)]);
+  const rendererVersion = readInvokedHyperFramesVersion();
   const hash = crypto
     .createHash("sha256")
-    .update(`cuthol-comp-files-v:${CUTHOL_RUNTIME_VERSION}\n`);
+    .update(`cuthol-comp-files-v:${CUTHOL_RUNTIME_VERSION}\n`)
+    .update(`hf-renderer-v:${rendererVersion}\n`);
 
   const walk = (currentDir: string, relPrefix: string): void => {
     let entries: fs.Dirent[];

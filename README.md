@@ -11,13 +11,14 @@ An agent edits through a CLI (`cuthol`) or an MCP server (`cuthol mcp`). It read
 - **Timeline.** A magnetic primary storyline (`spine`) plus typed parallel lanes (titles, captions, b-roll, motion graphics, voiceover, sfx, music). Cues can be anchored to clips, so they follow later trims.
 - **Speech.**
   - Transcription with word timings.
-  - Pause and filler cleanup with cut edges placed in real silence, over one clip or the whole spine in a single undoable step.
+  - Pause and filler cleanup with cut edges placed in real silence (an edge never grows into a kept word), over one clip, the whole spine, or a voiceover/audio cue on a lane, in a single undoable step.
+  - Optional cleanup check: the cleaned speech is transcribed once more and compared with what should remain, listing missing words, phrases heard twice and stray fragments.
   - Mute spine clips, and cut a range out of a voiceover or music cue with later cues and word timings following.
   - Contextual fillers, repeated phrases and restarted sentences are offered for review with stable ids rather than cut blindly; the agent decides what goes.
   - Word-highlighted captions and voiceover synthesis.
 - **Mix.** Loudness normalization to a target (ITU-R BS.1770, e.g. −14 LUFS / −1 dBTP), voice polish, music ducking under speech, and cut alignment to a regular beat grid.
 - **Reframe.** Single-subject tracking when placing 16:9 footage on a 9:16 stage, with manual correction.
-- **Long-form friendly.** A long recording or a single long composition is normal use: edits with hundreds or thousands of cuts render in time segments and preview only the moment asked for, compositions can overlap in layers, audio on lanes can be sped up (pitch kept, word timings follow), and transcripts can be read compactly.
+- **Long-form friendly.** A long recording or a single long composition is normal use: renders report progress as they go, a draft can capture overlays at full size so the following master reuses them, edits with hundreds or thousands of cuts render in time segments and preview only the moment asked for, compositions can overlap in layers, audio on lanes can be sped up (pitch kept, word timings follow), and transcripts can be read compactly.
 - **Motion graphics.** HyperFrames compositions composited with true alpha. Each composition gets a runtime (`window.__cuthol`) exposing word times, beats, the beat grid and cut points, both for its own window and for the whole edit (`C.global`). A video can be made entirely of motion graphics, with no footage on the main storyline; set the base colour with `workspace backdrop --color`.
 - **Seeing the edit.**
   - A fast frame preview that matches the render; contact sheets are built from the same frames in seconds.

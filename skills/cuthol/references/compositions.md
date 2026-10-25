@@ -88,10 +88,46 @@ Use the stage size from `brief` (16:9 → 1920x1080, 9:16 → 1080x1920) for `#r
 - Never tween `visibility`, `display` or `autoAlpha` on `.clip` elements, and never tween layout/reflow properties (`left`, `top`, `width`, `height`, `fontSize`) with GSAP (`gsap_non_transform_motion` — use transforms `x`, `y`, `scale`, `scaleX`, `scaleY`, `opacity` instead).
 - `verify` runs HyperFrames lint on every mounted composition (cached by content hash) after syncing any missing enabled extension asset packs (`assets/ext/<name>/`) into the composition, and surfaces real lint issues as `CUTHOL-G407` warnings; `duplicate_media_discovery_risk` is downgraded to `INFO` (`CUTHOL-G407`) when it only involves `<img>` elements (remaining `WARN` for `<video>`/`<audio>`), and size/splitting advisories (`composition_file_too_large`, `nested_structure_needs_subcomposition`, `timeline_track_too_dense`) are treated as info, not warnings.
 
+## Measuring text after the font has loaded
+
+Frame capture waits until `window.__timelines[<data-composition-id>]` is registered, then calls `window.__hfForceTimelineRebind()`. A width that depends on a local `@font-face` belongs in `document.fonts.ready`: measure there, build the paused GSAP timeline there, and assign `window.__timelines["main"]` at the end of that callback. An empty timeline assigned earlier is what capture treats as ready, so tweens added afterwards are not attached.
+
+`getBoundingClientRect().width` includes CSS transforms. `draft_480p` `render` and `monitor frame` scale `#root` with `transform: scale(...)`. `composition preview` snapshots at stage size, so that scale is 1. Divide the measured width by the root scale before writing `style.width`. Writing the raw measured number makes the underline get scaled a second time on the draft paths.
+
+```html
+<style>
+  @font-face {
+    font-family: "MeasureFace";
+    src: url("assets/inter-latin-wght-normal.woff2") format("woff2");
+    font-weight: 100 900;
+    font-display: block;
+  }
+</style>
+<script>
+  document.fonts.ready.then(function () {
+    var title = document.getElementById("title");
+    var measured = title.getBoundingClientRect().width;
+    var transform = getComputedStyle(document.getElementById("root")).transform;
+    var match = /matrix\(([^)]+)\)/.exec(transform || "");
+    var scale = match ? parseFloat(match[1].split(",")[0]) || 1 : 1;
+    document.getElementById("rule").style.width = (measured / scale) + "px";
+    var tl = gsap.timeline({ paused: true });
+    tl.set({}, {}, C.duration);
+    window.__timelines["main"] = tl;
+  });
+</script>
+```
+
+Checked on `render` (`draft_480p`), `monitor frame`, and `composition preview`: the underline matched the title box. A twin that measures in the script body, without `fonts.ready`, also matched on those three paths. HyperFrames defers classic inline body scripts until fonts have loaded, so a file in `assets/` is already applied when that script runs. The callback is still where the timeline has to be registered when setup is asynchronous. Capture stops waiting for the timeline after the player-ready timeout (45 seconds by default). A `fonts.ready` that never settles is captured without that timeline.
+
+## Transparent VP9 webm
+
+A VP9 webm with alpha (`yuva420p`, `alpha_mode=1`, encoded with `-pix_fmt yuva420p -auto-alt-ref 0`) plays as `<video class="clip">` and keeps its transparency on `render`, `monitor frame`, and `composition preview`. Clear pixels show the edit underneath. When the file is shorter than the clip's `data-duration`, the rest of the clip holds the last frame: media time is clamped to the file duration.
+
 ## Overlay cache & what triggers a re-render
 
 Each composition overlay is cached in `.cuthol/blobs/` keyed only by what affects its rendered pixels:
-- **Composition files (`html_changed`):** `index.html`, user `.js`/`.css`, local media/font assets, `assets/cuthol-vars.json`, `assets/cuthol-runtime.js`, and enabled extension helper/asset copies (`assets/cuthol-ext-<name>.js`, `assets/ext/<name>/…`).
+- **Composition files (`html_changed`):** `index.html`, user `.js`/`.css`, local media/font assets, `assets/cuthol-vars.json`, `assets/cuthol-runtime.js`, and enabled extension helper/asset copies (`assets/cuthol-ext-<name>.js`, `assets/ext/<name>/…`). Every composition that uses an extension carries its own copy of that extension's helper and assets, so any change to the extension (one CSS rule, one helper function) re-renders every composition that uses it. Finish kit/extension edits before taking drafts; a kit change late in a project costs a full overlay re-capture.
 - **Used window-local slice (`slice_changed`):** Cuthol inspects the composition's HTML/JS (and enabled extension helpers) to see which local `window.__cuthol` (`C`) slices are referenced:
   - `C.word` / `words` / `sentences` / `pauses` → re-renders when words inside `[cueStart, cueEnd]` change.
   - `C.audio` → re-renders when the mixed audio envelope inside `[cueStart, cueEnd]` changes.
@@ -100,7 +136,7 @@ Each composition overlay is cached in `.cuthol/blobs/` keyed only by what affect
   - `C.sequenceStartSec` / `C.cueStart` / `C.cueEnd` / `C.toGlobal` / `C.toLocal` → re-renders when the cue's timeline start shifts.
 - **Used global slice (`global_used_changed`):** Only the specific `C.global.*` slices (`C.global.word`/`words`, `C.global.audio`, `C.global.beats`/`beatGrid`, `C.global.cuts`, `C.global.duration`) actually referenced by the composition are included in its cache key. If a composition does not use `C.global.audio` or `C.audio`, adding an SFX cue elsewhere does not invalidate its cache; if it does not use `C.cuts` or `C.global.cuts`, spine edits that do not change its underlying backdrop do not invalidate its cache. When dynamic property access (`C[...]`, `C.data`, `__CUTHOL_DATA__`, `eval`) is present, Cuthol errs on the safe side and treats all slices as used.
 - **Backdrop (`backdrop_changed`):** An opaque overlay is captured over the stage backdrop under it (by content hash), so a spine edit that changes what lies underneath re-renders it. If your composition paints its own opaque full-frame surface for its whole duration, put `data-cuthol-opaque="true"` on the root element (next to `data-composition-id`); its cache then ignores the backdrop. Do not declare it if any part of the frame is transparent, masked, or fades in.
-- **Render summary (`overlays`):** Every `render` reports `overlays: { total, cached, rendered, reasons, elapsed_ms, rerendered, summary }` showing how many overlays came from cache, how many were re-rendered, why (`new`, `html_changed`, `slice_changed`, `global_used_changed`, `props_changed`, `backdrop_changed`), and total overlay time. When a `master_1080p` native blob is already cached for the exact same state, `draft_480p` reuses and downscales it instead of launching a new browser render.
+- **Render summary (`overlays`):** Every `render` reports `overlays: { total, cached, rendered, reasons, elapsed_ms, rerendered, summary }` showing how many overlays came from cache, how many were re-rendered, why (`new`, `html_changed`, `renderer_version_changed`, `slice_changed`, `global_used_changed`, `props_changed`, `backdrop_changed`, `blob_missing`), and total overlay time. A cold overlay with no saved state file for that composition reports `new`. `renderer_version_changed` means the HyperFrames package version tagged on the composition files hash changed (not an HTML edit). If a state file exists, the hashes still match, and the blob file is gone, the reason is `blob_missing`. When a `master_1080p` native blob is already cached for the exact same state, `draft_480p` reuses and downscales it instead of launching a new browser render. The other direction is `--overlay-res native` (or `CUTHOL_DRAFT_OVERLAY_RES=native`; the flag wins) on `draft_480p` when a `master_1080p` will follow: the draft captures each overlay at the master's resolution, quality and cache key, then scales that blob down for the 480p picture, and `overlays.summary` says `native capture for master reuse`. The following master reads those blobs from cache. The draft takes longer because the capture is full size. `master_1080p` ignores the option. The default `draft` keeps the smaller capture.
 
 ## `window.__cuthol` API
 

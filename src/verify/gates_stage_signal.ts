@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CutholDiagnostic, DIAGNOSTICS } from "../core/diagnostics.js";
-import { CutholSequence, LaneCue, LibraryItem } from "../core/schema.js";
+import { createDefaultTreatments, CutholSequence, LaneCue, LibraryItem } from "../core/schema.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
 import { resolveCueStartMs } from "../core/timeline.js";
 import { WorkspacePaths } from "../core/workspace.js";
@@ -18,6 +18,57 @@ import {
 import { MediaLedger } from "../library/ledger.js";
 import { LoudnessMetrics } from "../library/loudness.js";
 import { measureCuePixelBox, PixelBoundingBox } from "./gates.js";
+
+const UNAPPLIED_COLOR_ENVELOPE = new Set<string>([
+  "treatments.color_grade.brightness",
+  "treatments.color_grade.contrast",
+  "treatments.color_grade.saturation",
+]);
+
+function colorEnvelopeFields(envelopes: Array<{ parameter: string }>): string[] {
+  const fields: string[] = [];
+  for (const env of envelopes) {
+    if (UNAPPLIED_COLOR_ENVELOPE.has(env.parameter) && !fields.includes(env.parameter)) {
+      fields.push(env.parameter);
+    }
+  }
+  return fields;
+}
+
+/** Motion blur, mask, temperature, LUT and color envelopes are stored but not compiled. */
+function warnUnappliedRenderFields(seq: CutholSequence, diagnostics: CutholDiagnostic[]): void {
+  const defaults = createDefaultTreatments();
+  for (const clip of seq.spine.clips) {
+    const fields: string[] = [];
+    const blur = clip.treatments.motion_blur;
+    const defaultBlur = defaults.motion_blur;
+    if (
+      blur.enabled !== defaultBlur.enabled ||
+      blur.shutter_deg !== defaultBlur.shutter_deg ||
+      blur.subframes !== defaultBlur.subframes
+    ) {
+      fields.push("treatments.motion_blur");
+    }
+    if (clip.treatments.mask !== null) fields.push("treatments.mask");
+    if (clip.treatments.color_grade.temperature_k !== defaults.color_grade.temperature_k) {
+      fields.push("treatments.color_grade.temperature_k");
+    }
+    if ((clip.treatments.color_grade.lut_uri ?? null) !== (defaults.color_grade.lut_uri ?? null)) {
+      fields.push("treatments.color_grade.lut_uri");
+    }
+    fields.push(...colorEnvelopeFields(clip.envelopes));
+    for (const field of fields) {
+      diagnostics.push(DIAGNOSTICS.RENDER_FIELD_NOT_APPLIED(clip.id, field));
+    }
+  }
+  for (const lane of seq.lanes) {
+    for (const cue of lane.cues) {
+      for (const field of colorEnvelopeFields(cue.envelopes)) {
+        diagnostics.push(DIAGNOSTICS.RENDER_FIELD_NOT_APPLIED(cue.id, field));
+      }
+    }
+  }
+}
 
 function boxesIntersectionArea(a: PixelBoundingBox, b: PixelBoundingBox): number {
   const ix0 = Math.max(a.left, b.left);
@@ -271,6 +322,8 @@ export function verifyG4Stage(
       }
     }
   }
+
+  warnUnappliedRenderFields(seq, diagnostics);
 }
 
 export function verifyG5Signal(

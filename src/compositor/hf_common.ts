@@ -72,6 +72,53 @@ export function findLocalHyperFramesCliMjs(): string {
   return path.resolve(process.cwd(), "node_modules/hyperframes/bin/hyperframes.mjs");
 }
 
+/** Written into the overlay cache key when the invoked HyperFrames package version cannot be read. */
+export const HYPERFRAMES_RENDERER_VERSION_UNREADABLE = "unreadable";
+
+let cachedHyperFramesPackageVersion: string | null = null;
+
+function readNonEmptyPackageVersion(pkgJsonPath: string): string | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(pkgJsonPath, "utf8")) as { version?: unknown };
+    if (typeof parsed.version !== "string") return null;
+    const version = parsed.version.trim();
+    return version.length > 0 ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+function readHyperFramesPackageVersionFromCli(): string | null {
+  const cliDir = path.dirname(findLocalHyperFramesCliMjs());
+  // CLI is `<package>/bin/hyperframes.mjs`; the manifest is the package root, then the CLI directory.
+  const candidates = [
+    path.resolve(cliDir, "..", "package.json"),
+    path.resolve(cliDir, "package.json"),
+  ];
+  for (const pkgJsonPath of candidates) {
+    const version = readNonEmptyPackageVersion(pkgJsonPath);
+    if (version) return version;
+  }
+  return null;
+}
+
+/**
+ * Version of the HyperFrames package whose CLI this process invokes.
+ * `CUTHOL_HF_VERSION_OVERRIDE` is for tests only.
+ * Never returns an empty string.
+ */
+export function readInvokedHyperFramesVersion(): string {
+  const override = process.env.CUTHOL_HF_VERSION_OVERRIDE;
+  if (typeof override === "string" && override.trim() !== "") {
+    return override.trim();
+  }
+  if (cachedHyperFramesPackageVersion === null) {
+    cachedHyperFramesPackageVersion =
+      readHyperFramesPackageVersionFromCli() ?? HYPERFRAMES_RENDERER_VERSION_UNREADABLE;
+  }
+  return cachedHyperFramesPackageVersion;
+}
+
 export function findLocalGsapMinJs(): string {
   const pkgCandidate = path.resolve(PACKAGE_ROOT_DIR, "node_modules/gsap/dist/gsap.min.js");
   if (fs.existsSync(pkgCandidate)) {

@@ -12,6 +12,9 @@ export function buildCleanupTrace(params: {
   allRejectedNearMisses: DecisionTraceItem[];
   allReviewCandidates: ContextualFillerReviewCandidate[];
   allRepetitionCandidates: RepetitionRestartCandidate[];
+  distantRepetitionCount?: number;
+  preservedUntranscribedCount?: number;
+  tailWithoutAudioCount?: number;
   targetClips: SpineClip[];
   minRemainderTimelineMs: number;
   minPauseMs: number;
@@ -32,6 +35,9 @@ export function buildCleanupTrace(params: {
     allRejectedNearMisses,
     allReviewCandidates,
     allRepetitionCandidates,
+    distantRepetitionCount = 0,
+    preservedUntranscribedCount = 0,
+    tailWithoutAudioCount = 0,
     targetClips,
     minRemainderTimelineMs,
     minPauseMs,
@@ -42,6 +48,24 @@ export function buildCleanupTrace(params: {
     totalSavedSeqMs,
     options,
   } = params;
+
+  const attachCutEdgeFields = (measured: Record<string, number | string>, c: PlannedCutInterval) => {
+    if (typeof c.silence_floor_dbfs === "number") {
+      measured.silence_floor_dbfs = c.silence_floor_dbfs;
+    }
+    if (typeof c.requested_source_start_ms !== "number" || typeof c.requested_source_end_ms !== "number") {
+      return;
+    }
+    const appliedStart = c.applied_source_start_ms ?? c.padded_source_start_ms;
+    const appliedEnd = c.applied_source_end_ms ?? c.padded_source_end_ms;
+    measured.requested_source_start_ms = c.requested_source_start_ms;
+    measured.requested_source_end_ms = c.requested_source_end_ms;
+    measured.applied_source_start_ms = appliedStart;
+    measured.applied_source_end_ms = appliedEnd;
+    measured.requested_span = `${c.requested_source_start_ms}..${c.requested_source_end_ms}`;
+    measured.applied_span = `${appliedStart}..${appliedEnd}`;
+    if (c.edge_reason) measured.edge_reason = c.edge_reason;
+  };
 
   const appliedDecisions: DecisionTraceItem[] = allPlannedCuts.map(
     (c, idx): DecisionTraceItem => {
@@ -56,6 +80,7 @@ export function buildCleanupTrace(params: {
             remnant_ms: c.bridged_sliver_ms ?? c.cut_duration_ms,
             cut_ms: c.cut_duration_ms,
             kind: c.kind,
+            ...(typeof c.silence_floor_dbfs === "number" ? { silence_floor_dbfs: c.silence_floor_dbfs } : {}),
           },
           threshold: { min_remainder_clip_ms: minRemainderTimelineMs },
           note: `${c.clip_id}: ${minRemainderTimelineMs}ms altındaki sessiz artık klip (${c.cut_duration_ms}ms) otomatik kaldırıldı`,
@@ -88,6 +113,7 @@ export function buildCleanupTrace(params: {
         if (c.bridged_sliver_ms) {
           measuredObj.bridged_sliver_ms = c.bridged_sliver_ms;
         }
+        attachCutEdgeFields(measuredObj, c);
         return {
           id: `cut_${idx + 1}`,
           span: [c.padded_source_start_ms, c.padded_source_end_ms],
@@ -97,7 +123,7 @@ export function buildCleanupTrace(params: {
           threshold: {
             min_pause_ms: minPauseMs,
             pad_ms: padMs,
-            silence_floor_dbfs: globalSilenceFloorVal,
+            silence_floor_dbfs: c.silence_floor_dbfs ?? globalSilenceFloorVal,
             min_untranscribed_audio_ms: OPEN_STANDARDS.DIALOGUE_CLEANUP.MIN_UNTRANSCRIBED_SPEECH_MS,
           },
           refs: c.overlapping_words,
@@ -129,6 +155,7 @@ export function buildCleanupTrace(params: {
         if (c.bridged_sliver_ms) {
           measuredObj.bridged_sliver_ms = c.bridged_sliver_ms;
         }
+        attachCutEdgeFields(measuredObj, c);
         return {
           id: `cut_${idx + 1}`,
           span: [c.padded_source_start_ms, c.padded_source_end_ms],
@@ -159,6 +186,7 @@ export function buildCleanupTrace(params: {
       if (c.bridged_sliver_ms) {
         measuredObj.bridged_sliver_ms = c.bridged_sliver_ms;
       }
+      attachCutEdgeFields(measuredObj, c);
       const reasonCode = c.bridged_sliver_ms ? "APPLIED_WITH_SLIVER_MERGE" : "APPLIED";
       return {
         id: `cut_${idx + 1}`,
@@ -211,7 +239,7 @@ export function buildCleanupTrace(params: {
       "R6: Kesimler arasında veya klip uçlarında < 150ms artık parça kalacaksa konuşma içermiyorsa komşu kesimle birleştirilir (APPLIED_WITH_SLIVER_MERGE), konuşma içeriyorsa duraksama kesimi daraltılır veya reddedilir (AVOID_SHORT_REMNANT_CLIP)",
     ],
     summary: {
-      text: `${targetClips.length} klip üzerinde ${allDecisions.length} aday incelendi -> ${allPlannedCuts.length} kesim (${totalSavedSeqMs}ms kısaldı), ${allRejectedNearMisses.length} aday korundu${allReviewCandidates.length > 0 ? `, ${allReviewCandidates.length} bağlamsal dolgu adayı` : ""}${allRepetitionCandidates.length > 0 ? `, ${allRepetitionCandidates.length} tekrar/yeniden başlama adayı` : ""}`,
+      text: `${targetClips.length} klip üzerinde ${allDecisions.length} aday incelendi -> ${allPlannedCuts.length} kesim (${totalSavedSeqMs}ms kısaldı), ${allRejectedNearMisses.length} aday korundu${allReviewCandidates.length > 0 ? `, ${allReviewCandidates.length} bağlamsal dolgu adayı` : ""}${allRepetitionCandidates.length > 0 ? `, ${allRepetitionCandidates.length} tekrar/yeniden başlama adayı` : ""}${distantRepetitionCount > 0 ? `, ${distantRepetitionCount} uzak tekrar adayı` : ""}${preservedUntranscribedCount > 0 ? `, ${preservedUntranscribedCount} korunan dökümsüz ses` : ""}${tailWithoutAudioCount > 0 ? `, ${tailWithoutAudioCount} görüntü kuyruğu adayı` : ""}`,
       candidates: allDecisions.length,
       accepted: allPlannedCuts.length,
       rejected: allRejectedNearMisses.length,
@@ -223,6 +251,9 @@ export function buildCleanupTrace(params: {
         saved_sequence_ms: totalSavedSeqMs,
         review_candidates_count: allReviewCandidates.length,
         repetition_candidates_count: allRepetitionCandidates.length,
+        distant_repetition_candidates_count: distantRepetitionCount,
+        preserved_untranscribed_count: preservedUntranscribedCount,
+        tail_without_audio_candidates_count: tailWithoutAudioCount,
       },
     },
     decisions: allDecisions,

@@ -4,18 +4,23 @@
  * Identifies pauses (`>= minPauseMs`), filler words (`ıı`, `ee`, `şey`, `uh`, `um`),
  * contextual discourse fillers (`review_candidates`), and phrase repetitions / sentence
  * restarts (`repetition_candidates`) across a single `SpineClip`, a list of clips, or the
- * entire spine in a single atomic operation.
+ * entire spine in a single atomic operation. An audio lane cue is adapted to that
+ * same engine in `cleanup_cue.ts`. One cue is committed with `exciseLaneCueRanges`;
+ * several cues run that same in-memory excise inside one verified mutation.
  */
 
 import { DecisionTrace } from "../core/decision_trace.js";
-import { SpineClip } from "../core/schema.js";
+import { LaneCue, SpineClip } from "../core/schema.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
 import { loadSequence } from "../core/workspace.js";
 import { VerificationReport } from "../verify/gates.js";
 import { applyCleanupCutsToSpine } from "./cleanup_apply.js";
 import {
+  buildPreservedUntranscribed,
   collectCleanupReviewAndRepetitionCandidates,
+  collectTailWithoutAudioCandidates,
   createCleanupAssetLoaders,
+  partitionRepetitionCandidates,
   resolveCleanupTargetClips,
   resolveSelectedCutCandidates,
 } from "./cleanup_candidates.js";
@@ -37,7 +42,7 @@ export interface PlannedCutInterval {
   clip_id?: string;
   asset_handle?: string;
   candidate_id?: string;
-  kind: "pause" | "filler" | "repetition";
+  kind: "pause" | "filler" | "repetition" | "tail_without_audio";
   label: string;
   raw_source_start_ms: number;
   raw_source_end_ms: number;
@@ -59,6 +64,25 @@ export interface PlannedCutInterval {
     max_dbfs: number;
   }>;
   bridged_sliver_ms?: number;
+  /** Source range the caller asked to cut, before acoustic edge adjustment. */
+  requested_source_start_ms?: number;
+  requested_source_end_ms?: number;
+  /** Source range actually excised after edge guards and neighboring-cut clamps. */
+  applied_source_start_ms?: number;
+  applied_source_end_ms?: number;
+  edge_reason?:
+    | "pulled_in_before_speech"
+    | "extended_into_silence"
+    | "split_around_untranscribed_audio"
+    | "unchanged";
+  /** Recording-relative floor used for this cut's asset. Not the last clip's floor. */
+  silence_floor_dbfs?: number;
+  /** Outward limit of a selected edge. Stripped before the result is returned. */
+  edge_guard_start_ms?: number;
+  edge_guard_end_ms?: number;
+  edge_guard_window_ms?: number;
+  /** Pause cuts after a kept interior run stop here. Stripped before the result is returned. */
+  trailing_silence_guard_end_ms?: number;
 }
 
 export interface ContextualFillerReviewCandidate {
@@ -77,6 +101,27 @@ export interface ContextualFillerReviewCandidate {
   context: string;
 }
 
+export interface PreservedUntranscribedSpan {
+  clip_id: string;
+  source_start_ms: number;
+  source_end_ms: number;
+  duration_ms: number;
+  max_dbfs: number;
+  near_candidate_id?: string;
+}
+
+export interface TailWithoutAudioCandidate {
+  id: string;
+  kind: "tail_without_audio";
+  clip_id: string;
+  asset_handle: string;
+  source_start_ms: number;
+  source_end_ms: number;
+  duration_ms: number;
+  sequence_start_ms: number;
+  sequence_end_ms: number;
+}
+
 export interface DialogueCleanupResult {
   clip_id: string;
   clip_ids?: string[];
@@ -88,11 +133,20 @@ export interface DialogueCleanupResult {
   cuts: PlannedCutInterval[];
   review_candidates: ContextualFillerReviewCandidate[];
   repetition_candidates: RepetitionRestartCandidate[];
+  distant_repetition_candidates: RepetitionRestartCandidate[];
+  preserved_untranscribed: PreservedUntranscribedSpan[];
+  tail_without_audio_candidates: TailWithoutAudioCandidate[];
   decision_trace: DecisionTrace;
   remaining_clips?: SpineClip[];
+  cue_id?: string;
+  cue_ids?: string[];
+  remaining_cues?: LaneCue[];
+  across?: "lane" | "all_lanes" | "all" | "spine" | "none";
   revision?: number;
   verification?: VerificationReport;
 }
+
+export { cleanupLaneCueDialogue } from "./cleanup_cue.js";
 
 export function cleanupClipDialogue(options: {
   workspaceDir: string;
@@ -132,6 +186,7 @@ export function cleanupClipDialogue(options: {
     getAssetTranscriptAndSpans,
     getAssetRepetitionCandidates,
     getAssetAcousticProfile,
+    getAssetAudioEndMs,
   } = createCleanupAssetLoaders(options);
 
   const { allReviewCandidates, allRepetitionCandidates } =
@@ -142,13 +197,23 @@ export function cleanupClipDialogue(options: {
       getAssetRepetitionCandidates,
     });
 
-  const { selectedReviewIds, selectedRepetitionIds, customSelectedSpansByAsset } =
+  const tailWithoutAudioCandidates = collectTailWithoutAudioCandidates({
+    sequence,
+    targetClips,
+    getAssetAudioEndMs,
+  });
+
+  const { selectedReviewIds, selectedRepetitionIds, selectedTailIds, customSelectedSpansByAsset } =
     resolveSelectedCutCandidates({
       cutCandidates: options.cutCandidates,
       targetClips,
       allReviewCandidates,
       allRepetitionCandidates,
+      tailWithoutAudioCandidates,
     });
+
+  const { near: nearRepetitionCandidates, distant: distantRepetitionCandidates } =
+    partitionRepetitionCandidates(allRepetitionCandidates);
 
   const {
     allPlannedCuts,
@@ -173,13 +238,22 @@ export function cleanupClipDialogue(options: {
     minRemainderTimelineMs,
   });
 
+  const preservedUntranscribed = buildPreservedUntranscribed({
+    cuts: allPlannedCuts,
+    repetitionCandidates: allRepetitionCandidates,
+    selectedSpansByAsset: customSelectedSpansByAsset,
+  });
+
   const buildTrace = (rev: number): DecisionTrace =>
     buildCleanupTrace({
       rev,
       allPlannedCuts,
       allRejectedNearMisses,
       allReviewCandidates,
-      allRepetitionCandidates,
+      allRepetitionCandidates: nearRepetitionCandidates,
+      distantRepetitionCount: distantRepetitionCandidates.length,
+      preservedUntranscribedCount: preservedUntranscribed.length,
+      tailWithoutAudioCount: tailWithoutAudioCandidates.length,
       targetClips,
       minRemainderTimelineMs,
       minPauseMs,
@@ -206,7 +280,10 @@ export function cleanupClipDialogue(options: {
       saved_sequence_ms: totalSavedSeqMs,
       cuts: allPlannedCuts,
       review_candidates: allReviewCandidates,
-      repetition_candidates: allRepetitionCandidates,
+      repetition_candidates: nearRepetitionCandidates,
+      distant_repetition_candidates: distantRepetitionCandidates,
+      preserved_untranscribed: preservedUntranscribed,
+      tail_without_audio_candidates: tailWithoutAudioCandidates,
       decision_trace: buildTrace(sequence.meta.revision),
       ...(dryRun ? {} : { remaining_clips: targetClips, revision: sequence.meta.revision }),
     };
@@ -224,9 +301,13 @@ export function cleanupClipDialogue(options: {
     totalSavedSourceMs,
     totalSavedSeqMs,
     allReviewCandidates,
-    allRepetitionCandidates,
+    allRepetitionCandidates: nearRepetitionCandidates,
+    distantRepetitionCandidates,
+    preservedUntranscribed,
+    tailWithoutAudioCandidates,
     selectedReviewIds,
     selectedRepetitionIds,
+    selectedTailIds,
     buildCleanupTrace: buildTrace,
   });
 }

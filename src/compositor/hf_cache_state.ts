@@ -15,6 +15,22 @@ import {
 import {
   CutholBridgeV1
 } from "./cuthol_runtime.js";
+import { readInvokedHyperFramesVersion } from "./hf_common.js";
+
+const FILES_HASH_RENDERER_MARK = "|hf:";
+
+export function filesHashWithRendererVersion(contentHash: string, rendererVersion: string): string {
+  return `${contentHash}${FILES_HASH_RENDERER_MARK}${rendererVersion}`;
+}
+
+/** Renderer version stored on a files hash, or null when the hash predates that tag. */
+export function rendererVersionOfFilesHash(filesHash: string | null | undefined): string | null {
+  if (typeof filesHash !== "string" || filesHash.length === 0) return null;
+  const idx = filesHash.lastIndexOf(FILES_HASH_RENDERER_MARK);
+  if (idx < 0) return null;
+  const version = filesHash.slice(idx + FILES_HASH_RENDERER_MARK.length);
+  return version.length > 0 ? version : null;
+}
 
 const fileSha256Memo = new Map<string, string>();
 
@@ -251,7 +267,11 @@ export function syncScalarVarsAndComputeCompositionHash(options: {
     options.mode === "scene_host" &&
     Boolean(options.backdropVideoPath && fs.existsSync(options.backdropVideoPath));
 
-  const filesHash = hashCompositionFilesExcludingBridgeData(options.absCompDir);
+  const rendererVersion = readInvokedHyperFramesVersion();
+  const filesHash = filesHashWithRendererVersion(
+    hashCompositionFilesExcludingBridgeData(options.absCompDir),
+    rendererVersion
+  );
   const usage = analyzeCompositionDataUsage(options.absCompDir, options.entryHtml, options.props);
   const dataJsonPath = path.join(options.absCompDir, "assets/cuthol-data.json");
   let parsedBridge: Partial<CutholBridgeV1> | null = null;
@@ -271,7 +291,9 @@ export function syncScalarVarsAndComputeCompositionHash(options: {
 
   const effectiveDirHash = crypto
     .createHash("sha256")
-    .update(`files:${filesHash}\nslice:${usedSliceHash}\nglobal:${usedGlobalHash}\n`)
+    .update(
+      `files:${filesHash}\nslice:${usedSliceHash}\nglobal:${usedGlobalHash}\nrenderer:${rendererVersion}\n`
+    )
     .digest("hex");
 
   const legacyDirHash = hashDirectoryRecursive(options.absCompDir);
@@ -350,12 +372,13 @@ export function syncScalarVarsAndComputeCompositionHash(options: {
           transparent: options.transparent,
           mode: options.mode,
           backdropDigest: bd,
+          renderer: rendererVersion,
         })
       )
       .digest("hex")
       .slice(0, 16);
 
-  // Resolution-specific cache key depending ONLY on composition files + used slice + used global data.
+  // Resolution-specific cache key: composition files, used slice, used global data, and the invoked HyperFrames version.
   const hash = computeCandidateKey(effectiveDirHash, targetWidth, targetHeight, backdropDigest);
   const nativeHash = computeCandidateKey(effectiveDirHash, nativeWidth, nativeHeight, backdropDigest);
   const legacyHash = computeCandidateKey(legacyDirHash, targetWidth, targetHeight, legacyBackdropDigest);

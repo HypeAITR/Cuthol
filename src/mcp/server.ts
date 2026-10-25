@@ -32,7 +32,8 @@ import {
 } from "./catalog.js";
 import { formatWorkspaceOpenSummary, loadSequence } from "../core/workspace.js";
 import { resolveExtension } from "../extensions/manager.js";
-import { repairToolArguments, readRevision, tryParseJson, formatEnvelopeCompact, findValuesByKey } from "./mcp_format.js";
+import { CUTHOL_PROGRESS_PREFIX } from "../core/progress.js";
+import { repairToolArguments, readRevision, tryParseJson, formatEnvelopeCompact, findValuesByKey, stripCutholProgress } from "./mcp_format.js";
 export { repairToolArguments, readWorkspaceRevision, translateCliHint, resolveActionSpecForCommand, formatEnvelopeCompact } from "./mcp_format.js";
 export type { FormatEnvelopeCompactOptions } from "./mcp_format.js";
 
@@ -145,12 +146,34 @@ function readPackageVersion(): string {
   }
 }
 
+interface SessionProjectStamp {
+  revision: number;
+  projectId: string | null;
+  createdAt: string | null;
+}
+
+function readProjectStamp(dir: string): SessionProjectStamp | null {
+  try {
+    const seq = JSON.parse(fs.readFileSync(path.join(dir, "cuthol.sequence.json"), "utf8")) as {
+      meta?: { revision?: number; project_id?: unknown; created_at?: unknown };
+    };
+    if (typeof seq.meta?.revision !== "number") return null;
+    return {
+      revision: seq.meta.revision,
+      projectId: typeof seq.meta.project_id === "string" ? seq.meta.project_id : null,
+      createdAt: typeof seq.meta.created_at === "string" ? seq.meta.created_at : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export class CutholMcpServer {
   private readonly options: CutholMcpServerOptions;
   private readonly cliPath: string;
   private sessionDir: string | null;
   private readonly unlockedSpecialists = new Set<string>();
-  private readonly lastKnownRevision = new Map<string, number>();
+  private readonly sessionProjects = new Map<string, SessionProjectStamp>();
   private readonly queues = new Map<string, Promise<unknown>>();
   private readonly running = new Map<string, ChildProcess>();
   private lastFailedSignature: string | null = null;
@@ -366,7 +389,11 @@ export class CutholMcpServer {
     const run = async (): Promise<McpToolResult> => {
       if (spec.tool === "workspace" && spec.action === "open") {
         this.sessionDir = dir;
-        this.lastKnownRevision.set(dir, readRevision(dir) ?? 0);
+        const opened = readProjectStamp(dir);
+        this.sessionProjects.set(
+          dir,
+          opened ?? { revision: readRevision(dir) ?? 0, projectId: null, createdAt: null }
+        );
         if (values.verbose === true) {
           const brief = await this.runCli(["brief", "--lens=overview", `--dir=${dir}`], dir, spec, ctx);
           return this.textResult(`OK workspace.open · session project is now ${dir}\n\n${brief.stdout.trim()}`, false);
@@ -391,21 +418,36 @@ export class CutholMcpServer {
         }
       }
 
-      const before = readRevision(dir);
-      const known = this.lastKnownRevision.get(dir);
-      const externalChange = known !== undefined && before !== null && before !== known;
+      const beforeStamp = readProjectStamp(dir);
+      const before = beforeStamp?.revision ?? null;
+      const known = this.sessionProjects.get(dir);
+      const revisionMoved = known !== undefined && before !== null && before !== known.revision;
+      const recreated =
+        known !== undefined &&
+        beforeStamp !== null &&
+        (beforeStamp.revision < known.revision ||
+          (known.projectId !== null && beforeStamp.projectId !== known.projectId) ||
+          (known.createdAt !== null && beforeStamp.createdAt !== known.createdAt));
 
       const argv = buildCliArgv(spec, values, dir);
       const res = await this.runCli(argv, dir, spec, ctx);
       const result = this.formatResult(spec, res, dir, values, before);
 
-      const after = readRevision(dir);
-      if (after !== null) this.lastKnownRevision.set(dir, after);
+      const afterStamp = readProjectStamp(dir);
+      if (afterStamp) this.sessionProjects.set(dir, afterStamp);
       if (spec.tool === "workspace" && spec.action === "init" && !result.isError) {
         this.sessionDir = dir;
       }
-      if (externalChange && result.content[0]?.type === "text") {
-        result.content[0].text = `NOTE the project changed outside this session (r${known} -> r${before}); re-read it with brief before relying on earlier results.\n${result.content[0].text}`;
+      if (
+        known &&
+        beforeStamp &&
+        (recreated || revisionMoved) &&
+        result.content[0]?.type === "text"
+      ) {
+        const note = recreated
+          ? `proje yeniden oluşturuldu (r${known.revision} → r${beforeStamp.revision}); önceki sonuçlar bu projeye ait değil`
+          : `NOTE the project changed outside this session (r${known.revision} -> r${beforeStamp.revision}); re-read it with brief before relying on earlier results.`;
+        result.content[0].text = `${note}\n${result.content[0].text}`;
       }
       return result;
     };
@@ -548,40 +590,67 @@ export class CutholMcpServer {
 
       let stdout = "";
       let stderr = "";
+      let stderrPending = "";
+      let lastProgress = "";
+      let lastNotifiedAt = 0;
+      let announcedProgress = false;
+      let tick = 0;
       let timedOut = false;
       let cancelled = false;
+      const label = spec.action ? `${spec.tool}.${spec.action}` : spec.tool;
+      const sendProgress = (force: boolean): void => {
+        if (ctx.progressToken === undefined) return;
+        const now = Date.now();
+        const firstProgress = lastProgress.length > 0 && !announcedProgress;
+        if (!force && !firstProgress && lastNotifiedAt !== 0 && now - lastNotifiedAt < 3000) return;
+        if (lastProgress.length > 0) announcedProgress = true;
+        lastNotifiedAt = now;
+        tick += 1;
+        const extra = lastProgress ? ` · ${lastProgress}` : "";
+        this.notify("notifications/progress", {
+          progressToken: ctx.progressToken,
+          progress: tick,
+          message: `${label} running · ${Math.round((now - started) / 1000)}s${extra}`,
+        });
+      };
+      const noteProgressLine = (line: string): void => {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith(CUTHOL_PROGRESS_PREFIX)) return;
+        lastProgress = trimmed;
+        sendProgress(false);
+      };
       child.stdout.on("data", (d: Buffer) => (stdout += d.toString("utf8")));
-      child.stderr.on("data", (d: Buffer) => (stderr += d.toString("utf8")));
+      child.stderr.on("data", (d: Buffer) => {
+        const chunk = d.toString("utf8");
+        stderr += chunk;
+        stderrPending += chunk;
+        const lines = stderrPending.split(/\r?\n/);
+        stderrPending = lines.pop() ?? "";
+        for (const line of lines) noteProgressLine(line);
+      });
 
-      let tick = 0;
       const progressTimer =
-        ctx.progressToken !== undefined
-          ? setInterval(() => {
-              tick += 1;
-              this.notify("notifications/progress", {
-                progressToken: ctx.progressToken,
-                progress: tick,
-                message: `${spec.action ? `${spec.tool}.${spec.action}` : spec.tool} running · ${Math.round((Date.now() - started) / 1000)}s`,
-              });
-            }, 3000)
-          : null;
+        ctx.progressToken !== undefined ? setInterval(() => sendProgress(true), 3000) : null;
       const timeout = setTimeout(() => {
         timedOut = true;
         child.kill();
       }, timeoutMs);
+      const finishRun = (): void => {
+        const pending = stderrPending.trim();
+        if (pending.startsWith(CUTHOL_PROGRESS_PREFIX)) noteProgressLine(pending);
+        clearTimeout(timeout);
+        if (progressTimer) clearInterval(progressTimer);
+        if (key) this.running.delete(key);
+      };
       child.on("exit", (_code, signal) => {
         if (signal && !timedOut) cancelled = true;
       });
       child.on("close", (code) => {
-        clearTimeout(timeout);
-        if (progressTimer) clearInterval(progressTimer);
-        if (key) this.running.delete(key);
+        finishRun();
         resolve({ code, stdout, stderr, timedOut, cancelled, elapsedMs: Date.now() - started });
       });
       child.on("error", (err) => {
-        clearTimeout(timeout);
-        if (progressTimer) clearInterval(progressTimer);
-        if (key) this.running.delete(key);
+        finishRun();
         resolve({ code: -1, stdout, stderr: `${stderr}\n${err.message}`, timedOut, cancelled, elapsedMs: Date.now() - started });
       });
     });
@@ -606,9 +675,10 @@ export class CutholMcpServer {
       return this.textResult(run.stdout.trim(), false);
     }
 
-    const env = tryParseJson(run.stdout) ?? tryParseJson(run.stderr);
+    const strippedErr = stripCutholProgress(run.stderr);
+    const env = tryParseJson(run.stdout) ?? tryParseJson(strippedErr.text);
     if (!env) {
-      const raw = (run.stderr || run.stdout).trim().slice(-1500);
+      const raw = (strippedErr.text || run.stdout).trim().slice(-1500);
       return this.textResult(`FAILED ${label} (exit ${run.code}): ${raw || "no output"}`, true);
     }
 

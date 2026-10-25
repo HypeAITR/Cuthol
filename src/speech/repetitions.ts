@@ -30,6 +30,9 @@ export interface RepetitionAttempt {
   suggested_action: "cut" | "keep";
 }
 
+/** Candidates with a larger gap stay selectable but are listed apart from close repeats. */
+export const DISTANT_REPETITION_GAP_MS = 8000;
+
 export interface RepetitionRestartCandidate {
   id: string;
   kind: "phrase_repeat" | "sentence_restart" | "word_repeat";
@@ -39,6 +42,8 @@ export interface RepetitionRestartCandidate {
   source_start_ms: number;
   source_end_ms: number;
   duration_ms: number;
+  /** End of the first attempt to the start of the last attempt. */
+  gap_ms: number;
   sequence_start_ms: number;
   sequence_end_ms: number;
   suggested_cut_start_ms: number;
@@ -866,6 +871,8 @@ export function detectRepetitionAndRestartCandidates(options: {
 
     const clampedStart = Math.max(clip.source_in_ms, rawGroupStartMs);
     const clampedEnd = Math.min(clip.source_out_ms, rawGroupEndMs);
+    const gapMs =
+      builtAttempts[builtAttempts.length - 1].source_start_ms - builtAttempts[0].source_end_ms;
 
     candidates.push({
       id: candidateId,
@@ -876,6 +883,7 @@ export function detectRepetitionAndRestartCandidates(options: {
       source_start_ms: clampedStart,
       source_end_ms: clampedEnd,
       duration_ms: clampedEnd - clampedStart,
+      gap_ms: gapMs,
       sequence_start_ms: sourceMsToSequenceMs(clip, clampedStart),
       sequence_end_ms: sourceMsToSequenceMs(clip, clampedEnd),
       suggested_cut_start_ms: suggestedCutStartMs,

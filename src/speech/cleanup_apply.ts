@@ -18,6 +18,8 @@ import type {
   ContextualFillerReviewCandidate,
   DialogueCleanupResult,
   PlannedCutInterval,
+  PreservedUntranscribedSpan,
+  TailWithoutAudioCandidate,
 } from "./cleanup.js";
 import type { RepetitionRestartCandidate } from "./repetitions.js";
 
@@ -34,8 +36,12 @@ export function applyCleanupCutsToSpine(params: {
   totalSavedSeqMs: number;
   allReviewCandidates: ContextualFillerReviewCandidate[];
   allRepetitionCandidates: RepetitionRestartCandidate[];
+  distantRepetitionCandidates: RepetitionRestartCandidate[];
+  preservedUntranscribed: PreservedUntranscribedSpan[];
+  tailWithoutAudioCandidates: TailWithoutAudioCandidate[];
   selectedReviewIds: Set<string>;
   selectedRepetitionIds: Set<string>;
+  selectedTailIds: Set<string>;
   buildCleanupTrace: (rev: number) => DecisionTrace;
 }): DialogueCleanupResult {
   const {
@@ -51,8 +57,12 @@ export function applyCleanupCutsToSpine(params: {
     totalSavedSeqMs,
     allReviewCandidates,
     allRepetitionCandidates,
+    distantRepetitionCandidates,
+    preservedUntranscribed,
+    tailWithoutAudioCandidates,
     selectedReviewIds,
     selectedRepetitionIds,
+    selectedTailIds,
     buildCleanupTrace,
   } = params;
 
@@ -81,6 +91,13 @@ export function applyCleanupCutsToSpine(params: {
       review_candidates: allReviewCandidates.filter((rc) => !selectedReviewIds.has(rc.id)),
       repetition_candidates: allRepetitionCandidates.filter(
         (rr) => !selectedRepetitionIds.has(rr.id)
+      ),
+      distant_repetition_candidates: distantRepetitionCandidates.filter(
+        (rr) => !selectedRepetitionIds.has(rr.id)
+      ),
+      preserved_untranscribed: preservedUntranscribed,
+      tail_without_audio_candidates: tailWithoutAudioCandidates.filter(
+        (tail) => !selectedTailIds.has(tail.id)
       ),
       decision_trace: buildCleanupTrace(exciseRes.revision),
       remaining_clips: exciseRes.remainingClips,
@@ -255,6 +272,13 @@ export function applyCleanupCutsToSpine(params: {
     review_candidates: allReviewCandidates.filter((rc) => !selectedReviewIds.has(rc.id)),
     repetition_candidates: allRepetitionCandidates.filter(
       (rr) => !selectedRepetitionIds.has(rr.id)
+    ),
+    distant_repetition_candidates: distantRepetitionCandidates.filter(
+      (rr) => !selectedRepetitionIds.has(rr.id)
+    ),
+    preserved_untranscribed: preservedUntranscribed,
+    tail_without_audio_candidates: tailWithoutAudioCandidates.filter(
+      (tail) => !selectedTailIds.has(tail.id)
     ),
     decision_trace: buildCleanupTrace(revision),
     remaining_clips: remainingClips,

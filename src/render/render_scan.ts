@@ -1,8 +1,10 @@
 // Post-render scans: blank/backdrop frames and edge strips (split out of renderer.ts).
+import { progressBegin, progressFinish } from "../core/progress.js";
 import {
   spawnWatchedSync
 } from "../core/subprocess.js";
 import {
+  computeRenderDurationMs,
   findBackdropOnlySpans
 } from "../core/timeline.js";
 import {
@@ -99,6 +101,8 @@ export function scanRenderedMp4ForEdgeStrips(
   const [w, h] = String(probe.stdout || "").trim().split(",").map(Number);
   if (!(w > 32 && h > 32)) return null;
 
+  progressBegin("edge scan", 1);
+  try {
   const strip = 8;
   const regions = {
     right: { outer: `crop=${strip}:${h}:${w - strip}:0`, inner: `crop=${strip}:${h}:${w - 2 * strip}:0` },
@@ -193,6 +197,9 @@ export function scanRenderedMp4ForEdgeStrips(
     if (checked > 0 && hits >= Math.max(2, Math.ceil(checked * 0.6))) affected.push(edge);
   }
   return affected.length > 0 ? DIAGNOSTICS.RENDER_EDGE_STRIP(affected, w, h) : null;
+  } finally {
+    progressFinish("edge scan");
+  }
 }
 
 export function scanRenderedMp4ForBlankFrames(
@@ -202,6 +209,9 @@ export function scanRenderedMp4ForBlankFrames(
 ): PostRenderBlankScanResult {
   const t0 = Date.now();
   const fps = Math.max(1, seq.stage.fps);
+  const expectedFrames = Math.max(1, Math.round((computeRenderDurationMs(seq) / 1000) * fps));
+  progressBegin("blank scan", expectedFrames, { mode: "ffmpeg-frames" });
+  try {
   const frameDurMs = 1000 / fps;
   const scanW = 64;
   const scanH = 64;
@@ -329,4 +339,7 @@ export function scanRenderedMp4ForBlankFrames(
     blank_at_s: events.map((e) => e.start_s),
     diagnostics,
   };
+  } finally {
+    progressFinish("blank scan");
+  }
 }

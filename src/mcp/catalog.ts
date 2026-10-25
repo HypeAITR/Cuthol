@@ -394,3 +394,39 @@ export function buildCliArgv(spec: ActionSpec, values: Record<string, unknown>, 
   argv.push(`--dir=${workspaceDir}`);
   return argv;
 }
+
+export interface CatalogFlagIssue {
+  tool: string;
+  action: string | null;
+  param: string;
+  flag: string;
+}
+
+/**
+ * Flag names are stored without leading dashes. `buildCliArgv` always writes `--${flag}`.
+ * A dash prefix is emitted twice (`----workers`) and the CLI rejects it as CUTHOL-G110.
+ */
+export function catalogFlagIssues(specs: readonly ActionSpec[] = ACTION_SPECS): CatalogFlagIssue[] {
+  const issues: CatalogFlagIssue[] = [];
+  for (const spec of specs) {
+    for (const prm of spec.params) {
+      if (typeof prm.flag === "string" && prm.flag.startsWith("-")) {
+        issues.push({
+          tool: spec.tool,
+          action: spec.action,
+          param: prm.name,
+          flag: prm.flag,
+        });
+      }
+    }
+  }
+  return issues;
+}
+
+const dashedCatalogFlags = catalogFlagIssues();
+if (dashedCatalogFlags.length > 0) {
+  const listed = dashedCatalogFlags
+    .map((issue) => `${issue.tool}.${issue.param}=${issue.flag}`)
+    .join(", ");
+  throw new Error(`Catalog flag must not start with '-': ${listed}`);
+}

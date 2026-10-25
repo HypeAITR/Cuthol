@@ -16,6 +16,7 @@ import {
   RenderOverlaySummary,
   runCollectedOverlays,
 } from "../compositor/hyperframes_bridge.js";
+import { resolveDraftOverlayRes, setDraftNativeOverlayCapture } from "../compositor/hf_render.js";
 import {
   type RenderEncoderFallback,
   resolveVideoEncoderForRender,
@@ -30,6 +31,7 @@ import {
   resolveMaxClipsPerRenderSegment,
   resolveOverlayConcurrency,
 } from "../core/env.js";
+import { progressBegin, progressStop } from "../core/progress.js";
 import { CutholSequence } from "../core/schema.js";
 import { loadSequence, WorkspacePaths } from "../core/workspace.js";
 import { verifySequence, VerificationReport } from "../verify/gates.js";
@@ -95,6 +97,7 @@ function prepareSequenceRender(options: {
   preset?: RenderPreset;
   workers?: number;
   encoder?: string;
+  overlayRes?: string;
 }): PreparedSequenceRender {
   const tTotal0 = Date.now();
   const { paths, sequence } = loadSequence(options.workspaceDir);
@@ -140,7 +143,15 @@ function prepareSequenceRender(options: {
     workersPerOverlay: workers,
     coldOverlayCount: uniqueCompCount > 0 ? uniqueCompCount : 1,
   });
-  beginOverlayRenderTracking({ concurrency: overlayConcurrency, workers });
+  const nativeCapture =
+    preset === "draft_480p" && resolveDraftOverlayRes(options.overlayRes) === "native";
+  setDraftNativeOverlayCapture(nativeCapture);
+  beginOverlayRenderTracking({
+    concurrency: overlayConcurrency,
+    workers,
+    nativeCaptureForMasterReuse: nativeCapture,
+  });
+  if (uniqueCompCount > 0) progressBegin("overlay", uniqueCompCount);
 
   let overlayPrepassMs = 0;
   if (uniqueCompCount >= 2 && overlayConcurrency > 1) {
@@ -284,39 +295,45 @@ export function renderSequenceToMp4(options: {
   preset?: RenderPreset;
   workers?: number;
   encoder?: string;
+  overlayRes?: string;
 }): RenderOutputSummary {
-  const prep = prepareSequenceRender(options);
+  try {
+    const prep = prepareSequenceRender(options);
 
-  const encodeResult =
-    prep.segments.length <= 1
-      ? renderSingleSegmentPath(prep)
-      : renderMultiSegmentPath(prep);
+    const encodeResult =
+      prep.segments.length <= 1
+        ? renderSingleSegmentPath(prep)
+        : renderMultiSegmentPath(prep);
 
-  fs.renameSync(prep.tmpOut, prep.resolvedOut);
-  const stat = fs.statSync(prep.resolvedOut);
-  const {
-    blankScan,
-    blankScanMs,
-    edgeStripScanMs,
-    audioHealth,
-    audioHealthMs,
-  } = runPostRenderChecks({
-    resolvedOut: prep.resolvedOut,
-    sequence: prep.sequence,
-    paths: prep.paths,
-    totalDurationMs: prep.totalDurationMs,
-    maxItemsPerSegment: prep.maxItemsPerSegment,
-    verification: prep.verification,
-  });
+    fs.renameSync(prep.tmpOut, prep.resolvedOut);
+    const stat = fs.statSync(prep.resolvedOut);
+    const {
+      blankScan,
+      blankScanMs,
+      edgeStripScanMs,
+      audioHealth,
+      audioHealthMs,
+    } = runPostRenderChecks({
+      resolvedOut: prep.resolvedOut,
+      sequence: prep.sequence,
+      paths: prep.paths,
+      totalDurationMs: prep.totalDurationMs,
+      maxItemsPerSegment: prep.maxItemsPerSegment,
+      verification: prep.verification,
+    });
 
-  return buildRenderOutputSummary({
-    prep,
-    encodeResult,
-    sizeBytes: stat.size,
-    blankScan,
-    blankScanMs,
-    edgeStripScanMs,
-    audioHealth,
-    audioHealthMs,
-  });
+    return buildRenderOutputSummary({
+      prep,
+      encodeResult,
+      sizeBytes: stat.size,
+      blankScan,
+      blankScanMs,
+      edgeStripScanMs,
+      audioHealth,
+      audioHealthMs,
+    });
+  } finally {
+    setDraftNativeOverlayCapture(false);
+    progressStop();
+  }
 }

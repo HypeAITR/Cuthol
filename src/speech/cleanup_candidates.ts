@@ -1,11 +1,21 @@
 // Candidate loading, review/repetition collection, and cut_candidates resolution for dialogue cleanup.
 
+import fs from "node:fs";
 import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { CutholSequence, SpineClip } from "../core/schema.js";
+import { spawnWatchedSync } from "../core/subprocess.js";
 import { parseTimeMs } from "../core/time.js";
+import { loadSequence } from "../core/workspace.js";
+import { resolveLibraryItemPath } from "../library/probe.js";
 import { analyzeAssetWaveform, measureAssetAcousticWindows } from "../library/waveform.js";
 import { sourceMsToSequenceMs } from "../sequence/spine.js";
-import type { ContextualFillerReviewCandidate } from "./cleanup.js";
+import { rememberAcousticProfile } from "./cleanup_acoustic.js";
+import type {
+  ContextualFillerReviewCandidate,
+  PlannedCutInterval,
+  PreservedUntranscribedSpan,
+  TailWithoutAudioCandidate,
+} from "./cleanup.js";
 import {
   DetectedDisfluencySpan,
   isContextualFillerIsolated,
@@ -16,12 +26,15 @@ import {
 } from "./providers.js";
 import {
   detectRepetitionAndRestartCandidates,
+  DISTANT_REPETITION_GAP_MS,
   RepetitionRestartCandidate,
 } from "./repetitions.js";
 import { loadCachedTranscriptForAsset } from "./transcribe.js";
 
+const NEAR_PRESERVED_CANDIDATE_MS = 1000;
+
 export interface SelectedCandidateSpan {
-  kind: "filler" | "repetition";
+  kind: "filler" | "repetition" | "tail_without_audio";
   candidateId?: string;
   label: string;
   startMs: number;
@@ -42,6 +55,7 @@ export interface CleanupAssetLoaders {
   getAssetAcousticProfile: (
     assetHandle: string
   ) => ReturnType<typeof measureAssetAcousticWindows>;
+  getAssetAudioEndMs: (assetHandle: string) => number | null;
 }
 
 export function resolveCleanupTargetClips(
@@ -208,14 +222,70 @@ export function createCleanupAssetLoaders(options: {
       profile = null;
     }
     acousticCache.set(assetHandle, profile);
+    if (profile) {
+      try {
+        const { sequence } = loadSequence(options.workspaceDir);
+        const item = sequence.library.find((asset) => asset.handle === assetHandle);
+        if (item) rememberAcousticProfile(item.digest_sha256, profile);
+      } catch {
+        // The profile is still returned for this cleanup call.
+      }
+    }
     return profile;
+  };
+
+  const audioEndCache = new Map<string, number | null>();
+  const getAssetAudioEndMs = (assetHandle: string): number | null => {
+    if (audioEndCache.has(assetHandle)) return audioEndCache.get(assetHandle) ?? null;
+    let endMs: number | null = null;
+    try {
+      const { paths, sequence } = loadSequence(options.workspaceDir);
+      const item = sequence.library.find((asset) => asset.handle === assetHandle);
+      if (item?.probe.has_audio) {
+        const ends: number[] = [];
+        const profile = getAssetAcousticProfile(assetHandle);
+        if (profile && profile.duration_ms > 0) ends.push(profile.duration_ms);
+        const absPath = resolveLibraryItemPath(paths.rootDir, item);
+        const streamMs = readAudioStreamDurationMs(absPath);
+        if (streamMs != null && streamMs > 0) ends.push(streamMs);
+        endMs = ends.length > 0 ? Math.min(...ends) : null;
+      }
+    } catch {
+      endMs = null;
+    }
+    audioEndCache.set(assetHandle, endMs);
+    return endMs;
   };
 
   return {
     getAssetTranscriptAndSpans,
     getAssetRepetitionCandidates,
     getAssetAcousticProfile,
+    getAssetAudioEndMs,
   };
+}
+
+function readAudioStreamDurationMs(absPath: string): number | null {
+  if (!absPath || !fs.existsSync(absPath)) return null;
+  const proc = spawnWatchedSync(
+    "ffprobe",
+    [
+      "-v",
+      "error",
+      "-select_streams",
+      "a:0",
+      "-show_entries",
+      "stream=duration",
+      "-of",
+      "csv=p=0",
+      absPath,
+    ],
+    { encoding: "utf8", step: "ffprobe audio duration" }
+  );
+  if (proc.status !== 0) return null;
+  const seconds = Number.parseFloat(String(proc.stdout).trim());
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return Math.round(seconds * 1000);
 }
 
 export function collectCleanupReviewAndRepetitionCandidates(params: {
@@ -324,6 +394,113 @@ export function collectCleanupReviewAndRepetitionCandidates(params: {
   };
 }
 
+export function partitionRepetitionCandidates(candidates: RepetitionRestartCandidate[]): {
+  near: RepetitionRestartCandidate[];
+  distant: RepetitionRestartCandidate[];
+} {
+  const near: RepetitionRestartCandidate[] = [];
+  const distant: RepetitionRestartCandidate[] = [];
+  for (const candidate of candidates) {
+    if (candidate.gap_ms > DISTANT_REPETITION_GAP_MS) distant.push(candidate);
+    else near.push(candidate);
+  }
+  return { near, distant };
+}
+
+export function collectTailWithoutAudioCandidates(params: {
+  sequence: CutholSequence;
+  targetClips: SpineClip[];
+  getAssetAudioEndMs: CleanupAssetLoaders["getAssetAudioEndMs"];
+}): TailWithoutAudioCandidate[] {
+  const tails: TailWithoutAudioCandidate[] = [];
+  const seen = new Set<string>();
+  for (const clip of params.targetClips) {
+    const asset = params.sequence.library.find((item) => item.handle === clip.asset_handle);
+    if (!asset?.probe.has_audio || !asset.probe.has_video) continue;
+    const audioEnd = params.getAssetAudioEndMs(clip.asset_handle);
+    if (audioEnd == null || audioEnd <= 0) continue;
+    if (audioEnd >= asset.probe.duration_ms) continue;
+    const tailStart = Math.max(clip.source_in_ms, audioEnd);
+    const tailEnd = Math.min(clip.source_out_ms, asset.probe.duration_ms);
+    if (tailEnd <= tailStart) continue;
+    const fps = asset.probe.fps > 0 ? asset.probe.fps : params.sequence.stage.fps;
+    if (!(fps > 0) || (tailEnd - tailStart) * fps < 1000) continue;
+    const id = `ta_${clip.asset_handle}_${tailStart}_${tailEnd}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    tails.push({
+      id,
+      kind: "tail_without_audio",
+      clip_id: clip.id,
+      asset_handle: clip.asset_handle,
+      source_start_ms: tailStart,
+      source_end_ms: tailEnd,
+      duration_ms: tailEnd - tailStart,
+      sequence_start_ms: sourceMsToSequenceMs(clip, tailStart),
+      sequence_end_ms: sourceMsToSequenceMs(clip, tailEnd),
+    });
+  }
+  return tails;
+}
+
+function rangeDistance(startA: number, endA: number, startB: number, endB: number): number {
+  if (endA < startB) return startB - endA;
+  if (endB < startA) return startA - endB;
+  return 0;
+}
+
+export function buildPreservedUntranscribed(params: {
+  cuts: PlannedCutInterval[];
+  repetitionCandidates: RepetitionRestartCandidate[];
+  selectedSpansByAsset: Map<string, SelectedCandidateSpan[]>;
+}): PreservedUntranscribedSpan[] {
+  const preserved: PreservedUntranscribedSpan[] = [];
+  const seen = new Set<string>();
+  for (const cut of params.cuts) {
+    if (!cut.clip_id || !cut.untranscribed_audio_spans) continue;
+    for (const span of cut.untranscribed_audio_spans) {
+      const key = `${cut.clip_id}:${span.start_ms}:${span.end_ms}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      let bestId: string | undefined;
+      let bestDistance = NEAR_PRESERVED_CANDIDATE_MS + 1;
+      for (const candidate of params.repetitionCandidates) {
+        if (cut.asset_handle && candidate.asset_handle !== cut.asset_handle) continue;
+        const distance = rangeDistance(
+          span.start_ms,
+          span.end_ms,
+          candidate.source_start_ms,
+          candidate.source_end_ms
+        );
+        if (distance <= NEAR_PRESERVED_CANDIDATE_MS && distance < bestDistance) {
+          bestDistance = distance;
+          bestId = candidate.id;
+        }
+      }
+      const selected = cut.asset_handle
+        ? (params.selectedSpansByAsset.get(cut.asset_handle) ?? [])
+        : [];
+      for (const sel of selected) {
+        if (!sel.candidateId) continue;
+        const distance = rangeDistance(span.start_ms, span.end_ms, sel.startMs, sel.endMs);
+        if (distance <= NEAR_PRESERVED_CANDIDATE_MS && distance < bestDistance) {
+          bestDistance = distance;
+          bestId = sel.candidateId;
+        }
+      }
+      preserved.push({
+        clip_id: cut.clip_id,
+        source_start_ms: span.start_ms,
+        source_end_ms: span.end_ms,
+        duration_ms: span.duration_ms,
+        max_dbfs: span.max_dbfs,
+        ...(bestId ? { near_candidate_id: bestId } : {}),
+      });
+    }
+  }
+  return preserved;
+}
+
 function addSelectedSpan(
   customSelectedSpansByAsset: Map<string, SelectedCandidateSpan[]>,
   assetHandle: string,
@@ -413,17 +590,26 @@ export function resolveSelectedCutCandidates(params: {
   targetClips: SpineClip[];
   allReviewCandidates: ContextualFillerReviewCandidate[];
   allRepetitionCandidates: RepetitionRestartCandidate[];
+  tailWithoutAudioCandidates?: TailWithoutAudioCandidate[];
 }): {
   selectedReviewIds: Set<string>;
   selectedRepetitionIds: Set<string>;
+  selectedTailIds: Set<string>;
   customSelectedSpansByAsset: Map<string, SelectedCandidateSpan[]>;
 } {
-  const { cutCandidates, targetClips, allReviewCandidates, allRepetitionCandidates } = params;
+  const {
+    cutCandidates,
+    targetClips,
+    allReviewCandidates,
+    allRepetitionCandidates,
+    tailWithoutAudioCandidates = [],
+  } = params;
 
   // Pass 2: Resolve `cut_candidates` selections (supports persistent `cf_...`, `rr_...`,
   // `:keep=K` / `:cut=K` / `#K` attempt overrides, legacy ordinal `cf_01`/`rr_01`, and source ranges `start..end`)
   const selectedReviewIds = new Set<string>();
   const selectedRepetitionIds = new Set<string>();
+  const selectedTailIds = new Set<string>();
   const customSelectedSpansByAsset = new Map<string, SelectedCandidateSpan[]>();
 
   const rawCutSpecs = (cutCandidates ?? [])
@@ -549,6 +735,21 @@ export function resolveSelectedCutCandidates(params: {
         );
         continue;
       }
+    }
+
+    if (lower.startsWith("ta_")) {
+      const foundTail = tailWithoutAudioCandidates.find((tail) => tail.id.toLowerCase() === lower);
+      if (foundTail && !selectedTailIds.has(foundTail.id)) {
+        selectedTailIds.add(foundTail.id);
+        addSelectedSpan(customSelectedSpansByAsset, foundTail.asset_handle, {
+          kind: "tail_without_audio",
+          candidateId: foundTail.id,
+          label: "tail_without_audio",
+          startMs: foundTail.source_start_ms,
+          endMs: foundTail.source_end_ms,
+        });
+      }
+      continue;
     }
 
     // Check source range (`16785..16945ms`, `vid_01:36150..42880ms`, `36.15s..42.88s`)
@@ -681,6 +882,7 @@ export function resolveSelectedCutCandidates(params: {
   return {
     selectedReviewIds,
     selectedRepetitionIds,
+    selectedTailIds,
     customSelectedSpansByAsset,
   };
 }

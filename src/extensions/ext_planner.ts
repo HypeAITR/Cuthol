@@ -18,7 +18,12 @@ import {
 import { commitVerifiedMutation, VerificationReport, verifySequence } from "../verify/gates.js";
 import { buildPlannerSnapshot } from "./ext_events.js";
 import { ExtensionScope, assertStayInsideDir, assertScriptRespectsNetworkPolicy } from "./ext_manifest.js";
-import { resolveValidatedParams } from "./ext_processor.js";
+import {
+  extensionTimeoutFailureDetail,
+  isSpawnTimeout,
+  resolveExtensionTimeoutMs,
+  resolveValidatedParams,
+} from "./ext_processor.js";
 import { resolveExtension, listFilesRecursiveRelative, hashExtensionDirectory } from "./ext_registry.js";
 
 const ALLOWED_PATCH_ROOT_KEYS = new Set([
@@ -300,6 +305,9 @@ export function runExtensionPlanner(options: {
   );
   const snapshotPath = path.join(isolatedTmpDir, "snapshot.json");
   const patchOutPath = path.join(isolatedTmpDir, "patch.json");
+  const extTmpDir = path.join(isolatedTmpDir, "tmp");
+  fs.mkdirSync(extTmpDir);
+  const planTimeoutMs = resolveExtensionTimeoutMs(planner.timeout_sec, "120");
 
   let rawPatchObj: unknown;
   try {
@@ -317,9 +325,10 @@ export function runExtensionPlanner(options: {
           CUTHOL_EXT_SNAPSHOT: snapshotPath,
           CUTHOL_EXT_OUTPUT: patchOutPath,
           CUTHOL_EXT_PARAMS: JSON.stringify(resolvedParams),
+          CUTHOL_EXT_TMP: extTmpDir,
         },
         encoding: "utf8",
-        timeout: 120_000,
+        ...(planTimeoutMs !== undefined ? { timeout: planTimeoutMs } : {}),
         maxBuffer: 8 * 1024 * 1024,
         windowsHide: true,
       }
@@ -368,16 +377,26 @@ export function runExtensionPlanner(options: {
       );
     }
 
-    // 3. Check sandbox extra files violation
+    // 3. Check sandbox extra files violation. `tmp/` is the scratch directory.
     const sandboxEntries = fs.readdirSync(isolatedTmpDir);
     const extraSandbox = sandboxEntries.filter(
-      (e) => e !== "snapshot.json" && e !== "patch.json"
+      (entry) => entry !== "snapshot.json" && entry !== "patch.json" && entry !== "tmp"
     );
     if (extraSandbox.length > 0) {
       throw new CutholError(
         DIAGNOSTICS.EXTENSION_SECURITY_VIOLATION(
           ext.name,
           `Planlayıcı betiği Cuthol'un verdiği çıktı yolu dışına ('${extraSandbox.join(", ")}') dosya yazdı.`
+        )
+      );
+    }
+
+    if (isSpawnTimeout(nodeProc)) {
+      throw new CutholError(
+        DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
+          ext.name,
+          `planner:${planName}`,
+          extensionTimeoutFailureDetail("Planlayıcı betiği", planner.timeout_sec, "120")
         )
       );
     }
@@ -434,6 +453,7 @@ export function runExtensionPlanner(options: {
       }
     }
   } finally {
+    fs.rmSync(extTmpDir, { recursive: true, force: true });
     fs.rmSync(isolatedTmpDir, { recursive: true, force: true });
   }
 

@@ -3,11 +3,27 @@
 import { DecisionTraceItem } from "../core/decision_trace.js";
 import { SpineClip } from "../core/schema.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
-import { measureAssetAcousticWindows } from "../library/waveform.js";
+import { AcousticWindowProfile, measureAssetAcousticWindows } from "../library/waveform.js";
 import { RawTranscriptWord } from "./providers.js";
 
+/** Profiles measured during cleanup, keyed by library digest. Absent entries are skipped. */
+const acousticProfilesByDigest = new Map<string, AcousticWindowProfile>();
+
+export function rememberAcousticProfile(
+  digest: string,
+  profile: AcousticWindowProfile | null
+): void {
+  if (!digest || !profile) return;
+  acousticProfilesByDigest.set(digest, profile);
+}
+
+export function peekCachedAcousticProfile(digest: string): AcousticWindowProfile | null {
+  if (!digest) return null;
+  return acousticProfilesByDigest.get(digest) ?? null;
+}
+
 export interface RawCandidate {
-  kind: "pause" | "filler" | "repetition";
+  kind: "pause" | "filler" | "repetition" | "tail_without_audio";
   candidateId?: string;
   label: string;
   rawStart: number;
@@ -20,6 +36,12 @@ export interface RawCandidate {
   overlappingWords: string[];
   acousticEdgeTrimmed?: boolean;
   splitAroundUntranscribedAudio?: boolean;
+  requestedSourceStart?: number;
+  requestedSourceEnd?: number;
+  edgeReason?: CleanupEdgeReason;
+  edgeGuardStart?: number;
+  edgeGuardEnd?: number;
+  trailingSilenceGuardEnd?: number;
   untranscribedAudioSpans?: Array<{
     start_ms: number;
     end_ms: number;
@@ -28,12 +50,19 @@ export interface RawCandidate {
   }>;
 }
 
+export type CleanupEdgeReason =
+  | "pulled_in_before_speech"
+  | "extended_into_silence"
+  | "split_around_untranscribed_audio"
+  | "unchanged";
+
 /**
- * Refines a selected word/repetition/restart candidate cut `[rawStart .. rawEnd]`
- * using the asset's 25ms RMS acoustic profile and transcript words:
- * - Never clips neighboring kept words outside the selected cut interval.
- * - Snaps boundary silence edges to acoustic silent windows (`<= silence_floor_dbfs`) with `padMs` collar before/after kept words.
- * - Preserves untranscribed interior audio bursts (`> 120ms`, `> silence_floor_dbfs`) in boundary silence gaps.
+ * Refines a selected cut `[rawStart .. rawEnd]` against the 25ms RMS profile.
+ * The edge may move outward from the requested boundary only through silence,
+ * and it stops one window before the first above-threshold window. An edge that
+ * already lies in speech after the cut words is pulled inward, ahead of that attack.
+ * An above-threshold run longer than `MIN_UNTRANSCRIBED_SPEECH_MS` that starts after
+ * the cut words and ends before the requested end is kept: the cut stops `padMs` before it.
  */
 export function refineSelectedCandidateSpanAcoustically(options: {
   clip: SpineClip;
@@ -48,22 +77,28 @@ export function refineSelectedCandidateSpanAcoustically(options: {
   endMs: number;
   acousticEdgeTrimmed: boolean;
   splitAroundUntranscribedAudio: boolean;
+  edgeReason: CleanupEdgeReason;
   untranscribedAudioSpans?: Array<{
     start_ms: number;
     end_ms: number;
     duration_ms: number;
     max_dbfs: number;
   }>;
+  preservedSpeechStartMs?: number;
+  trailingSilenceGuardEndMs?: number;
 } {
   const { clip, rawStart, rawEnd, padMs, minPauseMs, transcriptWords, acousticProfile } = options;
-  let startMs = Math.max(clip.source_in_ms, rawStart);
-  let endMs = Math.min(clip.source_out_ms, rawEnd);
+  const requestedStart = Math.max(clip.source_in_ms, rawStart);
+  const requestedEnd = Math.min(clip.source_out_ms, rawEnd);
+  let startMs = requestedStart;
+  let endMs = requestedEnd;
   if (endMs <= startMs) {
     return {
       startMs,
       endMs,
       acousticEdgeTrimmed: false,
       splitAroundUntranscribedAudio: false,
+      edgeReason: "unchanged",
     };
   }
 
@@ -96,29 +131,43 @@ export function refineSelectedCandidateSpanAcoustically(options: {
     cutWords.length > 0 ? Math.max(...cutWords.map((w) => w.source_end_ms)) : endMs;
 
   // Never overlap neighboring kept words
+  let leftReason: CleanupEdgeReason = "unchanged";
+  let rightReason: CleanupEdgeReason = "unchanged";
   if (prevKeptWord && startMs < prevKeptWord.source_end_ms) {
     startMs = prevKeptWord.source_end_ms;
+    leftReason = "pulled_in_before_speech";
   }
   if (nextKeptWord && endMs > nextKeptWord.source_start_ms) {
     endMs = nextKeptWord.source_start_ms;
+    rightReason = "pulled_in_before_speech";
   }
 
-  let acousticEdgeTrimmed = false;
-  let splitAroundUntranscribedAudio = false;
+  const rank: Record<CleanupEdgeReason, number> = {
+    unchanged: 0,
+    extended_into_silence: 1,
+    split_around_untranscribed_audio: 2,
+    pulled_in_before_speech: 3,
+  };
   const untranscribedSpans: Array<{
     start_ms: number;
     end_ms: number;
     duration_ms: number;
     max_dbfs: number;
   }> = [];
+  let preservedSpeechStartMs: number | undefined;
+  let trailingSilenceGuardEndMs: number | undefined;
+
+  // Speech that belongs to words inside the selection is cut content.
+  // A later active run is kept speech, even when ASR starts that word late.
+  const keptSpeechAfterMs = cutWords.length > 0 ? lastCutWordEnd : requestedStart;
 
   if (acousticProfile && acousticProfile.has_silence_variation) {
     const winMs = acousticProfile.window_ms;
     const winDbs = acousticProfile.window_dbfs;
     const floorDb = acousticProfile.silence_floor_dbfs;
     const minUntranscribedMs = OPEN_STANDARDS.DIALOGUE_CLEANUP.MIN_UNTRANSCRIBED_SPEECH_MS;
+    const isActive = (w: number) => w >= 0 && w < winDbs.length && winDbs[w] > floorDb;
 
-    // 1. Leading gap between prevKeptWord and firstCutWordStart
     const leadGapStart = prevKeptWord ? prevKeptWord.source_end_ms : clip.source_in_ms;
     if (firstCutWordStart > leadGapStart) {
       const minAllowedStart =
@@ -127,100 +176,218 @@ export function refineSelectedCandidateSpanAcoustically(options: {
           : Math.min(firstCutWordStart, leadGapStart + padMs);
       if (startMs < minAllowedStart) {
         startMs = minAllowedStart;
-        acousticEdgeTrimmed = true;
+        leftReason = "pulled_in_before_speech";
       }
-      // Step forward past any active tail of prevKeptWord
+      // Step past a kept-word tail, then leave one silent window before the cut.
       const w0 = Math.max(0, Math.floor(startMs / winMs));
       const w1 = Math.min(winDbs.length, Math.floor(firstCutWordStart / winMs));
       let wCur = w0;
-      while (wCur < w1 && winDbs[wCur] > floorDb) {
-        wCur++;
-      }
+      while (wCur < w1 && isActive(wCur)) wCur++;
       if (wCur > w0) {
-        startMs = Math.min(firstCutWordStart, wCur * winMs);
-        acousticEdgeTrimmed = true;
+        startMs = Math.min(firstCutWordStart, (wCur + 1) * winMs);
+        leftReason = "pulled_in_before_speech";
       }
     }
 
-    // 2. Trailing gap between lastCutWordEnd and nextKeptWord
-    const trailGapEnd = nextKeptWord ? nextKeptWord.source_start_ms : clip.source_out_ms;
-    if (trailGapEnd > lastCutWordEnd) {
-      const gapDur = trailGapEnd - lastCutWordEnd;
-      // If the selected cut ended at nextKeptWord.source_start_ms (like a restart cut) or if the trailing gap
-      // is long enough to be a pause, extend/align the right cut boundary into the silent part of the gap
-      // while leaving `padMs` collar before `nextKeptWord` and preserving any untranscribed audio burst.
-      const shouldAlignAcrossGap =
-        endMs >= trailGapEnd - 30 || gapDur >= minPauseMs || trailGapEnd - endMs < OPEN_STANDARDS.DIALOGUE_CLEANUP.MIN_REMAINDER_SLIVER_MS;
+    const extensionIsSilent = (fromMs: number, toMs: number): boolean => {
+      if (toMs <= fromMs) return true;
+      const wLo = Math.max(0, Math.floor(fromMs / winMs));
+      const wHi = Math.min(winDbs.length, Math.ceil(toMs / winMs));
+      for (let w = wLo; w < wHi; w++) {
+        const wStart = w * winMs;
+        const wEnd = wStart + winMs;
+        if (wEnd <= fromMs || wStart >= toMs) continue;
+        if (isActive(w)) return false;
+      }
+      return true;
+    };
 
-      if (shouldAlignAcrossGap) {
-        const targetMaxEnd =
-          trailGapEnd === clip.source_out_ms
-            ? clip.source_out_ms
-            : Math.max(lastCutWordEnd, trailGapEnd - padMs);
-        const w0 = Math.max(0, Math.ceil(lastCutWordEnd / winMs));
-        const w1 = Math.min(winDbs.length, Math.floor(trailGapEnd / winMs));
+    const describeRun = (startW: number) => {
+      let endW = startW + 1;
+      while (endW < winDbs.length && isActive(endW)) endW++;
+      let maxDb = winDbs[startW];
+      for (let w = startW + 1; w < endW; w++) {
+        if (winDbs[w] > maxDb) maxDb = winDbs[w];
+      }
+      const start = startW * winMs;
+      const end = endW * winMs;
+      const overlapsNextWord = nextKeptWord
+        ? end > nextKeptWord.source_start_ms - 40 && start < nextKeptWord.source_end_ms + 40
+        : false;
+      return {
+        start,
+        end,
+        duration: end - start,
+        maxDb,
+        untranscribed:
+          !overlapsNextWord && end - start > minUntranscribedMs && start > keptSpeechAfterMs + 50,
+      };
+    };
 
-        // Find any untranscribed active audio run (> minUntranscribedMs) inside the trailing gap
-        let activeRunStart = -1;
-        let activeRunMaxDb = -100;
-        let firstUntranscribedStartMs: number | null = null;
+    const rememberPreserved = (run: ReturnType<typeof describeRun>) => {
+      if (!run.untranscribed) return;
+      untranscribedSpans.push({
+        start_ms: run.start,
+        end_ms: run.end,
+        duration_ms: run.duration,
+        max_dbfs: Number(run.maxDb.toFixed(2)),
+      });
+    };
 
-        for (let w = w0; w <= w1; w++) {
-          const isAct = w < w1 && winDbs[w] > floorDb;
-          if (isAct) {
-            if (activeRunStart === -1) {
-              activeRunStart = w * winMs;
-              activeRunMaxDb = winDbs[w];
-            } else if (winDbs[w] > activeRunMaxDb) {
-              activeRunMaxDb = winDbs[w];
-            }
-          } else if (activeRunStart !== -1) {
-            const runEnd = w * winMs;
-            const runDur = runEnd - activeRunStart;
-            if (runDur > minUntranscribedMs && activeRunStart > lastCutWordEnd + 50) {
-              untranscribedSpans.push({
-                start_ms: activeRunStart,
-                end_ms: runEnd,
-                duration_ms: runDur,
-                max_dbfs: Number(activeRunMaxDb.toFixed(2)),
-              });
-              if (firstUntranscribedStartMs === null) {
-                firstUntranscribedStartMs = activeRunStart;
-              }
-            }
-            activeRunStart = -1;
-            activeRunMaxDb = -100;
-          }
+    // Runs that go silent again before the requested end are speech the transcript missed.
+    // Truncating the scan at that end would count a run that continues past it.
+    const interiorSpans: Array<{
+      start_ms: number;
+      end_ms: number;
+      duration_ms: number;
+      max_dbfs: number;
+    }> = [];
+    const scanEndMs = Math.min(
+      requestedEnd,
+      nextKeptWord ? nextKeptWord.source_start_ms : clip.source_out_ms
+    );
+    const scanW0 = Math.max(0, Math.ceil(lastCutWordEnd / winMs));
+    const scanW1 = Math.min(winDbs.length, Math.floor(scanEndMs / winMs));
+    let interiorW = -1;
+    let interiorMaxDb = -100;
+    for (let w = scanW0; w <= scanW1; w++) {
+      const isAct = w < scanW1 && isActive(w);
+      if (isAct) {
+        if (interiorW === -1) {
+          interiorW = w;
+          interiorMaxDb = winDbs[w];
+        } else if (winDbs[w] > interiorMaxDb) {
+          interiorMaxDb = winDbs[w];
         }
+      } else if (interiorW !== -1) {
+        const runStart = interiorW * winMs;
+        const runEnd = w * winMs;
+        if (
+          w < scanW1 &&
+          runEnd - runStart > minUntranscribedMs &&
+          runStart > lastCutWordEnd + 50 &&
+          runEnd <= requestedEnd
+        ) {
+          interiorSpans.push({
+            start_ms: runStart,
+            end_ms: runEnd,
+            duration_ms: runEnd - runStart,
+            max_dbfs: Number(interiorMaxDb.toFixed(2)),
+          });
+        }
+        interiorW = -1;
+        interiorMaxDb = -100;
+      }
+    }
 
-        if (firstUntranscribedStartMs !== null) {
-          endMs = Math.max(lastCutWordEnd, firstUntranscribedStartMs - padMs);
-          splitAroundUntranscribedAudio = true;
-          acousticEdgeTrimmed = true;
-        } else {
-          // Step backward out of any early acoustic onset of nextKeptWord
-          let wEnd = Math.min(w1, Math.floor(targetMaxEnd / winMs));
-          while (wEnd > w0 && winDbs[wEnd - 1] > floorDb) {
-            wEnd--;
-          }
-          const silentRightMs = Math.max(lastCutWordEnd, Math.min(targetMaxEnd, wEnd * winMs));
-          if (silentRightMs !== endMs) {
-            endMs = silentRightMs;
-            acousticEdgeTrimmed = true;
-          }
+    if (interiorSpans.length > 0) {
+      const firstStart = interiorSpans[0].start_ms;
+      const stopped = Math.max(lastCutWordEnd, firstStart - padMs);
+      if (stopped < endMs) {
+        endMs = stopped;
+        rightReason = "split_around_untranscribed_audio";
+      }
+      untranscribedSpans.push(...interiorSpans);
+      preservedSpeechStartMs = firstStart;
+      const afterMs = interiorSpans[interiorSpans.length - 1].end_ms;
+      let attackW = Math.max(0, Math.ceil(afterMs / winMs));
+      while (attackW < winDbs.length && !isActive(attackW)) attackW++;
+      if (attackW < winDbs.length) {
+        const attackMs = attackW * winMs;
+        let limit = attackMs - winMs;
+        if (nextKeptWord) {
+          limit = Math.min(limit, nextKeptWord.source_start_ms);
+          const padLimit = nextKeptWord.source_start_ms - padMs;
+          if (padLimit < attackMs) limit = Math.min(limit, Math.max(afterMs, padLimit));
+        }
+        limit = Math.min(clip.source_out_ms, limit);
+        if (limit > afterMs) trailingSilenceGuardEndMs = limit;
+      }
+    }
+
+    const boundaryW = endMs <= 0 ? 0 : Math.min(winDbs.length - 1, Math.floor((endMs - 1) / winMs));
+    let runStartW = -1;
+    if (interiorSpans.length === 0 && isActive(boundaryW)) {
+      runStartW = boundaryW;
+      while (runStartW > 0 && isActive(runStartW - 1)) runStartW--;
+    }
+
+    if (interiorSpans.length === 0 && runStartW >= 0 && runStartW * winMs > keptSpeechAfterMs) {
+      // Requested end sits in a speech run that began after the cut words.
+      const attackMs = runStartW * winMs;
+      const pulled = Math.max(requestedStart, attackMs - winMs);
+      if (pulled < endMs) {
+        endMs = pulled;
+        rightReason = "pulled_in_before_speech";
+        rememberPreserved(describeRun(runStartW));
+      }
+    } else if (interiorSpans.length === 0) {
+      let searchW =
+        runStartW >= 0 && runStartW * winMs <= keptSpeechAfterMs
+          ? (() => {
+              let w = boundaryW + 1;
+              while (w < winDbs.length && isActive(w)) w++;
+              return w;
+            })()
+          : Math.max(0, Math.ceil(endMs / winMs));
+      while (searchW < winDbs.length && !isActive(searchW)) searchW++;
+
+      const trailGapEnd = nextKeptWord ? nextKeptWord.source_start_ms : clip.source_out_ms;
+      const gapDur = trailGapEnd - keptSpeechAfterMs;
+      const shouldExtend =
+        endMs >= trailGapEnd - 30 ||
+        gapDur >= minPauseMs ||
+        trailGapEnd - endMs < OPEN_STANDARDS.DIALOGUE_CLEANUP.MIN_REMAINDER_SLIVER_MS;
+
+      if (searchW < winDbs.length) {
+        const attackMs = searchW * winMs;
+        let limit = attackMs - winMs;
+        if (nextKeptWord) {
+          limit = Math.min(limit, nextKeptWord.source_start_ms);
+          const padLimit = nextKeptWord.source_start_ms - padMs;
+          if (padLimit < attackMs) limit = Math.min(limit, Math.max(keptSpeechAfterMs, padLimit));
+        }
+        limit = Math.min(clip.source_out_ms, Math.max(requestedStart, limit));
+        const run = describeRun(searchW);
+        if (limit < endMs) {
+          endMs = limit;
+          rightReason = "pulled_in_before_speech";
+          rememberPreserved(run);
+        } else if (limit > endMs && shouldExtend && extensionIsSilent(endMs, limit)) {
+          endMs = limit;
+          rightReason = run.untranscribed ? "split_around_untranscribed_audio" : "extended_into_silence";
+          rememberPreserved(run);
+        }
+      } else if (shouldExtend) {
+        let limit = clip.source_out_ms;
+        if (nextKeptWord) limit = Math.max(keptSpeechAfterMs, nextKeptWord.source_start_ms - padMs);
+        limit = Math.min(clip.source_out_ms, limit);
+        if (limit > endMs && extensionIsSilent(endMs, limit)) {
+          endMs = limit;
+          rightReason = "extended_into_silence";
+        } else if (limit < endMs) {
+          endMs = Math.max(requestedStart, limit);
+          rightReason = "pulled_in_before_speech";
         }
       }
     }
   } else if (nextKeptWord && endMs > lastCutWordEnd && endMs > nextKeptWord.source_start_ms - padMs) {
     endMs = Math.max(lastCutWordEnd, nextKeptWord.source_start_ms - padMs);
+    rightReason = "pulled_in_before_speech";
   }
 
+  const edgeReason = rank[leftReason] >= rank[rightReason] ? leftReason : rightReason;
+  const acousticEdgeTrimmed = startMs !== requestedStart || endMs !== requestedEnd;
   return {
     startMs: Math.max(clip.source_in_ms, startMs),
     endMs: Math.min(clip.source_out_ms, Math.max(startMs, endMs)),
     acousticEdgeTrimmed,
-    splitAroundUntranscribedAudio,
+    splitAroundUntranscribedAudio:
+      preservedSpeechStartMs !== undefined || edgeReason === "split_around_untranscribed_audio",
+    edgeReason,
     ...(untranscribedSpans.length > 0 ? { untranscribedAudioSpans: untranscribedSpans } : {}),
+    ...(preservedSpeechStartMs !== undefined ? { preservedSpeechStartMs } : {}),
+    ...(trailingSilenceGuardEndMs !== undefined ? { trailingSilenceGuardEndMs } : {}),
   };
 }
 

@@ -172,6 +172,8 @@ export const OPEN_STANDARDS = {
   SIGNAL_SANITY: {
     MIN_CLIP_FRAMES: 2,
     MIN_RECOMMENDED_SPINE_CLIP_MS: 150,
+    /** Spine clips strictly between the recommended minimum and this length. */
+    SHORT_SPEECH_FRAGMENT_MAX_MS: 300,
     BLANK_FRAME_LUMA_MEAN_MAX: 6.0,
     BLANK_FRAME_LUMA_STD_MAX: 2.0,
   },

@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { progressBegin, progressFinish } from "../core/progress.js";
 import {
   type ParallelFfmpegJob,
   type ParallelFfmpegJobResult,
@@ -266,6 +267,10 @@ export function renderSingleSegmentPath(prep: PreparedSequenceRender): RenderEnc
       useStreamCopy,
     });
 
+  progressFinish("overlay");
+  const encodeFrames = Math.max(1, Math.round((prep.totalDurationMs / 1000) * fps));
+  progressBegin("encode", encodeFrames, { mode: "ffmpeg-frames" });
+
   const tEncode0 = Date.now();
   let singleStageUsed = canRemuxDirectBlob;
   let encodeMs = 0;
@@ -348,6 +353,7 @@ export function renderSingleSegmentPath(prep: PreparedSequenceRender): RenderEnc
       );
     }
   } finally {
+    progressFinish("encode");
     if (fs.existsSync(filterScriptPath)) {
       try {
         fs.unlinkSync(filterScriptPath);
@@ -788,6 +794,9 @@ export function renderMultiSegmentPath(prep: PreparedSequenceRender): RenderEnco
   }
   const compileAndOverlaysMs = Date.now() - tCompile0 + overlayPrepassMs;
 
+  progressFinish("overlay");
+  progressBegin("encode", Math.max(1, segments.length), { mode: "ffmpeg-jobs" });
+  try {
   const tEncode0 = Date.now();
   const libDigests = sequence.library.map((x) => `${x.handle}:${x.digest_sha256}`);
 
@@ -851,4 +860,7 @@ export function renderMultiSegmentPath(prep: PreparedSequenceRender): RenderEnco
     activeEncoder,
     encoderFallback,
   };
+  } finally {
+    progressFinish("encode");
+  }
 }

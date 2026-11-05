@@ -1,11 +1,12 @@
 // Audio filter-graph compiler shared by render and loudness measurement (split out of compiler.ts).
 import { computeRenderDurationMs, resolveCueStartMs } from "../core/timeline.js";
-import { CutholSequence, getCuePlaybackRate, maxSourceDurationMs, ParameterEnvelope } from "../core/schema.js";
+import { CutholSequence, SpeedRampPoint, getCuePlaybackRate, maxSourceDurationMs, ParameterEnvelope } from "../core/schema.js";
 import { WorkspacePaths } from "../core/workspace.js";
 import {
   resolveLibraryItemPath
 } from "../library/probe.js";
-import { buildAtempoChain, compileEnvelopeToFfmpegExpr, buildSeekableMediaInput } from "./compile_filters.js";
+import { buildAtempoChain, buildAudioRampTempoFilters, compileEnvelopeToFfmpegExpr, buildSeekableMediaInput } from "./compile_filters.js";
+import { getAudioRampSlicesInRange, integrateRampSourceOffsetToLocalMs, invertRampLocalMsToSourceOffset } from "../sequence/spine_time.js";
 
 export interface CompileAudioOptions {
   inputIndexOffset?: number;
@@ -20,6 +21,101 @@ export interface CompiledAudioPlan {
   audioOutPad: string;
   totalDurationMs: number;
   hasActiveAudio: boolean;
+}
+
+/** rampali klipte sesin izleyecegi zaman haritasi. */
+export interface AudioRampInfo {
+  spanMs: number;
+  fallbackRate: number;
+  ramp: SpeedRampPoint[];
+}
+
+/**
+ * hiz sonrasi ses zinciri (denoise, voice, gain, fade,
+ * dilim kirpma, gecikme, dolgu). `buildSingleAudioTrackFilterChain` icindeki
+ * hiz-sonrasi blokla ayni sira ve bicimde uretir; yalniz rampali (cok
+ * dilimli) yolda, `concat` ciktisina uygulanmak icin ayristirilmistir.
+ * Rampasiz yol `buildSingleAudioTrackFilterChain` icinde oldugu gibi durur.
+ */
+function buildRampedAudioPostFilters(options: {
+  audioChain: CutholSequence["spine"]["clips"][number]["audio_chain"] | undefined;
+  envelopes: ParameterEnvelope[];
+  postTrimDurationMs: number;
+  envelopeTimeBaseOffsetMs: number;
+  localSliceTrimSec?: [number, number];
+  timelineStartMs: number;
+  legacyPostAdelayClampEndSec?: number;
+  totalDurationSec: number;
+}): string[] {
+  const aFilters: string[] = [];
+  const envOffsetMs = options.envelopeTimeBaseOffsetMs ?? 0;
+  const ac = options.audioChain;
+  if (ac) {
+    if (ac.denoise.enabled) {
+      aFilters.push(
+        `afftdn=nr=${ac.denoise.nr_db.toFixed(1)}:nf=${ac.denoise.noise_floor_db.toFixed(1)}`
+      );
+    }
+    if (ac.voice_clarity.enabled) {
+      const compRatio = Math.max(1.0, Math.min(20.0, ac.voice_clarity.compressor_ratio));
+      aFilters.push(
+        `highpass=f=${ac.voice_clarity.highpass_hz}`,
+        `equalizer=f=3000:t=q:w=1.2:g=${ac.voice_clarity.presence_boost_db.toFixed(1)}`,
+        `acompressor=threshold=-18dB:ratio=${compRatio.toFixed(1)}:attack=15:release=150:makeup=2dB`
+      );
+    }
+    const gainEnv = options.envelopes.find((e) => e.parameter === "audio_chain.gain_db");
+    const gainExpr = compileEnvelopeToFfmpegExpr({
+      envelope: gainEnv,
+      timeBaseOffsetMs: envOffsetMs,
+      mode: "db_to_linear",
+      baseGainDb: ac.gain_db,
+    });
+    if (gainExpr) {
+      aFilters.push(`volume='${gainExpr}':eval=frame`);
+    } else if (Math.abs(ac.gain_db) > 0.01) {
+      aFilters.push(`volume=${ac.gain_db.toFixed(2)}dB`);
+    }
+    if (ac.fade_in_ms > 0) {
+      const fadeInStartMs = envOffsetMs;
+      if (fadeInStartMs + ac.fade_in_ms > 0) {
+        const stSec = Math.max(0, fadeInStartMs / 1000).toFixed(3);
+        const dSec = (Math.max(1, ac.fade_in_ms + Math.min(0, fadeInStartMs)) / 1000).toFixed(3);
+        aFilters.push(`afade=t=in:st=${stSec}:d=${dSec}`);
+      }
+    }
+    if (ac.fade_out_ms > 0) {
+      const outStartMs = options.postTrimDurationMs - ac.fade_out_ms + envOffsetMs;
+      if (outStartMs + ac.fade_out_ms > 0) {
+        const outStart = Math.max(0, outStartMs / 1000).toFixed(3);
+        const dSec = (ac.fade_out_ms / 1000).toFixed(3);
+        aFilters.push(`afade=t=out:st=${outStart}:d=${dSec}`);
+      }
+    }
+  }
+
+  if (options.localSliceTrimSec) {
+    const [slStart, slEnd] = options.localSliceTrimSec;
+    aFilters.push(
+      `atrim=start=${slStart.toFixed(6)}:end=${slEnd.toFixed(6)}`,
+      `asetpts=PTS-STARTPTS`
+    );
+  }
+
+  if (options.timelineStartMs > 0) {
+    const delayStr = Number.isInteger(options.timelineStartMs)
+      ? String(options.timelineStartMs)
+      : options.timelineStartMs.toFixed(3);
+    aFilters.push(`adelay=${delayStr}|${delayStr}`);
+  }
+  if (options.legacyPostAdelayClampEndSec !== undefined) {
+    aFilters.push(
+      `atrim=start=0:end=${options.legacyPostAdelayClampEndSec.toFixed(6)}`,
+      `asetpts=PTS-STARTPTS`
+    );
+  }
+  aFilters.push(`apad=whole_dur=${options.totalDurationSec}`);
+  return aFilters;
 }
 
 function buildSingleAudioTrackFilterChain(options: {
@@ -201,10 +297,200 @@ export function compileSequenceAudioPlan(
     envelopes: ParameterEnvelope[];
     postTrimDurationMs: number;
     timelineStartMs: number;
+    rampInfo?: AudioRampInfo;
   }): void => {
     const itemStartMs = item.timelineStartMs;
     const itemEndMs = itemStartMs + item.postTrimDurationMs;
     if (activeWin && (itemEndMs <= winStartMs + 1e-3 || itemStartMs >= winEndMs - 1e-3)) {
+      return;
+    }
+
+    // rampali (>=2 nokta) klipte ses, goruntuyle ayni integral
+    // haritasini izler (dilim + dilim hizi + kesin sure kelepcesi + concat).
+    // Kelepce (atrim 0:dt + apad dt) sart: olcumde her dilimin atempo ciktisi
+    // icerige gore +-2ms oynuyor (tonda uzama, sessizlikte kisalma); kelepcesiz
+    // 24 dilimde birikim 33ms kare sinirini asiyor. Rampasiz yol asagida
+    // oldugu gibi korunur (filtre metni bayt bayt ayni).
+    const rampInfo = item.rampInfo;
+    if (rampInfo && rampInfo.ramp.length >= 2) {
+      const rampSpanMs = Math.max(1, rampInfo.spanMs);
+      const rampFallbackRate = rampInfo.fallbackRate;
+      const ramp = rampInfo.ramp;
+      let rampReadSrcInMs = item.srcInMs;
+      let rampReadSrcOutMs = item.srcOutMs;
+      let rampRelTimelineStartMs = item.timelineStartMs;
+      let rampEnvOffsetMs = 0;
+      let rampLocalSliceTrimSec: [number, number] | undefined;
+      let rampLegacyClampEndSec: number | undefined;
+      let rampSlices: ReturnType<typeof getAudioRampSlicesInRange>;
+      if (!activeWin) {
+        rampSlices = getAudioRampSlicesInRange(rampSpanMs, rampFallbackRate, ramp, 0, rampSpanMs);
+      } else if (itemStartMs >= winStartMs) {
+        rampRelTimelineStartMs = Math.max(0, Number((itemStartMs - winStartMs).toFixed(3)));
+        if (itemEndMs > winEndMs + 1e-3) {
+          const maxLocalPlayMs = Math.max(0.001, winEndMs - itemStartMs);
+          const uReadEnd = invertRampLocalMsToSourceOffset(
+            rampSpanMs, rampFallbackRate, ramp, maxLocalPlayMs + 500
+          );
+          rampReadSrcOutMs = Math.min(item.srcOutMs, item.srcInMs + Math.ceil(uReadEnd));
+          const readU1 = Math.max(1, rampReadSrcOutMs - item.srcInMs);
+          rampSlices = getAudioRampSlicesInRange(rampSpanMs, rampFallbackRate, ramp, 0, readU1);
+          const forceLegacyClamp = process.env.CUTHOL_TEST_LEGACY_POST_ADELAY_TRIM === "1";
+          if (forceLegacyClamp) {
+            rampLegacyClampEndSec = totalDurationSec;
+          } else {
+            const sliceEndSec = Math.max(
+              0.001,
+              (winEndMs - (winStartMs + rampRelTimelineStartMs)) / 1000
+            );
+            rampLocalSliceTrimSec = [0, sliceEndSec];
+          }
+        } else {
+          rampSlices = getAudioRampSlicesInRange(rampSpanMs, rampFallbackRate, ramp, 0, rampSpanMs);
+        }
+      } else {
+        rampRelTimelineStartMs = 0;
+        const localWinStartMs = winStartMs - itemStartMs;
+        const localWinEndMs = Math.min(item.postTrimDurationMs, winEndMs - itemStartMs);
+        const rampHasStatefulFilter = true;
+        let rampPreRollMs = rampHasStatefulFilter ? Math.min(localWinStartMs, 500) : 0;
+        const rampFadeInMs = item.audioChain?.fade_in_ms ?? 0;
+        const rampFadeOutMs = item.audioChain?.fade_out_ms ?? 0;
+        if (rampFadeInMs > 0 && localWinStartMs < rampFadeInMs) {
+          rampPreRollMs = localWinStartMs;
+        }
+        if (rampFadeOutMs > 0 && localWinStartMs > item.postTrimDurationMs - rampFadeOutMs) {
+          const sinceFadeOutStartMs =
+            localWinStartMs - Math.max(0, item.postTrimDurationMs - rampFadeOutMs);
+          rampPreRollMs = Math.max(rampPreRollMs, sinceFadeOutStartMs);
+        }
+        const rampReadLocalStartMs = Math.max(0, localWinStartMs - rampPreRollMs);
+        const rampUStart = invertRampLocalMsToSourceOffset(
+          rampSpanMs, rampFallbackRate, ramp, rampReadLocalStartMs
+        );
+        const rampUEnd = invertRampLocalMsToSourceOffset(
+          rampSpanMs, rampFallbackRate, ramp, localWinEndMs + 500
+        );
+        rampReadSrcInMs = Math.min(item.srcOutMs, item.srcInMs + Math.floor(rampUStart));
+        rampReadSrcOutMs = Math.min(item.srcOutMs, item.srcInMs + Math.ceil(rampUEnd));
+        const rampReadU0 = Math.max(0, rampReadSrcInMs - item.srcInMs);
+        const rampReadU1 = Math.max(rampReadU0 + 1, rampReadSrcOutMs - item.srcInMs);
+        rampSlices = getAudioRampSlicesInRange(
+          rampSpanMs, rampFallbackRate, ramp, rampReadU0, rampReadU1
+        );
+        const rampActualReadLocalStartMs = integrateRampSourceOffsetToLocalMs(
+          rampSpanMs, rampFallbackRate, ramp, rampReadU0
+        );
+        rampEnvOffsetMs = -rampActualReadLocalStartMs;
+        const rampSliceStartSec = Math.max(0, (localWinStartMs - rampActualReadLocalStartMs) / 1000);
+        const rampSliceEndSec = Math.max(
+          rampSliceStartSec + 0.001,
+          (localWinEndMs - rampActualReadLocalStartMs) / 1000
+        );
+        rampLocalSliceTrimSec = [rampSliceStartSec, rampSliceEndSec];
+      }
+      if (rampSlices.length === 0) {
+        return;
+      }
+      const rampSeekInfo = buildSeekableMediaInput(
+        item.absAssetPath,
+        rampReadSrcInMs,
+        rampReadSrcOutMs,
+        item.assetDurationMs,
+        Boolean(activeWin) || item.assetDurationMs >= 180_000
+      );
+      const rampInIdx = addInput(rampSeekInfo.inputArgs);
+      if (rampSlices.length === 1) {
+        const s = rampSlices[0];
+        const aPad = `[${item.padPrefix}_${++aStepCounter}]`;
+        const sT0 = ((item.srcInMs + s.u0) / 1000 - rampSeekInfo.seekSec).toFixed(6);
+        const sT1 = ((item.srcInMs + s.u1) / 1000 - rampSeekInfo.seekSec).toFixed(6);
+        const sDtSec = (s.dt / 1000).toFixed(6);
+        const sTempo = buildAudioRampTempoFilters(s.rate, item.preservePitch, item.sampleRate);
+        const sPost = buildRampedAudioPostFilters({
+          audioChain: item.audioChain,
+          envelopes: item.envelopes,
+          postTrimDurationMs: item.postTrimDurationMs,
+          envelopeTimeBaseOffsetMs: rampEnvOffsetMs,
+          localSliceTrimSec: rampLocalSliceTrimSec,
+          timelineStartMs: rampRelTimelineStartMs,
+          legacyPostAdelayClampEndSec: rampLegacyClampEndSec,
+          totalDurationSec,
+        });
+        const sParts = [
+          `atrim=start=${sT0}:end=${sT1}`,
+          `asetpts=PTS-STARTPTS`,
+          ...sTempo,
+          `atrim=start=0:end=${sDtSec}`,
+          `asetpts=PTS-STARTPTS`,
+          `apad=whole_dur=${sDtSec}`,
+          ...sPost,
+        ];
+        filterChains.push(`[${rampInIdx}:a]${sParts.join(",")}${aPad}`);
+        audioMixPads.push(aPad);
+        return;
+      }
+      const rampPadIdx = ++aStepCounter;
+      const rampOutPad = `[${item.padPrefix}_${rampPadIdx}]`;
+      const rampSplitPads = rampSlices.map((_, i) => `[${item.padPrefix}_${rampPadIdx}_in${i}]`);
+      const rampSliceOutPads = rampSlices.map((_, i) => `[${item.padPrefix}_${rampPadIdx}_s${i}]`);
+      const rampConcatPad = `[${item.padPrefix}_${rampPadIdx}_cat]`;
+      // Eklemler: iki yandaki dilim de >= 6ms ise 5ms capraz gecis (acrossfade),
+      // degilse duz concat. Capraz gecisli dilim kaynagini saga 5ms*cikis hizi
+      // kadar genisletir; toplam sure degismez (genisleme - ortusme = 0).
+      const RAMP_XFADE_MS = 5;
+      const RAMP_XFADE_MIN_SLICE_MS = 6;
+      const rampXfadeAfter: boolean[] = rampSlices.map((s, i) => {
+        if (i >= rampSlices.length - 1) return false;
+        const nxt = rampSlices[i + 1];
+        return s.dt >= RAMP_XFADE_MIN_SLICE_MS && nxt.dt >= RAMP_XFADE_MIN_SLICE_MS;
+      });
+      filterChains.push(`[${rampInIdx}:a]asplit=${rampSlices.length}${rampSplitPads.join("")}`);
+      rampSlices.forEach((s, i) => {
+        const extendMs = rampXfadeAfter[i] ? RAMP_XFADE_MS : 0;
+        const extSrcMs = extendMs > 0 ? extendMs * s.rate : 0;
+        const sliceDuMs = s.u1 - s.u0 + extSrcMs;
+        const sliceOutMs = s.dt + extendMs;
+        const sliceRate = sliceDuMs / Math.max(1e-9, sliceOutMs);
+        const t0 = ((item.srcInMs + s.u0) / 1000 - rampSeekInfo.seekSec).toFixed(6);
+        const t1 = ((item.srcInMs + s.u1 + extSrcMs) / 1000 - rampSeekInfo.seekSec).toFixed(6);
+        const tempo = buildAudioRampTempoFilters(sliceRate, item.preservePitch, item.sampleRate);
+        const dtSec = (sliceOutMs / 1000).toFixed(6);
+        const parts = [
+          `atrim=start=${t0}:end=${t1}`,
+          `asetpts=PTS-STARTPTS`,
+          ...tempo,
+          `atrim=start=0:end=${dtSec}`,
+          `asetpts=PTS-STARTPTS`,
+          `apad=whole_dur=${dtSec}`,
+        ];
+        filterChains.push(`${rampSplitPads[i]}${parts.join(",")}${rampSliceOutPads[i]}`);
+      });
+      let rampMixedPad = rampSliceOutPads[0];
+      for (let i = 1; i < rampSlices.length; i++) {
+        const isLast = i === rampSlices.length - 1;
+        const jointPad = isLast ? rampConcatPad : `[${item.padPrefix}_${rampPadIdx}_m${i}]`;
+        if (rampXfadeAfter[i - 1]) {
+          filterChains.push(
+            `${rampMixedPad}${rampSliceOutPads[i]}acrossfade=d=0.005:curve1=tri:curve2=tri${jointPad}`
+          );
+        } else {
+          filterChains.push(`${rampMixedPad}${rampSliceOutPads[i]}concat=n=2:v=0:a=1${jointPad}`);
+        }
+        rampMixedPad = jointPad;
+      }
+      const rampPostFilters = buildRampedAudioPostFilters({
+        audioChain: item.audioChain,
+        envelopes: item.envelopes,
+        postTrimDurationMs: item.postTrimDurationMs,
+        envelopeTimeBaseOffsetMs: rampEnvOffsetMs,
+        localSliceTrimSec: rampLocalSliceTrimSec,
+        timelineStartMs: rampRelTimelineStartMs,
+        legacyPostAdelayClampEndSec: rampLegacyClampEndSec,
+        totalDurationSec,
+      });
+      filterChains.push(`${rampConcatPad}${rampPostFilters.join(",")}${rampOutPad}`);
+      audioMixPads.push(rampOutPad);
       return;
     }
 
@@ -379,6 +665,14 @@ export function compileSequenceAudioPlan(
       envelopes: clip.envelopes,
       postTrimDurationMs: clip.duration_ms,
       timelineStartMs: clip.timeline_in_ms,
+      rampInfo:
+        clip.playback.speed_ramp && clip.playback.speed_ramp.length >= 2
+          ? {
+              spanMs: Math.max(1, clip.source_out_ms - clip.source_in_ms),
+              fallbackRate: clip.playback.rate,
+              ramp: clip.playback.speed_ramp,
+            }
+          : undefined,
     });
   }
 

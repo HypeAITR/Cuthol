@@ -4,8 +4,10 @@ import {
   ParameterEnvelope,
   ParameterEnvelopePoint,
   SpatialPlacement,
+  SpeedRampPoint,
   TransitionSpec,
 } from "./core/schema.js";
+import { parseEasingFlag } from "./core/easing.js";
 import { parseTimeMs } from "./core/time.js";
 import {
   appendSpineClip,
@@ -21,13 +23,98 @@ import {
   transformSpineClip,
   trimSpineClip,
 } from "./sequence/spine.js";
-import { boolFlag, numFlag, parseExciseRanges, strFlag } from "./cli_args.js";
+import { setSpineGrade } from "./sequence/spine_grade.js";
+import { addSpineFx, listSpineFx, removeSpineFx, setSpineFx } from "./sequence/spine_fx.js";
+import { boolFlag, numFlag, parseExciseRanges, parsePropsJsonFlag, strFlag } from "./cli_args.js";
+
+function parseSpeedRampFlag(raw: string): SpeedRampPoint[] {
+  const fail = (detail: string): never => {
+    throw new CutholError(DIAGNOSTICS.INVALID_SPEED_RAMP(detail));
+  };
+  const tokens = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) fail(`'${raw}' içinde 'ofset:hız' çifti yok.`);
+  return tokens.map((token) => {
+    const sepIdx = token.lastIndexOf(":");
+    if (sepIdx <= 0) fail(`'${token}' 'ofset:hız' biçiminde değil.`);
+    const tStr = token.slice(0, sepIdx).trim();
+    const vStr = token
+      .slice(sepIdx + 1)
+      .trim()
+      .replace(/x$/i, "");
+    let offsetMs: number;
+    try {
+      offsetMs = parseTimeMs(tStr);
+    } catch {
+      fail(`'${tStr}' geçerli bir zaman değil.`);
+    }
+    const rate = Number(vStr);
+    if (!Number.isFinite(rate)) fail(`'${token}' hızı ('${vStr}') sayı değil.`);
+    return { source_offset_ms: offsetMs!, rate };
+  });
+}
 import {
   CLI_NOT_HANDLED,
   CliCommandContext,
   CliCommandResult,
   emitEnvelopeJson,
 } from "./cli_output.js";
+
+function parseFxScalar(raw: string): number | string | boolean {
+  const t = raw.trim();
+  if (/^(true|false)$/i.test(t)) return t.toLowerCase() === "true";
+  if (t !== "" && Number.isFinite(Number(t))) return Number(t);
+  return raw;
+}
+
+function addFxPair(target: Record<string, unknown>, token: string): void {
+  for (const piece of token.split(",")) {
+    const eq = piece.indexOf("=");
+    const name = eq > 0 ? piece.slice(0, eq).trim() : "";
+    if (!name) {
+      throw new Error(
+        `'${piece.trim() || token}' bir ad=değer çifti değil; '--param sigma=4' biçiminde verin (birden çok parametre için bayrağı tekrarlayın).`
+      );
+    }
+    target[name] = parseFxScalar(piece.slice(eq + 1));
+  }
+}
+
+/**
+ * Collects fx params from `--params '{"k":v}'` (MCP object path) plus every `--param k=v` occurrence.
+ * `parseArgv` keeps only the last `--param`, so repeats are re-scanned from the raw argv; a single `--param`
+ * may also carry comma-separated pairs.
+ */
+function collectSpineFxParams(flags: Record<string, string | boolean>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const rawJson = strFlag(flags, "params");
+  if (rawJson !== undefined) {
+    Object.assign(out, parsePropsJsonFlag(rawJson, "spine.fx"));
+  }
+  const argv = process.argv.slice(2);
+  let sawArgvParam = false;
+  for (let i = 0; i < argv.length; i++) {
+    const tok = argv[i];
+    if (tok === "--param") {
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("--")) {
+        addFxPair(out, next);
+        sawArgvParam = true;
+        i++;
+      }
+    } else if (tok.startsWith("--param=")) {
+      addFxPair(out, tok.slice("--param=".length));
+      sawArgvParam = true;
+    }
+  }
+  if (!sawArgvParam) {
+    const single = strFlag(flags, "param");
+    if (single !== undefined) addFxPair(out, single);
+  }
+  return out;
+}
 
 export function runSpineCommand(ctx: CliCommandContext): CliCommandResult {
   const { action, rest, flags, workspaceDir } = ctx;
@@ -137,6 +224,7 @@ export function runSpineCommand(ctx: CliCommandContext): CliCommandResult {
       fitMode: strFlag(flags, "fit") as SpatialPlacement["fit_mode"] | undefined,
       mirrorX: boolFlag(flags, "mirror-x"),
       mirrorY: boolFlag(flags, "mirror-y"),
+      edge: strFlag(flags, "edge") as SpatialPlacement["edge"] | undefined,
     });
     emitEnvelopeJson(workspaceDir, "spine.transform", { action: "spine.transform", ...res });
     return;
@@ -145,12 +233,26 @@ export function runSpineCommand(ctx: CliCommandContext): CliCommandResult {
   if (action === "speed") {
     const clipId = strFlag(flags, "clip") ?? rest[0];
     const rateRaw = strFlag(flags, "rate");
-    if (!clipId || !rateRaw) throw new Error("Provide --clip <sp_XX> --rate <1.5>.");
-    const rate = Number(rateRaw.replace(/x$/i, ""));
+    const rampRaw = strFlag(flags, "ramp");
+    if (!clipId || (!rateRaw && rampRaw === undefined)) {
+      throw new Error('Provide --clip <sp_XX> --rate <1.5> or --ramp "0s:1,2s:4".');
+    }
+    const rampIsNone = rampRaw !== undefined && rampRaw.trim().toLowerCase() === "none";
+    if (rateRaw && rampRaw !== undefined && !rampIsNone) {
+      throw new CutholError(
+        DIAGNOSTICS.INVALID_SPEED_RAMP(
+          `'--rate ${rateRaw}' ile '--ramp ${rampRaw}' bir arada verildi; rampa varken taban hız etkisizdir.`
+        )
+      );
+    }
+    const rate = rateRaw ? Number(rateRaw.replace(/x$/i, "")) : undefined;
+    const speedRamp =
+      rampRaw === undefined ? undefined : rampIsNone ? null : parseSpeedRampFlag(rampRaw);
     const res = setSpineSpeed({
       workspaceDir,
       clipId,
       rate,
+      speedRamp,
       preservePitch: boolFlag(flags, "preserve-pitch"),
     });
     emitEnvelopeJson(workspaceDir, "spine.speed", { action: "spine.speed", ...res });
@@ -162,7 +264,28 @@ export function runSpineCommand(ctx: CliCommandContext): CliCommandResult {
     const kind = strFlag(flags, "kind", "dissolve")!;
     if (!clipId) throw new Error("Provide --clip <sp_XX>.");
     const durRaw = strFlag(flags, "duration", "400ms")!;
-    const easing = (strFlag(flags, "easing", "ease_in_out") as TransitionSpec["easing"]) ?? "ease_in_out";
+    const { easing, bezier } = parseEasingFlag(strFlag(flags, "easing", "ease_in_out"), { allowHold: kind === "none", subject: clipId });
+    const rawParamsJson = strFlag(flags, "params");
+    const rawSingleParam = strFlag(flags, "param");
+    let transitionParams: Record<string, string> | undefined;
+    if (rawParamsJson) {
+      const parsed = parsePropsJsonFlag(rawParamsJson, "spine.transition");
+      transitionParams = {};
+      for (const [k, v] of Object.entries(parsed)) {
+        if (typeof v === "number" || typeof v === "string" || typeof v === "boolean") transitionParams[k] = String(v);
+        else throw new Error(`Value of '${k}' in --params must be a scalar (number, string or boolean).`);
+      }
+    }
+    if (rawSingleParam) {
+      transitionParams = transitionParams ?? {};
+      for (const piece of rawSingleParam.split(",")) {
+        const eq = piece.indexOf("=");
+        const key = (eq >= 0 ? piece.slice(0, eq) : piece).trim();
+        const value = eq >= 0 ? piece.slice(eq + 1) : "";
+        if (!key || eq < 0) throw new Error(`--param must be name=value (got '${piece.trim()}'). Separate several params with commas: --param yon=sol,hiz=2.`);
+        transitionParams[key] = value;
+      }
+    }
     const transition: TransitionSpec | null =
       kind === "none"
         ? null
@@ -170,9 +293,48 @@ export function runSpineCommand(ctx: CliCommandContext): CliCommandResult {
             kind: kind as TransitionSpec["kind"],
             duration_ms: parseTimeMs(durRaw),
             easing,
+            ...(bezier ? { bezier: [...bezier] } : {}),
+            ...(transitionParams ? { params: transitionParams } : {}),
           };
     const res = setSpineTransition({ workspaceDir, clipId, transition });
     emitEnvelopeJson(workspaceDir, "spine.transition", { action: "spine.transition", ...res });
+    return;
+  }
+
+  if (action === "grade") {
+    const clipId = strFlag(flags, "clip") ?? rest[0];
+    if (!clipId) throw new Error("Provide --clip <sp_XX>.");
+    const brightnessRaw = strFlag(flags, "brightness");
+    const contrastRaw = strFlag(flags, "contrast");
+    const saturationRaw = strFlag(flags, "saturation");
+    const temperatureRaw = strFlag(flags, "temperature");
+    const lutRaw = strFlag(flags, "lut");
+    if (
+      brightnessRaw === undefined &&
+      contrastRaw === undefined &&
+      saturationRaw === undefined &&
+      temperatureRaw === undefined &&
+      lutRaw === undefined
+    ) {
+      throw new Error(
+        "Provide at least one of --brightness, --contrast, --saturation, --temperature, --lut (use --lut none to clear)."
+      );
+    }
+    const res = setSpineGrade({
+      workspaceDir,
+      clipId,
+      brightness: brightnessRaw !== undefined ? Number(brightnessRaw) : undefined,
+      contrast: contrastRaw !== undefined ? Number(contrastRaw) : undefined,
+      saturation: saturationRaw !== undefined ? Number(saturationRaw) : undefined,
+      temperatureK: temperatureRaw !== undefined ? Number(temperatureRaw) : undefined,
+      lutUri:
+        lutRaw !== undefined
+          ? lutRaw.trim().toLowerCase() === "none"
+            ? null
+            : lutRaw
+          : undefined,
+    });
+    emitEnvelopeJson(workspaceDir, "spine.grade", { action: "spine.grade", ...res });
     return;
   }
 
@@ -183,14 +345,15 @@ export function runSpineCommand(ctx: CliCommandContext): CliCommandResult {
     if (!targetId || !parameter || !ptsRaw) {
       throw new Error("Provide --clip <sp_XX|cue_XX> --param <name> --points <0ms:1.0,2000ms:1.15>.");
     }
-    const defaultEasing =
-      (strFlag(flags, "easing", "ease_in_out") as ParameterEnvelopePoint["easing"]) ?? "ease_in_out";
+    const { easing: defaultEasing, bezier: defaultBezier } =
+      parseEasingFlag(strFlag(flags, "easing", "ease_in_out"));
     const points: ParameterEnvelopePoint[] = ptsRaw.split(",").map((token) => {
       const [tStr, vStr] = token.trim().split(":");
       return {
         offset_ms: parseTimeMs(tStr),
         value: Number(vStr),
         easing: defaultEasing,
+        ...(defaultBezier ? { bezier: [...defaultBezier] } : {}),
       };
     });
     const res = setItemEnvelope({ workspaceDir, targetId, parameter, points });
@@ -270,6 +433,43 @@ export function runSpineCommand(ctx: CliCommandContext): CliCommandResult {
     });
     const cmdName = mutedVal ? "spine.mute" : "spine.unmute";
     emitEnvelopeJson(workspaceDir, cmdName, { action: cmdName, ...res });
+    return;
+  }
+  if (action === "fx") {
+    const sub = rest[0];
+    if (sub !== "add" && sub !== "set" && sub !== "remove" && sub !== "list") {
+      throw new Error("Provide a subcommand: spine fx [add|set|remove|list] --clip <sp_XX> ...");
+    }
+    const clipId = strFlag(flags, "clip");
+    if (!clipId) throw new Error("Provide --clip <sp_XX>.");
+    if (sub === "add") {
+      const kind = strFlag(flags, "kind");
+      const filter = strFlag(flags, "filter");
+      const res = addSpineFx({ workspaceDir, clipId, kind, filter, params: collectSpineFxParams(flags) });
+      emitEnvelopeJson(workspaceDir, "spine.fx.add", { action: "spine.fx.add", ...res });
+      return;
+    }
+    if (sub === "set") {
+      const fxId = strFlag(flags, "fx") ?? strFlag(flags, "id");
+      if (!fxId) throw new Error("Provide --fx <fx_XX>.");
+      const filter = strFlag(flags, "filter");
+      const params = collectSpineFxParams(flags);
+      if (filter === undefined && Object.keys(params).length === 0) {
+        throw new Error("Provide --param <ad=değer> or --filter \"<zincir>\".");
+      }
+      const res = setSpineFx({ workspaceDir, clipId, fxId, params, filter });
+      emitEnvelopeJson(workspaceDir, "spine.fx.set", { action: "spine.fx.set", ...res });
+      return;
+    }
+    if (sub === "remove") {
+      const fxId = strFlag(flags, "fx") ?? strFlag(flags, "id");
+      if (!fxId) throw new Error("Provide --fx <fx_XX>.");
+      const res = removeSpineFx({ workspaceDir, clipId, fxId });
+      emitEnvelopeJson(workspaceDir, "spine.fx.remove", { action: "spine.fx.remove", ...res });
+      return;
+    }
+    const res = listSpineFx({ workspaceDir, clipId });
+    emitEnvelopeJson(workspaceDir, "spine.fx.list", { action: "spine.fx.list", ...res });
     return;
   }
   return CLI_NOT_HANDLED;

@@ -19,6 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnWatchedSync } from "../core/subprocess.js";
+import { hyperFramesProcessEnv } from "./hf_common.js";
 import { isVisualCue, resolveCueStartMs } from "../core/timeline.js";
 import { CutholDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { PngCanvas } from "../core/png_canvas.js";
@@ -412,7 +413,8 @@ export function previewAndCheckComposition(options: {
         "--at",
         snappedSamples.map((s) => s.snappedSec).join(","),
       ],
-      { encoding: "utf8", step: "hyperframes check" }
+      { encoding: "utf8", env: hyperFramesProcessEnv(),
+        step: "hyperframes check" }
     );
     const rawCheckOut = (checkProc.stdout || "").trim();
     if (rawCheckOut) {
@@ -462,6 +464,7 @@ export function previewAndCheckComposition(options: {
       ],
       {
         encoding: "utf8",
+        env: hyperFramesProcessEnv(),
         step: "hyperframes preview snapshot",
         watchedPaths: [snapDir],
         cleanupPathsOnStall: [snapDir],

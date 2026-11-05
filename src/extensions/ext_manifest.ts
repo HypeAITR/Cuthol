@@ -5,6 +5,8 @@ import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import {
   AssetKind
 } from "../core/schema.js";
+import { ExtensionFxSpec, parseManifestFxSection } from "./ext_fx.js";
+import { ExtensionTransitionSpec, parseManifestTransitionsSection } from "./ext_transitions.js";
 
 export const EXTENSION_MANIFEST_FILENAME = "cuthol-extension.json";
 
@@ -74,6 +76,10 @@ export interface ExtensionManifest {
   processors?: Record<string, ExtensionProcessorSpec>;
   planners?: Record<string, ExtensionPlannerSpec>;
   recipes?: Record<string, ExtensionRecipeSpec>;
+  /** Per-clip effects for `spine fx` (extensions/ext_fx.ts). */
+  fx?: Record<string, ExtensionFxSpec>;
+  /** Spine transition kinds (extensions/ext_transitions.ts). */
+  transitions?: Record<string, ExtensionTransitionSpec>;
   guide?: string;
 }
 
@@ -113,6 +119,10 @@ export interface ExtensionListItem {
     processors: string[];
     planners: string[];
     recipes: string[];
+    /** Present only when the extension has an `fx` section. */
+    fx?: string[];
+    /** Present only when the extension has a `transitions` section. */
+    transitions?: string[];
     guide: string | null;
   };
 }
@@ -128,6 +138,8 @@ const ALLOWED_MANIFEST_KEYS = new Set([
   "processors",
   "planners",
   "recipes",
+  "fx",
+  "transitions",
   "guide",
 ]);
 
@@ -277,7 +289,7 @@ function parseTimeoutSec(value: unknown, owner: string, extName: string): number
   return value;
 }
 
-function validateParamsMap(
+export function validateParamsMap(
   rawParams: unknown,
   extLabel: string,
   ownerLabel: string
@@ -704,6 +716,9 @@ export function validateExtensionManifest(
     }
   }
 
+  const fxSpec = parseManifestFxSection(obj.fx, name);
+  const transitionsSpec = parseManifestTransitionsSection(obj.transitions, name);
+
   let guideSpec: string | undefined;
   if (obj.guide !== undefined) {
     if (typeof obj.guide !== "string" || !isSafeRelativeSubpath(obj.guide.trim())) {
@@ -728,6 +743,8 @@ export function validateExtensionManifest(
     ...(processorsSpec !== undefined ? { processors: processorsSpec } : {}),
     ...(plannersSpec !== undefined ? { planners: plannersSpec } : {}),
     ...(recipesSpec !== undefined ? { recipes: recipesSpec } : {}),
+    ...(fxSpec !== undefined ? { fx: fxSpec } : {}),
+    ...(transitionsSpec !== undefined ? { transitions: transitionsSpec } : {}),
     ...(guideSpec !== undefined ? { guide: guideSpec } : {}),
   };
 }

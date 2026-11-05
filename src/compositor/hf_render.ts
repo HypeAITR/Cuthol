@@ -13,9 +13,9 @@ import {
 } from "../core/subprocess.js";
 import { OverlayBlobExt, resolveCachedCompositionVideoBlob, inspectPngSequenceDir, isValidVideoBlobOnDisk, stageCompositionRenderDir } from "./hf_blobs.js";
 import { syncScalarVarsAndComputeCompositionHash, readCompositionCacheState, writeCompositionCacheState, clearBridgeMetaLastDataChangeReason } from "./hf_cache_state.js";
-import { findLocalHyperFramesCliMjs, renameWithRetrySync } from "./hf_common.js";
+import { findLocalHyperFramesCliMjs, hyperFramesProcessEnv, renameWithRetrySync } from "./hf_common.js";
 import { recordCompositionAlphaBboxSidecar } from "./hf_frames.js";
-import { overlayCollector, readBlobMetaSummary, recordOverlayRenderOutcome, parseHyperFramesPipelineSummary, buildHyperFramesFailureError } from "./hf_overlay_tracking.js";
+import { overlayCollector, readBlobMetaSummary, recordOverlayRenderOutcome, parseHyperFramesPipelineSummary, parseHyperFramesScriptErrorIsolated, buildHyperFramesFailureError } from "./hf_overlay_tracking.js";
 
 export type DraftOverlayRes = "draft" | "native";
 
@@ -318,6 +318,7 @@ export function renderHyperFramesCompositionToMp4(options: {
     }
 
     const hfSummaryInfo = parseHyperFramesPipelineSummary(params.stdoutStr, params.stderrStr);
+    const scriptErrors = parseHyperFramesScriptErrorIsolated(params.stdoutStr, params.stderrStr);
     const metaEncoder = !useTrueAlpha
       ? params.usedGpu
         ? "h264_nvenc"
@@ -346,6 +347,7 @@ export function renderHyperFramesCompositionToMp4(options: {
             gpu_mode: hfSummaryInfo.gpu_mode,
             streaming_encode: hfSummaryInfo.streaming_encode,
             stages_sec: hfSummaryInfo.stages_sec,
+            ...(scriptErrors.length > 0 ? { script_errors: scriptErrors } : {}),
           },
           null,
           2
@@ -364,6 +366,7 @@ export function renderHyperFramesCompositionToMp4(options: {
       reason: cacheLookup.missReason,
       elapsed_ms: params.elapsedMs,
       ...hfSummaryInfo,
+      ...(scriptErrors.length > 0 ? { script_errors: scriptErrors } : {}),
     });
     if (useTrueAlpha) {
       recordCompositionAlphaBboxSidecar(absCompDir, outBlob, durationSec * 0.5);
@@ -492,6 +495,7 @@ export function renderHyperFramesCompositionToMp4(options: {
     });
     const hfProc = spawnWatchedSync(process.execPath, renderArgs, {
       encoding: "utf8",
+      env: hyperFramesProcessEnv(),
       maxBuffer: 512 * 1024 * 1024,
       step: "hyperframes render",
       watchedPaths: [watchTargetPath],
@@ -518,6 +522,7 @@ export function renderHyperFramesCompositionToMp4(options: {
       }
       finalHfProc = spawnWatchedSync(process.execPath, buildRenderArgs(false), {
         encoding: "utf8",
+        env: hyperFramesProcessEnv(),
         maxBuffer: 512 * 1024 * 1024,
         step: "hyperframes render",
         watchedPaths: [watchTargetPath],

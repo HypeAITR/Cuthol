@@ -22,7 +22,12 @@ import { commitSequenceMutation, loadSequence, WorkspacePaths } from "../core/wo
 import { syncAllCompositionBridges } from "../compositor/bridge_exporter.js";
 import { wrapTypographyLines } from "../compositor/ass_generator.js";
 import { verifyG1Schema, verifyG2Assets, verifyG3Timing } from "./gates_structural.js";
+import { verifyEasing } from "./gates_easing.js";
 import { verifyG4Stage, verifyG5Signal } from "./gates_stage_signal.js";
+import { verifyCompositionAudio } from "./gates_hf_audio.js";
+import { verifyEdgeMode } from "./gates_edge.js";
+import { verifyExtensionTransitions } from "./gates_transition.js";
+import { verifySpineFx } from "./gates_fx.js";
 
 export { verifyG1Schema, verifyG2Assets, verifyG3Timing } from "./gates_structural.js";
 export { verifyG4Stage, verifyG5Signal } from "./gates_stage_signal.js";
@@ -249,6 +254,8 @@ export function verifySequence(
   // --- Gate 1: Schema & Handle Integrity (G1_SCHEMA) ---
   if (gateSet.has("G1_SCHEMA")) {
     verifyG1Schema(seq, libMap, spineMap, diagnostics);
+    verifyEasing(seq, diagnostics);
+    verifySpineFx(seq, paths, diagnostics);
   }
 
   // --- Gate 2: Physical Asset & Boundary Integrity (G2_ASSETS) ---
@@ -261,9 +268,13 @@ export function verifySequence(
     verifyG3Timing(seq, diagnostics);
   }
 
+  if (gateSet.has("G1_SCHEMA") || gateSet.has("G4_STAGE")) verifyExtensionTransitions(seq, paths, diagnostics, gateSet);
+
   // --- Gate 4: Stage Geometry, Safe Zones, Caption CPS & Layer Occlusion (G4_STAGE) ---
   if (gateSet.has("G4_STAGE")) {
     verifyG4Stage(seq, paths, libMap, diagnostics);
+    verifyEdgeMode(seq, diagnostics);
+    verifyCompositionAudio(seq, paths, diagnostics);
   }
 
   // --- Gate 5: Audio Signal & Render Frame Sanity (G5_SIGNAL) ---

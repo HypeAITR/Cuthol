@@ -63,6 +63,11 @@ export interface SpatialPlacement {
   crop: { left_pct: number; top_pct: number; right_pct: number; bottom_pct: number } | null;
   mirror_x: boolean;
   mirror_y: boolean;
+  /**
+   * What fills stage area a moved/scaled/rotated clip no longer covers. Omitted = "transparent"
+   * (today's behaviour: the layer below shows). "mirror" reflects the clip at its edges, "clamp" repeats the edge pixels.
+   */
+  edge?: "transparent" | "mirror" | "clamp";
 }
 
 export interface AudioProcessingChain {
@@ -126,16 +131,49 @@ export interface VisualTreatments {
   };
 }
 
+/**
+ * Easing of a segment. The four named curves are quadratic. "cubic_bezier" uses `bezier`
+ * ([x1, y1, x2, y2], CSS `cubic-bezier()` semantics, x in [0, 1]). "hold" is a step: the previous value holds until this point's instant, then jumps (envelopes only).
+ */
+export type EasingKind = "linear" | "ease_in" | "ease_out" | "ease_in_out" | "cubic_bezier" | "hold";
+export type CubicBezierControlPoints = [number, number, number, number];
+
+export type BuiltinTransitionKind = "dissolve" | "fade" | "wipe_left" | "wipe_right" | "slide_up" | "zoom_in";
+/** An effect registered by an enabled extension, written `ext:<extension>/<name>`. */
+export type ExtensionEffectRef = `ext:${string}/${string}`;
+export type EffectParamValue = number | string | boolean;
+
 export interface TransitionSpec {
-  kind: "dissolve" | "fade" | "wipe_left" | "wipe_right" | "slide_up" | "zoom_in";
+  /** Built-in kind, or an extension transition (`ext:<extension>/<name>`). */
+  kind: BuiltinTransitionKind | ExtensionEffectRef;
   duration_ms: number;
-  easing: "linear" | "ease_in" | "ease_out" | "ease_in_out";
+  easing: EasingKind;
+  bezier?: CubicBezierControlPoints;
+  /** Parameters of an extension transition (validated against its manifest definition). */
+  params?: Record<string, EffectParamValue>;
 }
 
 export interface ParameterEnvelopePoint {
   offset_ms: number;
   value: number;
-  easing: "linear" | "ease_in" | "ease_out" | "ease_in_out";
+  /** Easing of the segment that ENDS at this point (the curve from the previous point to this one). */
+  easing: EasingKind;
+  bezier?: CubicBezierControlPoints;
+}
+
+/**
+ * One entry of a spine clip's effect chain. Applied in the render graph on the clip itself (the source
+ * asset is not replaced, transcript bindings stay). Numeric params can be animated with an envelope whose
+ * parameter is `fx.<id>.<param>`.
+ */
+export interface ClipFxSpec {
+  /** Stable handle inside the clip, e.g. `fx_01`. */
+  id: string;
+  /** Built-in fx kind, or `ext:<extension>/<name>` from an enabled extension's `fx` section. */
+  kind: string;
+  params: Record<string, EffectParamValue>;
+  /** Omitted = true. */
+  enabled?: boolean;
 }
 
 export interface ParameterEnvelope {
@@ -149,7 +187,8 @@ export interface ParameterEnvelope {
     | "audio_chain.gain_db"
     | "treatments.color_grade.brightness"
     | "treatments.color_grade.contrast"
-    | "treatments.color_grade.saturation";
+    | "treatments.color_grade.saturation"
+    | `fx.${string}.${string}`;
   points: ParameterEnvelopePoint[];
 }
 
@@ -175,6 +214,8 @@ export interface SpineClip {
   treatments: VisualTreatments;
   transition_out: TransitionSpec | null;
   envelopes: ParameterEnvelope[];
+  /** Per-clip effect chain, applied in order (compositor/compile_spine_fx.ts). Omitted = none. */
+  fx?: ClipFxSpec[];
 }
 
 export interface TimedWordToken {

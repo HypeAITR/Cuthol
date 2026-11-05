@@ -51,6 +51,25 @@ export class CutholError extends Error {
 }
 
 export const DIAGNOSTICS = {
+  // --- External project changes: CUTHOL-G210, CUTHOL-G211 ---
+  EXTERNAL_CHANGES_PRESENT: (summary: string) =>
+    createDiagnostic(
+      "CUTHOL-G210",
+      "G2_ASSETS",
+      "INFO",
+      `Proje klasöründe Cuthol dışından değişiklik var: ${summary}`,
+      `Önce 'cuthol workspace changes show' ile farkı görün, sonra 'cuthol workspace changes adopt' (benimse, geri alınabilir) ya da 'cuthol workspace changes revert' (Cuthol'daki son hâle döndür) çalıştırın.`
+    ),
+
+  EXTERNAL_CHANGE_WOULD_BE_OVERWRITTEN: (target: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G211",
+      "G2_ASSETS",
+      "ERROR",
+      `'${target}' Cuthol dışından değiştirilmiş; bu işlem üzerine yazacaktı ve durduruldu (${detail}). Düzenlemeniz kaybolmasın diye dosya değişmedi.`,
+      `Önce 'cuthol workspace changes show' ile farkı görün, sonra 'cuthol workspace changes adopt' ya da 'cuthol workspace changes revert' çalıştırıp işlemi tekrarlayın.`
+    ),
+
   // --- System & Workspace (SYS) ---
   WORKSPACE_NOT_FOUND: (dir: string) =>
     createDiagnostic(
@@ -411,7 +430,7 @@ export const DIAGNOSTICS = {
       "G4_STAGE",
       "WARN",
       `'${itemId}' üzerindeki '${field}' bu sürümde render'a uygulanmıyor.`,
-      `Bu alanı varsayılanında bırakın. Sabit parlaklık, kontrast ve doygunluk render'a girer; hareket bulanıklığı, maske, renk sıcaklığı, LUT ve renk zarfları girmez.`,
+      `Bu alanı varsayılanında bırakın. Omurga kliplerinde sabit ve zarflı parlaklık/kontrast/doygunluk, renk sıcaklığı ve LUT render'a girer; hareket bulanıklığı, maske ve şerit cue'larındaki renk zarfları girmez.`,
       itemId
     ),
 
@@ -732,6 +751,236 @@ export const DIAGNOSTICS = {
       `'${value}' geçerli bir kayma kapsamı değil.`,
       `Ses cue'su temizliğinde '--across' değeri 'lane' (varsayılan), 'all_lanes', 'all', 'spine' veya 'none' olmalıdır. Bu, 'lane excise --across' ile aynı anlamdadır.`
     ),
+
+
+  // --- Speed ramp: codes CUTHOL-G116, CUTHOL-G117, CUTHOL-G410 ---
+  INVALID_SPEED_RAMP: (detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G116",
+      "G1_SCHEMA",
+      "ERROR",
+      `'--ramp' geçersiz: ${detail}`,
+      `Doğru biçim: '--ramp "0s:1,1s:1,2.5s:4"' (kaynak ofseti:hız çiftleri; ofsetler kesin artan, hız 0.1..16, ofsetler klibin 0..kaynak aralığında, en az 2 nokta). Kaldırmak için '--ramp none'. Örnek: 'cuthol spine speed --clip sp_01 --ramp "0s:1,2s:4"'. '--rate' ile bir arada verilmez.`
+    ),
+
+  SPEED_RAMP_AUDIO_APPROX: (clipId: string, minRate: number, maxRate: number) =>
+    createDiagnostic(
+      "CUTHOL-G410",
+      "G4_STAGE",
+      "WARN",
+      `'${clipId}' hız rampasında 0.5..2.0 aralığı dışında hız var (${minRate.toFixed(2)}..${maxRate.toFixed(2)}); ses rampayı izler ama uç hızlarda kalite düşer (zincirli atempo ya da büyük perde kayması).`,
+      `Taslak render çıktısında sesi dinleyin; konuşmalı klipte rampa uçlarını 0.5..2.0 aralığında tutun: 'cuthol spine speed --clip ${clipId} --ramp "0s:1,..."'.`,
+      clipId
+    ),
+
+  SPEED_RAMP_BEYOND_SOURCE: (clipId: string, offsetMs: number, spanMs: number) =>
+    createDiagnostic(
+      "CUTHOL-G117",
+      "G4_STAGE",
+      "WARN",
+      `'${clipId}' hız rampasındaki ${offsetMs}ms ofseti kaynak aralığını (0..${spanMs}ms) aşıyor; ${spanMs}ms değerine sabitlendi.`,
+      `Rampa ofsetlerini 0..${spanMs}ms aralığına çekin: 'cuthol spine speed --clip ${clipId} --ramp "0s:1,..."'.`,
+      clipId
+    ),
+
+  // ---------------------------------------------------------------------------------------------------
+
+  // --- Spine fx: codes CUTHOL-G118, CUTHOL-G119, CUTHOL-G411 ---
+  SPINE_FX_INVALID: (clipId: string, fxId: string, kind: string, detail: string, suggestion?: string) =>
+    createDiagnostic(
+      "CUTHOL-G118",
+      "G1_SCHEMA",
+      "ERROR",
+      `'${clipId}' klibindeki '${fxId}' efekti ('${kind}') geçersiz: ${detail}`,
+      suggestion ??
+        `'cuthol spine fx remove --clip ${clipId} --fx ${fxId}' ile kaldırın ya da 'cuthol spine fx set --clip ${clipId} --fx ${fxId} --param ad=değer' ile düzeltin.`,
+      clipId
+    ),
+
+  SPINE_FX_ENVELOPE_UNSUPPORTED: (clipId: string, parameter: string, reason: string) =>
+    createDiagnostic(
+      "CUTHOL-G119",
+      "G1_SCHEMA",
+      "ERROR",
+      `'${clipId}' klibindeki '${parameter}' zarfı uygulanamıyor: ${reason}`,
+      `Zarfı kaldırın ya da zarflanabilir bir parametreye taşıyın ('cuthol spine envelope --clip ${clipId} --param <ad> --points <...>'); hangi parametrelerin zarflanabildiğini eklenti bildirir ('animatable').`,
+      clipId
+    ),
+
+  SPINE_FX_EXTENSION_DRIFTED: (
+    clipId: string,
+    fxId: string,
+    ref: string,
+    extName: string,
+    pinnedLabel: string,
+    actualLabel: string
+  ) =>
+    createDiagnostic(
+      "CUTHOL-G411",
+      "G4_STAGE",
+      "WARN",
+      `'${clipId}' klibindeki '${fxId}' efekti (${ref}) sabitlenenden farklı bir eklentiyle derleniyor (sekansta: ${pinnedLabel}, diskte: ${actualLabel}).`,
+      `Değişikliği onaylayıp yeni sürüme geçmek için 'cuthol extension enable --name ${extName}' çalıştırın.`,
+      clipId
+    ),
+
+  // ---------------------------------------------------------------------------------------------------
+
+  // --- Easing: codes CUTHOL-G120 ---
+  EASING_NAME_INVALID: (subject: string, name: string) =>
+    createDiagnostic(
+      "CUTHOL-G120",
+      "G1_SCHEMA",
+      "ERROR",
+      `'${subject}' için easing adı '${name}' geçersiz.`,
+      `Geçerli easing adları: 'linear', 'ease_in', 'ease_out', 'ease_in_out', 'hold', 'cubic_bezier'. Eğri için '--easing "cubic-bezier(x1,y1,x2,y2)"' kullanın (x1 ve x2 0..1 aralığında; ör. 'cubic-bezier(0.25,0.1,0.25,1)').`,
+      subject
+    ),
+
+  EASING_HOLD_IN_TRANSITION: (subject: string) =>
+    createDiagnostic(
+      "CUTHOL-G120",
+      "G1_SCHEMA",
+      "ERROR",
+      `'${subject}' klibinin çıkış geçişinde 'hold' easing kullanılamaz: adım eğrisi geçişi görünmeden bitirir (ilerleme 0'da takılıp sonda 1'e sıçrar).`,
+      `Geçişte 'linear', 'ease_in', 'ease_out', 'ease_in_out' ya da 'cubic_bezier' kullanın (ör. 'cuthol spine transition --clip ${subject} --easing ease_in_out').`,
+      subject
+    ),
+
+  CUBIC_BEZIER_INVALID: (subject: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G120",
+      "G1_SCHEMA",
+      "ERROR",
+      `'${subject}' cubic-bezier eğrisi geçersiz: ${detail}.`,
+      `Eğriyi '--easing "cubic-bezier(x1,y1,x2,y2)"' biçiminde verin; x1 ve x2 0..1 aralığında olmalı (ör. 'cubic-bezier(0.25,0.1,0.25,1)').`,
+      subject
+    ),
+
+  // ---------------------------------------------------------------------------------------------------
+
+  // --- Edge mode: codes CUTHOL-G121, CUTHOL-G412 ---
+  EDGE_LANE_CUE_UNSUPPORTED: (cueId: string, edge: string) =>
+    createDiagnostic(
+      "CUTHOL-G121",
+      "G1_SCHEMA",
+      "ERROR",
+      `'${cueId}' şerit cue'sunda 'edge=${edge}' bu sürümde desteklenmiyor; aynalı/uzatılmış kenar dolgusu yalnız spine kliplerinde çalışır, bu ayar yoksayılır.`,
+      `Şerit cue'sundan 'edge' alanını kaldırın; dolguyu alttaki spine klibine 'cuthol spine transform --clip <sp_XX> --edge ${edge}' ile verin.`,
+      cueId
+    ),
+
+  EDGE_INEFFECTIVE: (clipId: string) =>
+    createDiagnostic(
+      "CUTHOL-G412",
+      "G4_STAGE",
+      "WARN",
+      `'${clipId}' klibi sahneyi zaten tamamen kaplıyor ve hareket etmiyor; verilen kenar modu (edge) görüntüde hiçbir şeyi değiştirmez.`,
+      `Etkisiz ayarı 'cuthol spine transform --clip ${clipId} --edge transparent' ile kaldırın ya da klibi küçültüp/kaydırıp dolguyu görünür kılın.`,
+      clipId
+    ),
+
+  // ---------------------------------------------------------------------------------------------------
+
+  // --- Extension transitions: codes CUTHOL-G122, CUTHOL-G123, CUTHOL-G413 ---
+  EXTENSION_TRANSITION_UNAVAILABLE: (kind: string, detail: string, subjectId?: string) =>
+    createDiagnostic(
+      "CUTHOL-G122",
+      "G1_SCHEMA",
+      "ERROR",
+      `'${kind}' eklenti geçişi kullanılamıyor: ${detail}`,
+      `'cuthol extension list' ile eklentinin kurulu olduğunu, 'cuthol extension show --name <ad>' ile 'transitions' bölümünde bu geçişin tanımlı olduğunu doğrulayın; eklenti projede etkin değilse 'cuthol extension enable --name <ad>' çalıştırın.`,
+      subjectId
+    ),
+
+  EXTENSION_TRANSITION_EASING_UNSUPPORTED: (kind: string, easing: string, subjectId?: string) =>
+    createDiagnostic(
+      "CUTHOL-G122",
+      "G1_SCHEMA",
+      "ERROR",
+      `'${kind}' eklenti geçişinde '${easing}' easing bu sürümde desteklenmiyor.`,
+      `Geçişte 'linear', 'ease_in', 'ease_out' veya 'ease_in_out' kullanın (ör. 'cuthol spine transition --clip <sp_XX> --kind ${kind} --easing ease_in_out').`,
+      subjectId
+    ),
+
+  EXTENSION_TRANSITION_PARAM_INVALID: (kind: string, clipId: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G123",
+      "G1_SCHEMA",
+      "ERROR",
+      `'${clipId}' klibindeki '${kind}' geçişinin parametreleri geçersiz: ${detail}`,
+      `Parametreleri eklenti manifestindeki 'transitions' tanımına göre düzeltin ('cuthol extension show --name <ad>'); örneğin 'cuthol spine transition --clip ${clipId} --kind ${kind} --param ad=değer'.`,
+      clipId
+    ),
+
+  EXTENSION_TRANSITION_PIN_MISMATCH: (
+    name: string,
+    expectedVersion: string,
+    expectedHash: string,
+    actualVersion: string,
+    actualHash: string,
+    subjectId?: string
+  ) =>
+    createDiagnostic(
+      "CUTHOL-G413",
+      "G4_STAGE",
+      "WARN",
+      `Geçişini kullandığınız '${name}' eklentisi diskte değişmiş (sekansta kayıtlı: v${expectedVersion} ${expectedHash}, diskte güncel: v${actualVersion} ${actualHash}); render güncel eklentiyle çıkar.`,
+      `Değişikliği onaylayıp yeni içerik özetine geçmek için 'cuthol extension enable --name ${name}' çalıştırın.`,
+      subjectId
+    ),
+
+  // ---------------------------------------------------------------------------------------------------
+
+  // --- Colour (LUT, temperature, colour envelopes): codes CUTHOL-G124, CUTHOL-G414 ---
+  INVALID_COLOR_TEMPERATURE: (clipId: string, kelvin: number) =>
+    createDiagnostic(
+      "CUTHOL-G124",
+      "G1_SCHEMA",
+      "ERROR",
+      `'${clipId}' klibinin renk sıcaklığı (${String(kelvin)} K) desteklenen aralığın (1000..40000 K) dışında.`,
+      `'cuthol spine grade --clip ${clipId} --temperature 6500' ile nötr değere (6500 K, süzgeç yok) dönün.`,
+      clipId
+    ),
+
+  LUT_FILE_NOT_READABLE: (clipId: string, lutUri: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G414",
+      "G4_STAGE",
+      "ERROR",
+      `'${clipId}' klibinin LUT dosyası ('${lutUri}') kullanılamıyor: ${detail}.`,
+      `LUT dosyasını proje klasörü altına '.cube' ya da '.3dl' olarak koyup 'cuthol spine grade --clip ${clipId} --lut <yol>' ile yeniden bağlayın; kaldırmak için '--lut none' kullanın.`,
+      clipId
+    ),
+
+  // ---------------------------------------------------------------------------------------------------
+  // --- Composition renderer (script errors, composition audio): codes CUTHOL-G415, CUTHOL-G416 ---
+  SCRIPT_ERROR_ISOLATED: (
+    subject: string,
+    elementId: string,
+    compositionId: string | null,
+    error: string
+  ) =>
+    createDiagnostic(
+      "CUTHOL-G415",
+      "G4_STAGE",
+      "WARN",
+      `'${subject}' overlay'inde sessiz boşluk: '${elementId}' öğesinin${compositionId && compositionId !== elementId ? ` ('${compositionId}' alt kompozisyonu)` : ""} betiği hata verdi (${error}); HyperFrames bu öğeyi boş zaman çizelgesiyle geçti, parçası görüntüde yok.`,
+      `'${compositionId ?? elementId}' betiğindeki hatayı düzeltin, sonra 'cuthol render' ile overlay'i yeniden çekin (dosya değişikliği yeniden çekimi tetikler).`,
+      subject
+    ),
+
+  COMPOSITION_AUDIO_SILENT: (cueId: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G416",
+      "G4_STAGE",
+      "WARN",
+      `'${cueId}' kompozisyon cue'sunda çalan ses (${detail}) Cuthol miksine girmiyor: overlay'ler yalnız görüntü olarak çekilir, kompozisyon içi ses dışarıda kalır.`,
+      `Sesi 'ln_sfx' ya da 'ln_bgm' şeridine cue olarak yerleştirin ('cuthol lane add-cue --lane ln_sfx --kind sfx --asset <tutamac> ...'), kompozisyon içindeki ses öğesini kaldırın ya da sessize alın.`,
+      cueId
+    ),
+
+  // ---------------------------------------------------------------------------------------------------
 } as const;
 
 export function estimateCommandLineLength(executable: string, args: readonly string[]): number {

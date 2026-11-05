@@ -31,6 +31,7 @@ import {
   WORKSPACELESS_TOOLS,
 } from "./catalog.js";
 import { formatWorkspaceOpenSummary, loadSequence } from "../core/workspace.js";
+import { detectExternalChanges, formatExternalNotice, formatExternalReminder } from "../core/external_changes.js";
 import { resolveExtension } from "../extensions/manager.js";
 import { CUTHOL_PROGRESS_PREFIX } from "../core/progress.js";
 import { repairToolArguments, readRevision, tryParseJson, formatEnvelopeCompact, findValuesByKey, stripCutholProgress } from "./mcp_format.js";
@@ -174,6 +175,8 @@ export class CutholMcpServer {
   private sessionDir: string | null;
   private readonly unlockedSpecialists = new Set<string>();
   private readonly sessionProjects = new Map<string, SessionProjectStamp>();
+  /** Last fully-reported external-change digest per project (repeat calls get a one-line reminder). */
+  private readonly sessionExtNotes = new Map<string, string>();
   private readonly queues = new Map<string, Promise<unknown>>();
   private readonly running = new Map<string, ChildProcess>();
   private lastFailedSignature: string | null = null;
@@ -277,6 +280,28 @@ export class CutholMcpServer {
 
   private textResult(text: string, isError: boolean, envelope: Record<string, unknown> | null = null): McpToolResult {
     return { content: [{ type: "text", text }], isError, envelope };
+  }
+
+  /**
+   * Out-of-journal change note for this project, if any: full text on the
+   * first call (or when the change set grows/changes), a one-line reminder
+   * while the same change persists. Never throws.
+   */
+  private externalChangesNote(dir: string): string | null {
+    let changes;
+    try {
+      changes = detectExternalChanges(dir);
+    } catch {
+      return null;
+    }
+    if (!changes.has_changes) {
+      this.sessionExtNotes.delete(dir);
+      return null;
+    }
+    const last = this.sessionExtNotes.get(dir);
+    if (last === changes.digest) return formatExternalReminder(changes);
+    this.sessionExtNotes.set(dir, changes.digest);
+    return formatExternalNotice(changes, "mcp");
   }
 
   /** Executes one tool call and returns an MCP tool result. Never throws. */
@@ -396,10 +421,15 @@ export class CutholMcpServer {
         );
         if (values.verbose === true) {
           const brief = await this.runCli(["brief", "--lens=overview", `--dir=${dir}`], dir, spec, ctx);
+          this.externalChangesNote(dir);
           return this.textResult(`OK workspace.open · session project is now ${dir}\n\n${brief.stdout.trim()}`, false);
         }
         const { sequence } = loadSequence(dir);
-        const summary = formatWorkspaceOpenSummary(sequence, { verbose: false });
+        const extNote = this.externalChangesNote(dir);
+        const summary = formatWorkspaceOpenSummary(sequence, {
+          verbose: false,
+          ...(extNote ? { noticeLine: extNote } : {}),
+        });
         return this.textResult(`OK workspace.open · session project is now ${dir}\n\n${summary}`, false);
       }
 
@@ -432,6 +462,10 @@ export class CutholMcpServer {
       const argv = buildCliArgv(spec, values, dir);
       const res = await this.runCli(argv, dir, spec, ctx);
       const result = this.formatResult(spec, res, dir, values, before);
+      const extNote = this.externalChangesNote(dir);
+      if (extNote && result.content[0]?.type === "text") {
+        result.content[0].text = `${extNote}\n${result.content[0].text}`;
+      }
 
       const afterStamp = readProjectStamp(dir);
       if (afterStamp) this.sessionProjects.set(dir, afterStamp);
@@ -524,6 +558,7 @@ export class CutholMcpServer {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     const content = String(values.content);
     fs.writeFileSync(target, content, "utf8");
+    const extNote = this.externalChangesNote(dir);
     const hints: string[] = [];
     if (/index\.html$/i.test(target)) {
       if (!/data-composition-id=/.test(content)) hints.push("missing data-composition-id on the root element");
@@ -532,7 +567,8 @@ export class CutholMcpServer {
       if (/https?:\/\//.test(content)) hints.push("remote URLs will not load during render; put files in assets/");
     }
     return this.textResult(
-      `OK composition.write · ${content.length} chars → ${target}` +
+      (extNote ? `${extNote}\n` : "") +
+        `OK composition.write · ${content.length} chars → ${target}` +
         (hints.length ? `\nWARN ${hints.join("; ")}` : "") +
         "\nNext: lane.add_composition (first time) or composition.preview to look at it.",
       false

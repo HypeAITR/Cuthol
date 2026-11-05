@@ -9,6 +9,13 @@ An agent edits through a CLI (`cuthol`) or an MCP server (`cuthol mcp`). It read
 ## What it does
 
 - **Timeline.** A magnetic primary storyline (`spine`) plus typed parallel lanes (titles, captions, b-roll, motion graphics, voiceover, sfx, music). Cues can be anchored to clips, so they follow later trims.
+- **Clip effects.** Effects are applied in the render graph on the clip itself, so the source asset and its transcript binding stay as they are.
+  - Speed ramps that the picture, the audio and the word timings all follow.
+  - Colour: brightness, contrast and saturation (static or animated), white balance in kelvin, and `.cube`/`.3dl` LUTs.
+  - A per-clip effect chain (`spine fx`): a raw FFmpeg chain or effects provided by extensions, with parameters that can be animated.
+  - Edge fill for moved, scaled or rotated clips: mirrored or stretched edges instead of showing the layer below.
+  - Keyframes with cubic-bezier and step (`hold`) easing.
+  - Transitions from extensions, declared as expressions (no code), next to the built-in ones.
 - **Speech.**
   - Transcription with word timings.
   - Pause and filler cleanup with cut edges placed in real silence (an edge never grows into a kept word), over one clip, the whole spine, or a voiceover/audio cue on a lane, in a single undoable step.
@@ -28,7 +35,8 @@ An agent edits through a CLI (`cuthol`) or an MCP server (`cuthol mcp`). It read
   - Integer-millisecond model with typed handles (`vid_01`, `sp_01`, `cue_01`) that are never reused.
   - An atomic edit journal with undo previews and `expect_rev`, plus lane locking.
   - 5 verification gates (schema, assets, timing, stage, signal) with structured diagnostics, including HyperFrames lint findings for each composition.
-- **Extensions.** Agents can add their own tools without rebuilding Cuthol: composition helpers, asset packs (fonts, mascots, icons), audio/video/image processors, multi-step recipes, and planners that read the edit's timing (word times, events declared by compositions) and propose cue changes applied as one undoable step. An extension is kept for one project or installed for every project.
+  - Changes made outside Cuthol (a composition edited by hand or in another tool, a hand-edited project file) are detected when the project is opened; the agent sees which files changed and can adopt them as an undoable revision or revert them.
+- **Extensions.** Agents can add their own tools without rebuilding Cuthol: composition helpers, asset packs (fonts, mascots, icons), audio/video/image processors, per-clip effects, spine transitions, multi-step recipes, and planners that read the edit's timing (word times, events declared by compositions) and propose cue changes applied as one undoable step. An extension is kept for one project or installed for every project.
 
 ## Requirements
 

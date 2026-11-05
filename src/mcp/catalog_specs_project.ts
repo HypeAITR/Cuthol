@@ -74,6 +74,30 @@ export const PROJECT_ACTION_SPECS: ActionSpec[] = [
     mutates: false,
     params: [{ name: "name", type: "string", description: "Tag name.", required: true }],
   },
+  {
+    tool: "workspace",
+    action: "changes_show",
+    argv: ["workspace", "changes", "show"],
+    summary: "Show out-of-journal edits: composition files changed outside Cuthol and/or a hand-edited cuthol.sequence.json (file lists + short unified diffs).",
+    mutates: false,
+    params: [{ name: "comp", type: "string", description: "Only this composition (composition_dir, its basename, or a mounting cue id)." }],
+  },
+  {
+    tool: "workspace",
+    action: "changes_adopt",
+    argv: ["workspace", "changes", "adopt"],
+    summary: "Bless out-of-journal edits as a new revision (undoable). An edited cuthol.sequence.json is folded in only after schema validation and gates G1-G3 pass.",
+    mutates: true,
+    params: [{ name: "comp", type: "string", description: "Only bless this composition's files (cuthol.sequence.json is always folded in)." }],
+  },
+  {
+    tool: "workspace",
+    action: "changes_revert",
+    argv: ["workspace", "changes", "revert"],
+    summary: "Restore externally changed files to the journal's last state, recorded as a new revision (undo of it brings the pre-revert content back).",
+    mutates: true,
+    params: [{ name: "comp", type: "string", description: "Only revert this composition's files (cuthol.sequence.json is always restored)." }],
+  },
 
   // ---------------------------------------------------------------- library
   {

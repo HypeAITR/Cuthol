@@ -17,8 +17,8 @@ export { isNvencHardwareAvailable, shouldUseNvencForRender } from "./hf_common.j
 export type { HyperFramesPresetKind, HyperFramesScaffoldOptions, HyperFramesValidationResult, HyperFramesLintFinding, HyperFramesLintResult } from "./hf_common.js";
 export { isDuplicateImgMediaDiscoveryFinding, lintHyperFramesComposition } from "./hf_lint.js";
 export { scaffoldHyperFramesComposition, validateHyperFramesCompositionContract, detectSceneHostFeaturesInComposition } from "./hf_scaffold.js";
-export { parseHyperFramesPipelineSummary, beginOverlayRenderTracking, setOverlayRenderExecutionMeta, finishOverlayRenderTracking, beginOverlayCollect, isOverlayCollectActive, hasPendingCollectedOverlayForPaths, runCollectedOverlays } from "./hf_overlay_tracking.js";
-export type { OverlayCacheReason, HyperFramesPipelineSummaryInfo, OverlayRenderItemSummary, RenderOverlaySummary } from "./hf_overlay_tracking.js";
+export { parseHyperFramesPipelineSummary, parseHyperFramesScriptErrorIsolated, beginOverlayRenderTracking, setOverlayRenderExecutionMeta, finishOverlayRenderTracking, beginOverlayCollect, isOverlayCollectActive, hasPendingCollectedOverlayForPaths, runCollectedOverlays } from "./hf_overlay_tracking.js";
+export type { OverlayCacheReason, HyperFramesPipelineSummaryInfo, OverlayRenderItemSummary, RenderOverlaySummary, HyperFramesScriptErrorIsolated, HyperFramesScriptErrorReport } from "./hf_overlay_tracking.js";
 export { isPngSequenceBlobDir, inspectPngSequenceDir, isValidVideoBlobOnDisk } from "./hf_blobs.js";
 export type { OverlayBlobExt } from "./hf_blobs.js";
 export { renderHyperFramesCompositionToMp4, isDraftNativeOverlayCapture } from "./hf_render.js";

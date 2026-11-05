@@ -72,6 +72,60 @@ export function findLocalHyperFramesCliMjs(): string {
   return path.resolve(process.cwd(), "node_modules/hyperframes/bin/hyperframes.mjs");
 }
 
+/**
+ * Name of the HyperFrames render-slot switch (HyperFrames 0.9.14+ takes a machine-wide
+ * single render slot and queues a second render unless this is `off`/`0`/`false`).
+ */
+export const HYPERFRAMES_RENDER_LOCK_ENV_VAR = "HYPERFRAMES_RENDER_LOCK";
+
+/** Value Cuthol uses so its concurrent overlay renders run side by side. */
+export const HYPERFRAMES_RENDER_LOCK_CUTHOL_DEFAULT = "off";
+
+/**
+ * Resolves the `HYPERFRAMES_RENDER_LOCK` value for HyperFrames processes Cuthol spawns.
+ *
+ * Rule (documented in `skills/cuthol/references/compositions.md`): an explicitly set,
+ * non-empty user value always wins and Cuthol never touches it (e.g. `HYPERFRAMES_RENDER_LOCK=1`
+ * deliberately re-enables the machine-wide slot and Cuthol's parallel overlay pre-pass queues
+ * behind it). When the variable is unset or blank, Cuthol uses `off` so concurrent overlay
+ * renders keep running side by side instead of silently serializing.
+ */
+export function resolveHyperFramesRenderLockValue(): string {
+  const raw = process.env[HYPERFRAMES_RENDER_LOCK_ENV_VAR];
+  if (typeof raw === "string" && raw.trim() !== "") {
+    return raw;
+  }
+  return HYPERFRAMES_RENDER_LOCK_CUTHOL_DEFAULT;
+}
+
+/**
+ * Environment for a HyperFrames child process spawned by Cuthol: the current process
+ * environment plus the resolved `HYPERFRAMES_RENDER_LOCK` value. Pass the result as
+ * `env` to every direct `spawnWatchedSync` HyperFrames invocation.
+ */
+export function hyperFramesProcessEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    [HYPERFRAMES_RENDER_LOCK_ENV_VAR]: resolveHyperFramesRenderLockValue(),
+  };
+}
+
+/**
+ * Writes the Cuthol default into `process.env` when the user did not set the variable.
+ * This covers the concurrent overlay path (`runCollectedOverlays` -> `runWatchedParallelFfmpegJobsSync`),
+ * which cannot take a per-job `env`: the watchdog worker inherits `process.env` once at creation,
+ * so the default must be present before the first spawn. Called once at module load below (imports
+ * always run before the first spawn in the CLI and in tests) and defensively before overlay runs.
+ */
+export function ensureHyperFramesRenderLockDefault(): void {
+  const raw = process.env[HYPERFRAMES_RENDER_LOCK_ENV_VAR];
+  if (typeof raw !== "string" || raw.trim() === "") {
+    process.env[HYPERFRAMES_RENDER_LOCK_ENV_VAR] = HYPERFRAMES_RENDER_LOCK_CUTHOL_DEFAULT;
+  }
+}
+
+ensureHyperFramesRenderLockDefault();
+
 /** Written into the overlay cache key when the invoked HyperFrames package version cannot be read. */
 export const HYPERFRAMES_RENDERER_VERSION_UNREADABLE = "unreadable";
 

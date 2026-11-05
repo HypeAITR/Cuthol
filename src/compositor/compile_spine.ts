@@ -1,5 +1,33 @@
 // Per-clip spine filter-graph compilation: source input, speed, transforms, envelopes, and transitions (split out of compiler.ts).
+//
+// Clip chain stage order (each stage lives in its own module):
+//   1. timing      compile_spine_timing.ts      trim, rate / speed ramp, fps, tail pad
+//   2. geometry    (here)                       crop, fit (contain/cover/fill) scale, mirror
+//   3. colour      compile_spine_color.ts       color_grade, colour envelopes, LUT, temperature
+//   4. fx          compile_spine_fx.ts          per-clip effect chain (`clip.fx`, built-in or extension)
+//   5. alpha       (here)                       chroma cutout or RGBA conversion, rotation, opacity
+//   6. transitions compile_spine_transition.ts  outgoing then incoming filters
+//   7. edge        compile_spine_edge.ts        `placement.edge` fill before the clip is moved
+//   8. scale/pan   compile_filters.ts           sub-pixel scale / pan, output pixel format, timeline offset
+// The overlay position is built in overlaySpineClip: base x/y → edge hook (compile_spine_edge.ts) → still-image spec
+// → incoming transition position → outgoing transition position (compile_spine_transition.ts).
 import { CutholSequence, isStillGraphic, TransitionSpec } from "../core/schema.js";
+import { buildSpineClipTimingFilters, computeSpineClipEffectiveRate } from "./compile_spine_timing.js";
+import { buildSpineClipColorFilters } from "./compile_spine_color.js";
+import { buildSpineClipFxFilters } from "./compile_spine_fx.js";
+import {
+  applySpineClipEdgeToOverlay,
+  buildSpineClipEdgeFilters,
+  spineClipEdgeRequiresRgba,
+} from "./compile_spine_edge.js";
+import {
+  applyIncomingTransitionPosition,
+  applyOutgoingTransitionPosition,
+  buildIncomingTransitionFilters,
+  buildOutgoingTransitionFilters,
+  incomingTransitionScaleFactor,
+  transitionHoldTailMs,
+} from "./compile_spine_transition.js";
 import { resolveLibraryItemPath, resolveSourceColorSpec } from "../library/probe.js";
 import {
   BT709_TO_YUV420P,
@@ -80,11 +108,8 @@ function buildSpineClipFilterChain(
   const spSyEnv = clip.envelopes.find((e) => e.parameter === "placement.scale_y");
   const spSxExpr = compileEnvelopeToFfmpegExpr({ envelope: spSxEnv, timeBaseOffsetMs: 0, mode: "raw" });
   const spSyExpr = compileEnvelopeToFfmpegExpr({ envelope: spSyEnv, timeBaseOffsetMs: 0, mode: "raw" });
-  const isZoomInIncoming =
-    incomingTransition !== null &&
-    incomingTransition.duration_ms > 0 &&
-    incomingTransition.kind === "zoom_in";
-  const spHasDynScale = Boolean(spSxExpr || spSyExpr || isZoomInIncoming);
+  const incomingScaleFactor = incomingTransitionScaleFactor(incomingTransition);
+  const spHasDynScale = Boolean(spSxExpr || spSyExpr || incomingScaleFactor);
   const xEnv = clip.envelopes.find((e) => e.parameter === "placement.x_pct");
   const yEnv = clip.envelopes.find((e) => e.parameter === "placement.y_pct");
 
@@ -106,29 +131,16 @@ function buildSpineClipFilterChain(
   const baseCenterX = Math.round((renderWidth - spEffW) / 2);
   const baseCenterY = Math.round((renderHeight - spEffH) / 2);
 
-  const srcFps = Math.max(1, asset.probe.fps || fps);
-  const rawSrcSpanSec = Math.max(0, (clip.source_out_ms - clip.source_in_ms) / 1000);
-  const scaledSrcSpanSec = rawSrcSpanSec / effectiveRate;
-  const clipDurSec = clip.duration_ms / 1000;
-  const tailPadSec = isStill
-    ? (clipDurSec + 2 / fps).toFixed(3)
-    : Math.max(
-        0.1,
-        Math.max(0, clipDurSec - scaledSrcSpanSec) + 3 / (srcFps * effectiveRate) + 2 / fps
-      ).toFixed(3);
-
-  const needsPreTrimEofPad =
-    !isStill &&
-    asset.probe.duration_ms > 0 &&
-    clip.source_out_ms >= Math.max(0, asset.probe.duration_ms - 5000);
-  const vFilters: string[] = [
-    `settb=AVTB`,
-    ...(needsPreTrimEofPad ? [`tpad=stop_mode=clone:stop_duration=3.000`] : []),
-    `trim=start=${srcInSec}:end=${srcOutSec}`,
-    `setpts=(PTS-STARTPTS)/${effectiveRate.toFixed(4)}`,
-    `fps=${fps}:eof_action=pass`,
-    `tpad=stop_mode=clone:stop_duration=${tailPadSec}`,
-  ];
+  // Stage 1: timing
+  const vFilters: string[] = buildSpineClipTimingFilters({
+    clip,
+    asset,
+    isStill,
+    fps,
+    srcInSec,
+    srcOutSec,
+    effectiveRate,
+  });
   const spSpatialFilterStartIdx = vFilters.length;
   const clipColorSpec = resolveSourceColorSpec(asset.probe, absAssetPath);
   if (clipColorSpec.isRgb) {
@@ -162,13 +174,14 @@ function buildSpineClipFilterChain(
   if (clip.placement.mirror_x) vFilters.push("hflip");
   if (clip.placement.mirror_y) vFilters.push("vflip");
 
-  const cg = clip.treatments.color_grade;
-  if (cg.brightness !== 0 || cg.contrast !== 1 || cg.saturation !== 1) {
-    vFilters.push(
-      `eq=brightness=${cg.brightness.toFixed(2)}:contrast=${cg.contrast.toFixed(2)}:saturation=${cg.saturation.toFixed(2)}`
-    );
-  }
+  // Stage 3: colour
+  vFilters.push(...buildSpineClipColorFilters(ctx, { clip, asset, absAssetPath, clipColorSpec }));
+  // Stage 4: per-clip fx chain
+  vFilters.push(
+    ...buildSpineClipFxFilters(ctx, { clip, asset, absAssetPath, clipColorSpec, targetW, targetH })
+  );
 
+  // Stage 5: alpha
   let spRgbaIdx = -1;
   let spUsesRgba = true;
   if (clip.treatments.cutout.mode === "chroma" && clip.treatments.cutout.chroma_key_hex) {
@@ -223,7 +236,7 @@ function buildSpineClipFilterChain(
     hasNextClip,
     outTrans,
     incomingTransition,
-    isZoomInIncoming,
+    incomingScaleFactor,
     spSxExpr,
     spSyExpr,
     spHasDynScale,
@@ -233,6 +246,8 @@ function buildSpineClipFilterChain(
     yEnv,
     baseCenterX,
     baseCenterY,
+    targetW,
+    targetH,
     vFilters,
     spSpatialFilterStartIdx,
     clipColorSpec,
@@ -256,7 +271,7 @@ function appendSpineClipTransitionsAndScale(
     hasNextClip: boolean;
     outTrans: TransitionSpec | null;
     incomingTransition: TransitionSpec | null;
-    isZoomInIncoming: boolean;
+    incomingScaleFactor: string | null;
     spSxExpr: string | null;
     spSyExpr: string | null;
     spHasDynScale: boolean;
@@ -266,6 +281,8 @@ function appendSpineClipTransitionsAndScale(
     yEnv: EnvelopeSpec | undefined;
     baseCenterX: number;
     baseCenterY: number;
+    targetW: number;
+    targetH: number;
     vFilters: string[];
     spSpatialFilterStartIdx: number;
     clipColorSpec: ReturnType<typeof resolveSourceColorSpec>;
@@ -306,7 +323,7 @@ function appendSpineClipTransitionsAndScale(
     hasNextClip,
     outTrans,
     incomingTransition,
-    isZoomInIncoming,
+    incomingScaleFactor,
     spSxExpr,
     spSyExpr,
     spHasDynScale,
@@ -316,6 +333,8 @@ function appendSpineClipTransitionsAndScale(
     yEnv,
     baseCenterX,
     baseCenterY,
+    targetW,
+    targetH,
     vFilters,
     spSpatialFilterStartIdx,
     clipColorSpec,
@@ -323,74 +342,23 @@ function appendSpineClipTransitionsAndScale(
   } = params;
   let { spUsesRgba } = params;
 
-  // Handle outgoing & incoming transitions cleanly without Porter-Duff alpha dip
-  const nextClip = hasNextClip ? seq.spine.clips[i + 1] : null;
-  const nextCoversStage =
-    nextClip !== null &&
-    outTrans?.kind !== "zoom_in" &&
-    Math.abs(nextClip.placement.scale_x) >= 0.999 &&
-    Math.abs(nextClip.placement.scale_y) >= 0.999 &&
-    Math.abs(nextClip.placement.x_pct) < 0.01 &&
-    Math.abs(nextClip.placement.y_pct) < 0.01 &&
-    Math.abs(nextClip.placement.rotation_deg) < 0.01 &&
-    !nextClip.placement.crop &&
-    nextClip.placement.fit_mode !== "contain" &&
-    nextClip.placement.opacity >= 0.999 &&
-    !nextClip.envelopes.some(
-      (e) =>
-        e.parameter === "placement.scale_x" ||
-        e.parameter === "placement.scale_y" ||
-        e.parameter === "placement.x_pct" ||
-        e.parameter === "placement.y_pct" ||
-        e.parameter === "placement.rotation_deg" ||
-        e.parameter === "placement.opacity"
-    );
+  // Stage 6: transitions (outgoing, then incoming) — without Porter-Duff alpha dip
+  vFilters.push(...buildOutgoingTransitionFilters(ctx, { i, clip, hasNextClip, outTrans }));
+  vFilters.push(...buildIncomingTransitionFilters(ctx, { clip, incomingTransition }));
 
-  if (outTrans && outTrans.duration_ms > 0) {
-    const fadeDurSec = (outTrans.duration_ms / 1000).toFixed(3);
-    if (!hasNextClip || outTrans.kind === "fade") {
-      const fadeStartSec = Math.max(0, (clip.duration_ms - outTrans.duration_ms) / 1000).toFixed(3);
-      vFilters.push(`fade=t=out:st=${fadeStartSec}:d=${fadeDurSec}:alpha=1`);
-    } else if (nextCoversStage) {
-      // Hold last frame at 100% alpha under full-frame incoming next clip so total opacity stays 1.0 (zero backdrop bleed)
-      vFilters.push(`tpad=stop_mode=clone:stop_duration=${fadeDurSec}`);
-    } else {
-      const holdFadeStartSec = (clip.duration_ms / 1000).toFixed(3);
-      vFilters.push(
-        `tpad=stop_mode=clone:stop_duration=${fadeDurSec}`,
-        `fade=t=out:st=${holdFadeStartSec}:d=${fadeDurSec}:alpha=1`
-      );
-    }
-  }
-
-  if (incomingTransition && incomingTransition.duration_ms > 0) {
-    const inDurSec = (incomingTransition.duration_ms / 1000).toFixed(3);
-    if (
-      incomingTransition.kind === "dissolve" ||
-      incomingTransition.kind === "fade" ||
-      incomingTransition.kind === "zoom_in"
-    ) {
-      vFilters.push(`fade=t=in:st=0:d=${inDurSec}:alpha=1`);
-    }
-  }
-
-  const inDurSec = incomingTransition ? (incomingTransition.duration_ms / 1000).toFixed(3) : "0.001";
-  const zoomFactor = isZoomInIncoming
-    ? `if(lt(t,${inDurSec}),0.88+0.12*(t/${inDurSec}),1)`
-    : "1";
   const sxPart = spSxExpr
-    ? isZoomInIncoming
-      ? `abs(${spSxExpr})*(${zoomFactor})`
+    ? incomingScaleFactor
+      ? `abs(${spSxExpr})*(${incomingScaleFactor})`
       : `abs(${spSxExpr})`
-    : isZoomInIncoming
-      ? `${Math.abs(clip.placement.scale_x)}*(${zoomFactor})`
+    : incomingScaleFactor
+      ? `${Math.abs(clip.placement.scale_x)}*(${incomingScaleFactor})`
       : String(Math.abs(clip.placement.scale_x));
   const syPart = spSyExpr
-    ? isZoomInIncoming
-      ? `abs(${spSyExpr})*(${zoomFactor})`
+    ? incomingScaleFactor
+      ? `abs(${spSyExpr})*(${incomingScaleFactor})`
       : `abs(${spSyExpr})`
-    : isZoomInIncoming
-      ? `${Math.abs(clip.placement.scale_y)}*(${zoomFactor})`
+    : incomingScaleFactor
+      ? `${Math.abs(clip.placement.scale_y)}*(${incomingScaleFactor})`
       : String(Math.abs(clip.placement.scale_y));
 
   // Opaque, full-frame, untransformed, transition-less, envelope-less footage spine clips skip the RGBA round-trip.
@@ -415,12 +383,19 @@ function appendSpineClipTransitionsAndScale(
     Math.abs(clip.placement.scale_x - 1) < 1e-3 &&
     Math.abs(clip.placement.scale_y - 1) < 1e-3 &&
     Math.abs(clip.placement.x_pct) < 0.01 &&
-    Math.abs(clip.placement.y_pct) < 0.01
+    Math.abs(clip.placement.y_pct) < 0.01 &&
+    !spineClipEdgeRequiresRgba(clip)
   ) {
     vFilters.splice(spRgbaIdx, 1);
     spUsesRgba = false;
   }
 
+  // Stage 7: edge mode
+  vFilters.push(
+    ...buildSpineClipEdgeFilters(ctx, { clip, targetW, targetH, hasDynamicScale: spHasDynScale })
+  );
+
+  // Stage 8: scale / pan
   vFilters.push(
     ...buildSubpixelScaleOrPanFilters({
       hasDynamicScale: spHasDynScale,
@@ -470,6 +445,8 @@ function overlaySpineClip(
     absAssetPath: string;
     tlInSec: string;
     tlOutSec: string;
+    hasNextClip: boolean;
+    outTrans: TransitionSpec | null;
     incomingTransition: TransitionSpec | null;
     isStaticStillClip: boolean;
     drawnSpineLayer: DrawnVisualLayer;
@@ -490,6 +467,8 @@ function overlaySpineClip(
     absAssetPath,
     tlInSec,
     tlOutSec,
+    hasNextClip,
+    outTrans,
     incomingTransition,
     isStaticStillClip,
     drawnSpineLayer,
@@ -533,6 +512,9 @@ function overlaySpineClip(
         ? `(H-h)/2+${Math.round((clip.placement.y_pct / 100) * renderHeight)}`
         : String(Math.round(baseCenterY + (clip.placement.y_pct / 100) * renderHeight)));
 
+  // Edge mode may change the drawn frame size / content offset
+  ({ xExpr, yExpr } = applySpineClipEdgeToOverlay(ctx, { clip, xExpr, yExpr, hasDynamicScale: spHasDynScale }));
+
   if (isStaticStillClip) {
     drawnSpineLayer.stillSpec = {
       id: clip.id,
@@ -545,19 +527,10 @@ function overlaySpineClip(
     };
   }
 
-  // Animate incoming wipe_left / wipe_right / slide_up transitions
-  if (incomingTransition && incomingTransition.duration_ms > 0) {
-    const t0 = Number((clip.timeline_in_ms / 1000).toFixed(3));
-    const dt = Number((incomingTransition.duration_ms / 1000).toFixed(3));
-    const t1 = Number((t0 + dt).toFixed(3));
-    if (incomingTransition.kind === "wipe_left") {
-      xExpr = `if(lt(t,${t1}),${renderWidth}-${renderWidth}*(t-${t0})/${dt},${xExpr})`;
-    } else if (incomingTransition.kind === "wipe_right") {
-      xExpr = `if(lt(t,${t1}),-${renderWidth}+${renderWidth}*(t-${t0})/${dt},${xExpr})`;
-    } else if (incomingTransition.kind === "slide_up") {
-      yExpr = `if(lt(t,${t1}),${renderHeight}-${renderHeight}*(t-${t0})/${dt},${yExpr})`;
-    }
-  }
+  // Incoming position-based transitions (wipe / slide)
+  ({ xExpr, yExpr } = applyIncomingTransitionPosition(ctx, { clip, incomingTransition, xExpr, yExpr }));
+  // Outgoing position-based transitions (extension kinds, e.g. a push)
+  ({ xExpr, yExpr } = applyOutgoingTransitionPosition(ctx, { clip, hasNextClip, outTrans, xExpr, yExpr }));
 
   const nextPad = `[vc_${++ctx.vStepCounter}]`;
   ctx.filterChains.push(
@@ -579,8 +552,7 @@ export function compileSpineClip(ctx: VideoGraphCompileContext, i: number): void
   // into `clips[i+1]`, hold its final frame under `clips[i+1]` during the transition duration so there is ZERO dip to backdrop!
   const hasNextClip = i < seq.spine.clips.length - 1;
   const outTrans = clip.transition_out;
-  const holdTailMs =
-    hasNextClip && outTrans && outTrans.kind !== "fade" ? outTrans.duration_ms : 0;
+  const holdTailMs = transitionHoldTailMs(clip, hasNextClip);
 
   const clipStartMs = clip.timeline_in_ms;
   const clipEndMs = clip.timeline_in_ms + clip.duration_ms + holdTailMs;
@@ -636,10 +608,7 @@ export function compileSpineClip(ctx: VideoGraphCompileContext, i: number): void
   const tlOutSec = (clipEndMs / 1000).toFixed(3);
 
   // Compute effectiveRate from integrated `clip.duration_ms` so speed_ramp durations match exactly
-  const effectiveRate = Math.max(
-    0.1,
-    Math.min(16.0, (clip.source_out_ms - clip.source_in_ms) / Math.max(1, clip.duration_ms))
-  );
+  const effectiveRate = computeSpineClipEffectiveRate(clip);
 
   const filterResult = buildSpineClipFilterChain(ctx, {
     i,
@@ -665,6 +634,8 @@ export function compileSpineClip(ctx: VideoGraphCompileContext, i: number): void
     absAssetPath,
     tlInSec,
     tlOutSec,
+    hasNextClip,
+    outTrans,
     incomingTransition,
     isStaticStillClip,
     drawnSpineLayer,

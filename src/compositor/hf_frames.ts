@@ -7,7 +7,7 @@ import {
 } from "../core/subprocess.js";
 import { isPngSequenceBlobDir, resolveCachedCompositionVideoBlob, stageCompositionRenderDir, isValidVideoBlobOnDisk, inspectPngSequenceDir } from "./hf_blobs.js";
 import { syncScalarVarsAndComputeCompositionHash } from "./hf_cache_state.js";
-import { findLocalHyperFramesCliMjs } from "./hf_common.js";
+import { findLocalHyperFramesCliMjs, hyperFramesProcessEnv } from "./hf_common.js";
 import { renderHyperFramesCompositionToMp4 } from "./hf_render.js";
 
 export function resolveFramePngInPngSequenceDir(dirPath: string, frameIdx: number): string | null {
@@ -347,6 +347,7 @@ export function renderHyperFramesSingleFramePng(options: {
         ],
         {
           encoding: "utf8",
+          env: hyperFramesProcessEnv(),
           step: "hyperframes snapshot",
           watchedPaths: [tmpSnapDir],
           cleanupPathsOnStall: [tmpSnapDir],
@@ -597,6 +598,7 @@ export function renderHyperFramesBatchFramesPng(options: {
         ],
         {
           encoding: "utf8",
+          env: hyperFramesProcessEnv(),
           step: "hyperframes snapshot",
           watchedPaths: [tmpSnapDir],
           cleanupPathsOnStall: [tmpSnapDir],

@@ -1,5 +1,10 @@
 // CLI 'workspace' command group handler (split out of cli.ts).
 import { CutholError, DIAGNOSTICS } from "./core/diagnostics.js";
+import {
+  adoptExternalChanges,
+  buildChangesShow,
+  revertExternalChanges,
+} from "./core/external_changes.js";
 import { AspectPreset } from "./core/schema.js";
 import {
   initWorkspace,
@@ -106,6 +111,43 @@ export function runWorkspaceCommand(ctx: CliCommandContext): CliCommandResult {
       emitEnvelopeJson(workspaceDir, "workspace.journal.tag", {
         action: "journal.tag",
         entry,
+      });
+      return;
+    }
+  }
+
+  if (action === "changes") {
+    const sub = rest[0] ?? "show";
+    const comp = strFlag(flags, "comp");
+    if (sub === "show") {
+      const payload = buildChangesShow(workspaceDir, comp);
+      const fileCount = payload.compositions.reduce((n, c) => n + c.files.length, 0);
+      emitEnvelopeJson(workspaceDir, "workspace.changes.show", {
+        action: "workspace.changes.show",
+        ...payload,
+        ...(payload.has_changes
+          ? {
+              diagnostic: DIAGNOSTICS.EXTERNAL_CHANGES_PRESENT(
+                `${payload.compositions.length} kompozisyon, ${fileCount} dosya${payload.sequence ? " + cuthol.sequence.json" : ""}`
+              ),
+            }
+          : {}),
+      });
+      return;
+    }
+    if (sub === "adopt") {
+      const res = adoptExternalChanges(workspaceDir, comp);
+      emitEnvelopeJson(workspaceDir, "workspace.changes.adopt", {
+        action: "workspace.changes.adopt",
+        ...res,
+      });
+      return;
+    }
+    if (sub === "revert") {
+      const res = revertExternalChanges(workspaceDir, comp);
+      emitEnvelopeJson(workspaceDir, "workspace.changes.revert", {
+        action: "workspace.changes.revert",
+        ...res,
       });
       return;
     }

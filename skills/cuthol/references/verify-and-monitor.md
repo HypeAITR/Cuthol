@@ -35,6 +35,7 @@ What to check, concretely:
 | G111 | — | Undo/redo would change a locked lane → `allow_protected` or unlock. |
 | G114 | — WARN | `monitor frame` / `monitor sheet` read every bare `--at` number as milliseconds, all of them were under 1000, and the sequence is at least 10s. Times are unchanged → pass `21.1s` or `00:21.1` if you meant seconds. A single bare value, or any value with a unit, does not warn. |
 | G115 | — WARN | `library query` cut the page at the token budget (`truncated_by=max_tokens`). The message gives the returned count and `next_cursor` → continue with `--cursor`, or raise `--max-tokens`. |
+| G124 | G1 ERROR | A spine clip's colour temperature is outside 1000..40000 K → `spine grade --clip sp_XX --temperature 6500` (neutral, no filter). |
 | G201 | G2 ERROR | File missing on disk. |
 | G202 | G2 ERROR | Source range beyond the media length. |
 | G203 | G2 ERROR | Audio operation on an asset without audio. |
@@ -58,7 +59,10 @@ What to check, concretely:
 | G403 | G4 WARN | Text covered by a higher layer. |
 | G406 | G4 WARN | Overlay uses backdrop-filter / blend modes in overlay mode → `mode="scene_host"`. |
 | G407 | G4 WARN / INFO | HyperFrames lint finding inside a mounted composition (e.g. `gsap_non_transform_motion` tweening `left`/`width`, `duplicate_media_discovery_risk`; cached by composition content hash, size/sub-composition split hints are ignored). `duplicate_media_discovery_risk` is downgraded to `INFO` when it only affects `<img>` tags and stays `WARN` for `<video>`/`<audio>` → apply the finding's `Öneri` fix hint. |
-| G409 | G4 WARN | Motion blur, a mask, color temperature, a LUT, or a brightness/contrast/saturation envelope is set away from the default. This version does not apply that field in the render. The message names the clip (or cue) and the field. Constant brightness, contrast and saturation still render → leave the unused field at its default. |
+| G409 | G4 WARN | Motion blur, a mask, or a brightness/contrast/saturation envelope on a lane cue is set away from the default. This version does not apply that field in the render. The message names the clip (or cue) and the field. Spine colour (constant or enveloped brightness/contrast/saturation, temperature, LUT) renders → leave the unused field at its default. |
+| G414 | G4 ERROR | A spine clip's LUT file is missing, unreadable, outside the project folder, or not `.cube`/`.3dl` → put the file under the project folder and re-attach with `spine grade --clip sp_XX --lut <path>`, or clear with `--lut none`. Render refuses to start. |
+| G415 | G4 WARN | A sub-composition script threw while a sibling timeline stayed alive, so HyperFrames skipped it with an empty timeline and that overlay part is blank. `overlays.script_errors` / `overlays.diagnostics` name the element, composition and error → fix that script; the next `render` re-captures. |
+| G416 | G4 WARN | A composition cue plays audio (`<audio>`, audible `<video>`, `<hf-audio-group>`, JS audio) that never enters the Cuthol mix — overlays are picture-only. `muted` / silent / sourceless stays quiet → move the sound to `ln_sfx` / `ln_bgm`. |
 | G501 | G5 WARN | True peak above −1 dBTP → lower gain or `mix.normalize`. |
 | G502 | G5 WARN | Blank or backdrop-filled frame (even with a caption/small overlay on top); also emitted after `render` with event timestamps if a spine clip drops to backdrop outside intentional fades. Without spine clips only frames with no visual cue count: dark frames a composition draws itself are not reported. |
 | G503 | G5 ERROR | HyperFrames could not render an overlay; the render stops with `ok:false` and nothing is substituted. The message carries the HyperFrames error → open the composition with `composition.preview`, fix it, render again. Renders have no time limit: a long video simply takes longer (MCP reports progress and can be cancelled). |

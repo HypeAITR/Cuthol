@@ -5,7 +5,7 @@ import path from "node:path";
 import {
   spawnWatchedSync
 } from "../core/subprocess.js";
-import { HyperFramesLintResult, HyperFramesLintFinding, findLocalHyperFramesCliMjs } from "./hf_common.js";
+import { HyperFramesLintResult, HyperFramesLintFinding, findLocalHyperFramesCliMjs, hyperFramesProcessEnv } from "./hf_common.js";
 
 const SIZE_AND_SPLIT_LINT_CODES = new Set([
   "composition_file_too_large",
@@ -235,6 +235,7 @@ export function lintHyperFramesComposition(
   if (fs.existsSync(hfBin)) {
     const proc = spawnWatchedSync(process.execPath, [hfBin, "lint", absCompDir, "--json"], {
       encoding: "utf8",
+      env: hyperFramesProcessEnv(),
       step: "hyperframes lint",
     });
     const rawOut = (proc.stdout || "").trim();

@@ -20,6 +20,19 @@ import {
 import { AspectPreset, createEmptySequence, CutholSequence } from "./schema.js";
 import { formatTimecode } from "./time.js";
 import { computeSequenceDurationMs } from "./timeline.js";
+import {
+  assertBridgeWontRewriteExternal,
+  assertMutatorKeptExternalFiles,
+  captureCommitPrestate,
+  clearExtchangeState,
+  detectExternalChanges,
+  ExternalChanges,
+  finalizeCommitManifest,
+  formatExternalNotice,
+  pruneExtchangeRevisions,
+  refreshManifestIfWasClean,
+  restoreForJournalTraversal,
+} from "./external_changes.js";
 
 export const SEQUENCE_FILENAME = "cuthol.sequence.json";
 export const STATE_DIRNAME = ".cuthol";
@@ -37,6 +50,8 @@ export interface JournalEntry {
   affected_ids?: string[];
   touches_protected?: boolean;
   protected_ids?: string[];
+  /** Set when this commit folded an externally edited `cuthol.sequence.json` without adopt. */
+  absorbed_external_sequence?: string;
 }
 
 export interface JournalManifest {
@@ -168,6 +183,7 @@ export function initWorkspace(options: {
     ],
   };
   writeJsonAtomically(paths.journalIndexFile, manifest);
+  clearExtchangeState(paths);
 
   return { paths, sequence };
 }
@@ -195,15 +211,32 @@ export function loadJournalManifest(paths: WorkspacePaths): JournalManifest {
  * If the callback throws (or verification fails), the sequence file remains untouched.
  * If it succeeds, the revision increments and a snapshot is recorded in `.cuthol/journal/`.
  */
+export interface CommitSequenceMutationOptions {
+  /**
+   * Skips the G211 bridge-rewrite guard. Only `workspace changes adopt/revert`
+   * set this: they resolve the external change by blessing the post-sync state.
+   */
+  allowExternalRewrite?: boolean;
+}
+
 export function commitSequenceMutation<T>(
   dir: string,
   operation: string,
-  mutator: (seq: CutholSequence, paths: WorkspacePaths) => T
+  mutator: (seq: CutholSequence, paths: WorkspacePaths) => T,
+  options: CommitSequenceMutationOptions = {}
 ): { result: T; sequence: CutholSequence; revision: number } {
   const { paths, sequence } = loadSequence(dir);
   const cloned: CutholSequence = structuredClone(sequence);
+  const extPrestate = captureCommitPrestate(paths, sequence, { stashPending: true });
 
   const result = mutator(cloned, paths);
+
+  // G211: a Cuthol commit must not silently overwrite externally-changed
+  // composition files. Both checks run before any journal write.
+  assertMutatorKeptExternalFiles(paths, extPrestate);
+  if (!options.allowExternalRewrite) {
+    assertBridgeWontRewriteExternal(paths, cloned, extPrestate);
+  }
 
   const manifest = loadJournalManifest(paths);
   const prunedEntries = manifest.entries.filter((e) => e.revision > manifest.cursor_revision);
@@ -236,13 +269,19 @@ export function commitSequenceMutation<T>(
   writeJsonAtomically(snapPath, cloned);
   writeJsonAtomically(paths.sequenceFile, cloned);
 
+  const absorbedExternalNote = extPrestate.sequenceFolded
+    ? "dışarıdan düzenlenmiş cuthol.sequence.json bu revizyona katıldı (adopt'suz)"
+    : undefined;
   activeEntries.push({
     revision: nextRevision,
     timestamp: cloned.meta.updated_at,
     operation,
     tag: null,
     snapshot_file: snapName,
-    delta_summary: deltaInfo.summary,
+    delta_summary: absorbedExternalNote
+      ? `${deltaInfo.summary} | ${absorbedExternalNote}`
+      : deltaInfo.summary,
+    ...(absorbedExternalNote ? { absorbed_external_sequence: absorbedExternalNote } : {}),
     inverse_kind: deltaInfo.inverse_kind,
     inverse_summary: deltaInfo.inverse_summary,
     affected_ids: deltaInfo.affected_ids,
@@ -256,6 +295,10 @@ export function commitSequenceMutation<T>(
   };
   writeJsonAtomically(paths.journalIndexFile, nextManifest);
 
+  pruneExtchangeRevisions(
+    paths,
+    prunedEntries.map((e) => e.revision)
+  );
   // Remove orphaned redo snapshot files only after new revision and manifest are safely committed
   const activeSnapSet = new Set(activeEntries.map((e) => e.snapshot_file));
   for (const pruned of prunedEntries) {
@@ -276,6 +319,12 @@ export function commitSequenceMutation<T>(
     // non-blocking bridge sync
   }
 
+  try {
+    finalizeCommitManifest(paths, nextRevision, cloned, extPrestate);
+  } catch {
+    // non-blocking known-state recording (a later detection re-baselines)
+  }
+
   return { result, sequence: cloned, revision: nextRevision };
 }
 
@@ -289,6 +338,7 @@ export function updateSequenceInPlace(
 ): CutholSequence {
   const { paths, sequence } = loadSequence(dir);
   const cloned: CutholSequence = structuredClone(sequence);
+  const extPrestate = captureCommitPrestate(paths, sequence);
   mutator(cloned, paths);
 
   writeJsonAtomically(paths.sequenceFile, cloned);
@@ -306,6 +356,12 @@ export function updateSequenceInPlace(
     syncAllCompositionBridges(cloned, paths);
   } catch {
     // non-blocking bridge sync
+  }
+
+  try {
+    refreshManifestIfWasClean(paths, cloned, extPrestate);
+  } catch {
+    // non-blocking known-state refresh
   }
 
   return cloned;
@@ -560,6 +616,13 @@ export function stepJournal(
     );
   }
 
+  // G211: the trailing bridge sync must not silently revert the user's own
+  // edit to an externally-changed entry HTML (checked before any write).
+  if (!opts.dryRun) {
+    const extPrestate = captureCommitPrestate(paths, currentSeq);
+    assertBridgeWontRewriteExternal(paths, restored, extPrestate);
+  }
+
   const prevRev = manifest.cursor_revision;
   if (!opts.dryRun) {
     writeJsonAtomically(paths.sequenceFile, restored);
@@ -569,6 +632,27 @@ export function stepJournal(
       syncAllCompositionBridges(restored, paths);
     } catch {
       // non-blocking bridge sync
+    }
+    try {
+      const restoreNotes = restoreForJournalTraversal(
+        paths,
+        direction,
+        traversedEntries.map((e) => e.revision),
+        new Map(traversedEntries.map((e) => [e.revision, e.operation] as [number, string])),
+        targetEntry.revision
+      );
+      if (restoreNotes.length > 0) {
+        const byRev = new Map(restoreNotes.map((x) => [x.revision, x.note] as [number, string]));
+        for (const rd of revertedDetails) {
+          const note = byRev.get(rd.revision);
+          if (note) rd.inverse_summary = `${rd.inverse_summary} | ${note}`;
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (revertedDetails.length > 0) {
+        revertedDetails[0].inverse_summary += ` | dosya geri yükleme hatası: ${msg}`;
+      }
     }
   } else {
     manifest.cursor_revision = targetEntry.revision;
@@ -620,12 +704,13 @@ export function tagCurrentRevision(dir: string, tag: string): JournalEntry {
 
 export function formatWorkspaceOpenSummary(
   seq: CutholSequence,
-  options: { verbose?: boolean; maxItems?: number } = {}
+  options: { verbose?: boolean; maxItems?: number; noticeLine?: string } = {}
 ): string {
   const maxItems = options.maxItems ?? 3;
   const totalMs = computeSequenceDurationMs(seq);
   const totalCues = seq.lanes.reduce((sum, l) => sum + l.cues.length, 0);
   const lines: string[] = [];
+  if (options.noticeLine) lines.push(options.noticeLine);
 
   lines.push(
     `- Project: **${seq.meta.title}** (\`${seq.meta.project_id}\`) | Rev: \`r${seq.meta.revision}\` | Stage: \`${seq.stage.width}x${seq.stage.height}\` (\`${seq.stage.aspect}\`) @ \`${seq.stage.fps}fps\` | Backdrop: \`${seq.stage.backdrop.color}\` | Duration: \`${totalMs}ms\` (\`${formatTimecode(totalMs)}\`)`
@@ -704,6 +789,35 @@ export function formatWorkspaceOpenSummary(
   return lines.join("\n");
 }
 
+export interface ExternalChangesSummary {
+  digest: string;
+  cursor_revision: number;
+  counts: ExternalChanges["counts"];
+  sequence: ExternalChanges["sequence"];
+  compositions: ExternalChanges["compositions"];
+  notice: string;
+  diagnostic: ReturnType<typeof DIAGNOSTICS.EXTERNAL_CHANGES_PRESENT>;
+}
+
+export function toExternalChangesSummary(
+  changes: ExternalChanges,
+  notice: string
+): ExternalChangesSummary {
+  const bits = changes.compositions.map(
+    (c) => `${c.key}: ${c.added.length + c.modified.length + c.deleted.length} dosya`
+  );
+  if (changes.sequence) bits.push("cuthol.sequence.json");
+  return {
+    digest: changes.digest,
+    cursor_revision: changes.cursor_revision,
+    counts: changes.counts,
+    sequence: changes.sequence,
+    compositions: changes.compositions,
+    notice,
+    diagnostic: DIAGNOSTICS.EXTERNAL_CHANGES_PRESENT(bits.join("; ") || "değişiklik"),
+  };
+}
+
 export function openWorkspaceSummary(
   dir: string,
   options: { verbose?: boolean; maxItems?: number } = {}
@@ -731,8 +845,18 @@ export function openWorkspaceSummary(
   spine_omitted?: number;
   lanes_summary: Array<{ id: string; kind: string; cues_count: number; muted: boolean }>;
   summary_text: string;
+  external_changes?: ExternalChangesSummary;
 } {
   const { paths, sequence } = loadSequence(dir);
+  let externalChanges: ExternalChanges | null = null;
+  let externalNotice: string | null = null;
+  try {
+    externalChanges = detectExternalChanges(paths.rootDir);
+    externalNotice = formatExternalNotice(externalChanges, "cli");
+  } catch {
+    externalChanges = null;
+    externalNotice = null;
+  }
   const maxItems = options.verbose ? sequence.library.length : (options.maxItems ?? 3);
   const maxSpine = options.verbose ? sequence.spine.clips.length : (options.maxItems ?? 3);
   const totalMs = computeSequenceDurationMs(sequence);
@@ -777,7 +901,13 @@ export function openWorkspaceSummary(
       cues_count: l.cues.length,
       muted: l.muted,
     })),
-    summary_text: formatWorkspaceOpenSummary(sequence, options),
+    summary_text: formatWorkspaceOpenSummary(sequence, {
+      ...options,
+      ...(externalNotice ? { noticeLine: externalNotice } : {}),
+    }),
+    ...(externalChanges && externalNotice
+      ? { external_changes: toExternalChangesSummary(externalChanges, externalNotice) }
+      : {}),
   };
 }
 

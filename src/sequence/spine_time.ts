@@ -481,3 +481,220 @@ export function reflowSpine(seq: CutholSequence): void {
     }
   }
 }
+
+export interface NormalizedSpeedRampSegment {
+  u0: number;
+  u1: number;
+  r0: number;
+  r1: number;
+  dt: number;
+}
+
+/**
+ * `buildNormalizedRampSegments` çıktısını görüntü derleyiciyle paylaşan
+ * saf okuma yardımcısı. Mevcut integral fonksiyonlarına dokunmaz; döndürdüğü
+ * parçalar `integrateSourceOffsetToClipLocalMs` ile aynı normalize eğridir
+ * (ms biriminde `u0/u1`, hız `r0/r1`, parça süresi `dt`).
+ */
+/** ses dilimi (kaynak ofsetleri ms, cikti suresi ms, dilim hizi). */
+export interface AudioRampSlice {
+  u0: number;
+  u1: number;
+  dt: number;
+  rate: number;
+}
+
+export interface AudioRampSliceOptions {
+  /** Dilim ici en buyuk hiz orani (varsayilan 1.03 = %3). */
+  maxRateRatio?: number;
+  /** Dilim cikti suresi ust siniri ms (varsayilan 250). */
+  maxSliceOutputMs?: number;
+}
+
+export const DEFAULT_AUDIO_RAMP_SLICE_OPTIONS: Required<AudioRampSliceOptions> = {
+  maxRateRatio: 1.03,
+  maxSliceOutputMs: 250,
+};
+
+/**
+ * `integrateSourceOffsetToClipLocalMs` ile ayni matematigin
+ * klipsiz saf karsiligi (span + fallback + rampa uzerinden).
+ */
+export function integrateRampSourceOffsetToLocalMs(
+  sourceSpanMs: number,
+  fallbackRate: number,
+  ramp: SpeedRampPoint[] | null,
+  sourceOffsetMs: number
+): number {
+  const span = Math.max(1, sourceSpanMs);
+  const clampedU = Math.max(0, Math.min(span, sourceOffsetMs));
+  if (!ramp || ramp.length === 0) {
+    return clampedU / Math.max(0.01, fallbackRate);
+  }
+  const segments = buildNormalizedRampSegments(span, fallbackRate, ramp);
+  let totalLocalMs = 0;
+  for (const seg of segments) {
+    if (clampedU <= seg.u0) break;
+    if (clampedU >= seg.u1) {
+      totalLocalMs += seg.dt;
+    } else {
+      const partialDu = clampedU - seg.u0;
+      const segDu = seg.u1 - seg.u0;
+      const rAtU = seg.r0 + ((seg.r1 - seg.r0) * partialDu) / segDu;
+      if (Math.abs(rAtU - seg.r0) < 1e-6) {
+        totalLocalMs += partialDu / seg.r0;
+      } else {
+        totalLocalMs += (partialDu / (rAtU - seg.r0)) * Math.log(rAtU / seg.r0);
+      }
+      break;
+    }
+  }
+  return totalLocalMs;
+}
+
+/**
+ * `invertClipLocalMsToSourceOffset` ile ayni matematigin
+ * klipsiz saf karsiligi.
+ */
+export function invertRampLocalMsToSourceOffset(
+  sourceSpanMs: number,
+  fallbackRate: number,
+  ramp: SpeedRampPoint[] | null,
+  localMs: number
+): number {
+  const span = Math.max(1, sourceSpanMs);
+  if (!ramp || ramp.length === 0) {
+    return Math.max(0, Math.min(span, localMs * Math.max(0.01, fallbackRate)));
+  }
+  const segments = buildNormalizedRampSegments(span, fallbackRate, ramp);
+  let remDt = Math.max(0, localMs);
+  for (const seg of segments) {
+    if (remDt >= seg.dt) {
+      remDt -= seg.dt;
+    } else {
+      if (Math.abs(seg.r1 - seg.r0) < 1e-6) {
+        return seg.u0 + seg.r0 * remDt;
+      }
+      const k = (seg.r1 - seg.r0) / (seg.u1 - seg.u0);
+      return seg.u0 + (seg.r0 / k) * (Math.exp(k * remDt) - 1);
+    }
+  }
+  return span;
+}
+
+function audioSliceDtForLinearRamp(du: number, r0: number, r1: number): number {
+  if (du <= 0) return 0;
+  if (Math.abs(r1 - r0) < 1e-6) return du / Math.max(1e-6, r0);
+  return (du / (r1 - r0)) * Math.log(r1 / r0);
+}
+
+function subdivideLinearRampRange(
+  u0: number,
+  u1: number,
+  r0: number,
+  r1: number,
+  maxRateRatio: number,
+  maxSliceOutputMs: number
+): AudioRampSlice[] {
+  const du = u1 - u0;
+  if (du <= 1e-9) return [];
+  if (Math.abs(r1 - r0) < 1e-6) {
+    const dt = du / Math.max(1e-6, r0);
+    const rate = du / Math.max(1e-9, dt);
+    return [{ u0, u1, dt, rate }];
+  }
+  const ratio = Math.max(r0, r1) / Math.max(1e-9, Math.min(r0, r1));
+  const totalDt = audioSliceDtForLinearRamp(du, r0, r1);
+  const nRate = Math.max(1, Math.ceil(Math.log(ratio) / Math.log(Math.max(1.001, maxRateRatio))));
+  const nDur = Math.max(1, Math.ceil(totalDt / Math.max(1, maxSliceOutputMs)));
+  const n = Math.max(1, nRate, nDur);
+  if (n === 1) {
+    const rate = du / Math.max(1e-9, totalDt);
+    return [{ u0, u1, dt: totalDt, rate }];
+  }
+  const out: AudioRampSlice[] = [];
+  for (let i = 0; i < n; i++) {
+    const su0 = i === 0 ? u0 : u0 + (du * i) / n;
+    const su1 = i === n - 1 ? u1 : u0 + (du * (i + 1)) / n;
+    const t0 = (su0 - u0) / du;
+    const t1 = (su1 - u0) / du;
+    const sr0 = r0 + (r1 - r0) * t0;
+    const sr1 = r0 + (r1 - r0) * t1;
+    const sdu = su1 - su0;
+    const sdt = audioSliceDtForLinearRamp(sdu, sr0, sr1);
+    out.push({ u0: su0, u1: su1, dt: sdt, rate: sdu / Math.max(1e-9, sdt) });
+  }
+  return out;
+}
+
+/**
+ * rampanin normalize parcalarini ses dilimlerine boler.
+ * Sabit hizli parca tek dilimdir; hizi degisen parca, dilim ici hiz orani
+ * `maxRateRatio` altinda ve dilim cikti suresi `maxSliceOutputMs` altinda
+ * kalacak sekilde alt dilimlere ayrilir. Her dilimin `rate` degeri
+ * `du/dt` (integralden) oranindir; dilim sinirlari goruntudeki ayni ana duser.
+ */
+export function getAudioRampSlices(
+  sourceSpanMs: number,
+  fallbackRate: number,
+  ramp: SpeedRampPoint[] | null,
+  options?: AudioRampSliceOptions
+): AudioRampSlice[] {
+  const span = Math.max(1, sourceSpanMs);
+  const maxRateRatio = options?.maxRateRatio ?? DEFAULT_AUDIO_RAMP_SLICE_OPTIONS.maxRateRatio;
+  const maxSliceOutputMs =
+    options?.maxSliceOutputMs ?? DEFAULT_AUDIO_RAMP_SLICE_OPTIONS.maxSliceOutputMs;
+  if (!ramp || ramp.length < 2) {
+    const rate = Math.max(0.1, Math.min(16.0, fallbackRate));
+    const dt = span / rate;
+    return [{ u0: 0, u1: span, dt, rate }];
+  }
+  const segments = buildNormalizedRampSegments(span, fallbackRate, ramp);
+  const out: AudioRampSlice[] = [];
+  for (const seg of segments) {
+    out.push(...subdivideLinearRampRange(seg.u0, seg.u1, seg.r0, seg.r1, maxRateRatio, maxSliceOutputMs));
+  }
+  return out;
+}
+
+/**
+ * kaynak alt araliginin `[uStartMs, uEndMs]` ses dilimleri
+ * (pencereli render icin). Tam-aralik izgaraasina kilitlidir: once tum span
+ * `getAudioRampSlices` ile dilimlenir, sonra okuma araligina kirpilir; kenar
+ * parcalarin suresi integral farkiyla hesaplanir. Boylece pencerenin ic
+ * dilimleri tam render ile birebir aynidir (WSOLA girdisi bit-duzeyinde
+ * ayni), pencere diki kenar on-yuklemede (pre-roll) kalir ve kirpilir.
+ */
+export function getAudioRampSlicesInRange(
+  sourceSpanMs: number,
+  fallbackRate: number,
+  ramp: SpeedRampPoint[] | null,
+  uStartMs: number,
+  uEndMs: number,
+  options?: AudioRampSliceOptions
+): AudioRampSlice[] {
+  const span = Math.max(1, sourceSpanMs);
+  const lo = Math.max(0, Math.min(span, uStartMs));
+  const hi = Math.max(0, Math.min(span, uEndMs));
+  if (hi <= lo + 1e-9) return [];
+  const full = getAudioRampSlices(sourceSpanMs, fallbackRate, ramp, options);
+  const out: AudioRampSlice[] = [];
+  for (const s of full) {
+    const a = Math.max(s.u0, lo);
+    const b = Math.min(s.u1, hi);
+    if (b <= a + 1e-9) continue;
+    const tA = integrateRampSourceOffsetToLocalMs(span, fallbackRate, ramp, a);
+    const tB = integrateRampSourceOffsetToLocalMs(span, fallbackRate, ramp, b);
+    const dt = Math.max(1e-9, tB - tA);
+    out.push({ u0: a, u1: b, dt, rate: (b - a) / dt });
+  }
+  return out;
+}
+
+export function getNormalizedSpeedRampSegments(
+  sourceSpanMs: number,
+  fallbackRate: number,
+  ramp: SpeedRampPoint[] | null
+): NormalizedSpeedRampSegment[] {
+  return buildNormalizedRampSegments(sourceSpanMs, fallbackRate, ramp);
+}

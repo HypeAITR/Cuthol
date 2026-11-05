@@ -3,6 +3,7 @@ import {
   ParameterEnvelope,
   ParameterEnvelopePoint, SpineClip
 } from "../core/schema.js";
+import { cubicBezierY, subCubicBezier } from "../core/easing.js";
 
 export function evaluateEnvelopeAt(envelope: ParameterEnvelope, offsetMs: number): number {
   const pts = envelope.points;
@@ -27,6 +28,13 @@ export function evaluateEnvelopeAt(envelope: ParameterEnvelope, offsetMs: number
         case "ease_in_out":
           easedT = t * t * (3 - 2 * t);
           break;
+        case "hold":
+          // Step: previous value until the endpoint instant, then the new value.
+          easedT = offsetMs >= b.offset_ms ? 1 : 0;
+          break;
+        case "cubic_bezier":
+          easedT = b.bezier ? cubicBezierY(b.bezier, t) : t;
+          break;
         case "linear":
         default:
           easedT = t;
@@ -36,6 +44,19 @@ export function evaluateEnvelopeAt(envelope: ParameterEnvelope, offsetMs: number
     }
   }
   return pts[pts.length - 1].value;
+}
+
+function interiorSubBezier(
+  points: ParameterEnvelopePoint[],
+  pi: number,
+  localStartMs: number
+): ParameterEnvelopePoint["bezier"] {
+  const p = points[pi];
+  if (!p.bezier || pi === 0) return p.bezier ? [...p.bezier] : undefined;
+  const prev = points[pi - 1];
+  const span = p.offset_ms - prev.offset_ms;
+  if (!(span > 0) || localStartMs <= prev.offset_ms) return [...p.bezier];
+  return subCubicBezier(p.bezier, (localStartMs - prev.offset_ms) / span, 1);
 }
 
 export function sliceEnvelopes(
@@ -55,7 +76,13 @@ export function sliceEnvelopes(
       );
       out.push({
         parameter: env.parameter,
-        points: [{ ...env.points[0], offset_ms: shiftedOffset }],
+        points: [
+          {
+            ...env.points[0],
+            offset_ms: shiftedOffset,
+            ...(env.points[0].bezier ? { bezier: [...env.points[0].bezier] } : {}),
+          },
+        ],
       });
       continue;
     }
@@ -64,11 +91,20 @@ export function sliceEnvelopes(
     const endVal = evaluateEnvelopeAt(env, localEndMs);
 
     let endEasing: ParameterEnvelopePoint["easing"] = "linear";
+    let endBezier: ParameterEnvelopePoint["bezier"];
     for (let i = 0; i < env.points.length - 1; i++) {
       const a = env.points[i];
       const b = env.points[i + 1];
       if (localEndMs > a.offset_ms && localEndMs <= b.offset_ms) {
         endEasing = b.easing;
+        if (b.easing === "cubic_bezier" && b.bezier) {
+          const segSpan = Math.max(1e-9, b.offset_ms - a.offset_ms);
+          endBezier = subCubicBezier(
+            b.bezier,
+            (Math.max(localStartMs, a.offset_ms) - a.offset_ms) / segSpan,
+            (localEndMs - a.offset_ms) / segSpan
+          );
+        }
         break;
       }
     }
@@ -81,18 +117,27 @@ export function sliceEnvelopes(
       rawPts.push({ offset_ms: 0, value: startVal, easing: "linear" });
     }
 
-    for (const p of env.points) {
+    for (let pi = 0; pi < env.points.length; pi++) {
+      const p = env.points[pi];
       if (p.offset_ms > localStartMs && p.offset_ms < localEndMs) {
         rawPts.push({
           offset_ms: Math.max(0, Math.min(newDurationMs, Math.round(p.offset_ms - localStartMs))),
           value: p.value,
           easing: p.easing,
+          ...(p.easing === "cubic_bezier" && p.bezier
+            ? { bezier: interiorSubBezier(env.points, pi, localStartMs) }
+            : {}),
         });
       }
     }
 
     if (localEndMs <= lastOrigOffset && localEndMs > firstOrigOffset) {
-      rawPts.push({ offset_ms: newDurationMs, value: endVal, easing: endEasing });
+      rawPts.push({
+        offset_ms: newDurationMs,
+        value: endVal,
+        easing: endEasing,
+        ...(endBezier ? { bezier: endBezier } : {}),
+      });
     } else if (rawPts.length === 0) {
       rawPts.push({ offset_ms: 0, value: startVal, easing: "linear" });
     }

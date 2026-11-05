@@ -106,6 +106,7 @@ extensions/  manager (facade): manifest, registry, lifecycle, processor, recipe,
 |---|---|
 | `compiler.ts` | Facade + `compileSequenceRenderPlan` (the video filter graph). |
 | `compile_lane.ts`, `compile_spine.ts` | Per-lane compilation (HyperFrames compositions, visual asset cues, lane `.ass` typography) and per-clip spine compilation (inputs, speed, transforms, envelopes, transitions). |
+| `compile_spine_timing.ts`, `compile_spine_color.ts`, `compile_spine_fx.ts`, `compile_spine_transition.ts`, `compile_spine_edge.ts` | Stages of the spine clip filter chain: timing / speed ramp, colour, per-clip fx, transitions (chain filters + overlay position), edge mode. Stage order is documented at the top of `compile_spine.ts`. |
 | `compile_audio.ts` | The audio graph shared by render and loudness measurement. |
 | `compile_filters.ts`, `compile_color.ts`, `compile_backdrop.ts` | Filter helpers; explicit BT.709 conversions; backdrop slices under compositions. |
 | `hyperframes_bridge.ts` | Facade for everything HyperFrames: |
@@ -148,6 +149,8 @@ extensions/  manager (facade): manifest, registry, lifecycle, processor, recipe,
 | `extensions/manager.ts` | Facade. |
 | `extensions/ext_manifest.ts` | Manifest types and closed-schema validation, path/network safety. |
 | `extensions/ext_registry.ts` | Find, load, hash, list, show. |
+| `extensions/ext_fx.ts`, `extensions/ext_transitions.ts` | Manifest `fx` and `transitions` sections. |
+| `extensions/ext_effects.ts` | Effect registry of a sequence: `fx` / `transitions` of enabled extensions keyed `ext:<extension>/<name>`. |
 | `extensions/ext_lifecycle.ts` | create, promote, remove, enable/disable per project. |
 | `extensions/ext_processor.ts`, `ext_recipe.ts` | Processors (ffmpeg / node, cached); recipes (atomic). |
 | `extensions/ext_events.ts`, `ext_planner.ts` | Composition events and planner snapshot; planners and patch validation. |

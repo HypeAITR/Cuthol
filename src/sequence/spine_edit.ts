@@ -15,6 +15,8 @@ import {
 import { minClipDurationMs } from "../core/time.js";
 import { loadSequence } from "../core/workspace.js";
 import { commitVerifiedMutation, VerificationReport } from "../verify/gates.js";
+import { getSequenceEffectRegistry, isExtensionEffectRef } from "../extensions/ext_effects.js";
+import { resolveTransitionParams } from "../extensions/ext_transitions.js";
 import { sliceEnvelopes, sliceReframeFocalPoints } from "./spine_envelope.js";
 import { reflowSpine, clipLocalMsToSourceMs, sliceSpeedRamp, computeClipDurationMs, sourceMsToClipLocalMs, TimeCoordinateSpace, sequenceMsToSourceMs, invertClipLocalMsToSourceOffset, integrateSourceOffsetToClipLocalMs } from "./spine_time.js";
 
@@ -621,6 +623,7 @@ export function transformSpineClip(options: {
   fitMode?: SpatialPlacement["fit_mode"];
   mirrorX?: boolean;
   mirrorY?: boolean;
+  edge?: SpatialPlacement["edge"];
 }): { placement: SpatialPlacement; revision: number; verification: VerificationReport } {
   const { result, revision, verification } = commitVerifiedMutation(
     options.workspaceDir,
@@ -659,12 +662,60 @@ export function transformSpineClip(options: {
       if (options.fitMode !== undefined) clip.placement.fit_mode = options.fitMode;
       if (options.mirrorX !== undefined) clip.placement.mirror_x = options.mirrorX;
       if (options.mirrorY !== undefined) clip.placement.mirror_y = options.mirrorY;
+      if (options.edge !== undefined) {
+        if (options.edge !== "transparent" && options.edge !== "mirror" && options.edge !== "clamp") {
+          throw new CutholError(
+            DIAGNOSTICS.UNKNOWN_FLAG(
+              `--edge ${options.edge}`,
+              "spine.transform",
+              "cuthol spine transform --clip <sp_XX> --edge mirror|clamp|transparent"
+            )
+          );
+        }
+        if (options.edge === "transparent") delete clip.placement.edge;
+        else clip.placement.edge = options.edge;
+      }
 
       return clip.placement;
     }
   );
 
   return { placement: result, revision, verification };
+}
+
+function validateSpeedRampForSet(clipId: string, spanMs: number, ramp: SpeedRampPoint[]): void {
+  if (ramp.length === 1) {
+    throw new CutholError(
+      DIAGNOSTICS.INVALID_SPEED_RAMP(
+        `tek nokta verildi (${ramp[0].source_offset_ms}ms:${ramp[0].rate}); rampa en az 2 nokta ister.`
+      )
+    );
+  }
+  for (let i = 0; i < ramp.length; i++) {
+    const pt = ramp[i];
+    if (!Number.isFinite(pt.source_offset_ms) || !Number.isFinite(pt.rate)) {
+      throw new CutholError(DIAGNOSTICS.INVALID_SPEED_RAMP(`nokta ${i + 1} sayı değil.`));
+    }
+    if (pt.rate < 0.1 || pt.rate > 16) {
+      throw new CutholError(
+        DIAGNOSTICS.INVALID_SPEED_RAMP(`nokta ${i + 1} hızı ${pt.rate} aralık dışında (0.1..16).`)
+      );
+    }
+    if (pt.source_offset_ms < 0 || pt.source_offset_ms > spanMs) {
+      throw new CutholError(
+        DIAGNOSTICS.INVALID_SPEED_RAMP(
+          `nokta ${i + 1} ofseti ${pt.source_offset_ms}ms kaynak aralığının (0..${spanMs}ms) dışında.`
+        )
+      );
+    }
+    if (i > 0 && pt.source_offset_ms <= ramp[i - 1].source_offset_ms) {
+      throw new CutholError(
+        DIAGNOSTICS.INVALID_SPEED_RAMP(
+          `ofsetler artmıyor: nokta ${i} (${ramp[i - 1].source_offset_ms}ms) >= nokta ${i + 1} (${pt.source_offset_ms}ms).`
+        )
+      );
+    }
+  }
 }
 
 export function setSpineSpeed(options: {
@@ -674,7 +725,7 @@ export function setSpineSpeed(options: {
   speedRamp?: SpeedRampPoint[] | null;
   preservePitch?: boolean;
 }): { clip: SpineClip; revision: number; verification: VerificationReport } {
-  const { result, revision, verification } = commitVerifiedMutation(
+  const { result, sequence, revision, verification } = commitVerifiedMutation(
     options.workspaceDir,
     `spine.speed(${options.clipId})`,
     (seq) => {
@@ -689,7 +740,16 @@ export function setSpineSpeed(options: {
         clip.playback.rate = options.rate;
       }
       if (options.speedRamp !== undefined) {
-        clip.playback.speed_ramp = options.speedRamp;
+        if (options.speedRamp === null || options.speedRamp.length === 0) {
+          clip.playback.speed_ramp = null;
+        } else {
+          validateSpeedRampForSet(
+            clip.id,
+            Math.max(1, clip.source_out_ms - clip.source_in_ms),
+            options.speedRamp
+          );
+          clip.playback.speed_ramp = options.speedRamp;
+        }
       }
       if (options.preservePitch !== undefined) {
         clip.playback.preserve_pitch = options.preservePitch;
@@ -736,6 +796,26 @@ export function setSpineSpeed(options: {
     }
   );
 
+  // Rampa uyarıları (G410, WARN) — raporu genişletir, işlemi engellemez.
+  const finalRamp = result.playback.speed_ramp;
+  if (finalRamp && finalRamp.length >= 2) {
+    const spanMs = Math.max(1, result.source_out_ms - result.source_in_ms);
+    const beyond = finalRamp.find((p) => p.source_offset_ms < 0 || p.source_offset_ms > spanMs);
+    if (beyond) {
+      verification.diagnostics.push(
+        DIAGNOSTICS.SPEED_RAMP_BEYOND_SOURCE(result.id, beyond.source_offset_ms, spanMs)
+      );
+      verification.warning_count += 1;
+    }
+    const asset = sequence.library.find((x) => x.handle === result.asset_handle);
+    const rampMinRate = Math.min(...finalRamp.map((p) => p.rate));
+    const rampMaxRate = Math.max(...finalRamp.map((p) => p.rate));
+    if (asset?.probe.has_audio && (rampMinRate < 0.5 || rampMaxRate > 2.0)) {
+      verification.diagnostics.push(DIAGNOSTICS.SPEED_RAMP_AUDIO_APPROX(result.id, rampMinRate, rampMaxRate));
+      verification.warning_count += 1;
+    }
+  }
+
   return { clip: result, revision, verification };
 }
 
@@ -752,7 +832,23 @@ export function setSpineTransition(options: {
       if (!clip) {
         throw new CutholError(DIAGNOSTICS.UNKNOWN_HANDLE(options.clipId));
       }
-      clip.transition_out = options.transition;
+      let stored = options.transition;
+      if (stored && stored.kind.startsWith("ext:") && isExtensionEffectRef(stored.kind)) {
+        const def = getSequenceEffectRegistry(seq, options.workspaceDir).transitions.get(stored.kind);
+        if (def) {
+          const resolved = resolveTransitionParams(def.spec, stored.params, stored.kind, clip.id);
+          stored = { ...stored, params: Object.keys(resolved).length > 0 ? resolved : undefined };
+        }
+      } else if (stored && stored.params && Object.keys(stored.params).length > 0) {
+        throw new CutholError(
+          DIAGNOSTICS.EXTENSION_TRANSITION_PARAM_INVALID(
+            stored.kind,
+            clip.id,
+            `Yerleşik '${stored.kind}' geçişi parametre almıyor.`
+          )
+        );
+      }
+      clip.transition_out = stored;
       return clip;
     }
   );

@@ -1,7 +1,7 @@
 // Gates 4-5 (G4_STAGE, G5_SIGNAL) of the 5-Gate sequence verification engine.
 import fs from "node:fs";
 import path from "node:path";
-import { CutholDiagnostic, DIAGNOSTICS } from "../core/diagnostics.js";
+import { CutholDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { createDefaultTreatments, CutholSequence, LaneCue, LibraryItem } from "../core/schema.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
 import { resolveCueStartMs } from "../core/timeline.js";
@@ -15,6 +15,11 @@ import {
   detectSceneHostFeaturesInComposition,
   lintHyperFramesComposition,
 } from "../compositor/hyperframes_bridge.js";
+import {
+  COLOR_TEMPERATURE_NEUTRAL_K,
+  isSupportedColorTemperature,
+  resolveGradeLutPath,
+} from "../compositor/compile_spine_color.js";
 import { MediaLedger } from "../library/ledger.js";
 import { LoudnessMetrics } from "../library/loudness.js";
 import { measureCuePixelBox, PixelBoundingBox } from "./gates.js";
@@ -35,8 +40,37 @@ function colorEnvelopeFields(envelopes: Array<{ parameter: string }>): string[] 
   return fields;
 }
 
-/** Motion blur, mask, temperature, LUT and color envelopes are stored but not compiled. */
-function warnUnappliedRenderFields(seq: CutholSequence, diagnostics: CutholDiagnostic[]): void {
+/** Spine colour grade range/file validation (G124/G414 ERROR — render never starts). */
+function validateSpineColorGrade(
+  clip: CutholSequence["spine"]["clips"][number],
+  diagnostics: CutholDiagnostic[],
+  paths: WorkspacePaths | undefined
+): void {
+  const cg = clip.treatments.color_grade;
+  const temperatureK = cg.temperature_k ?? COLOR_TEMPERATURE_NEUTRAL_K;
+  if (!isSupportedColorTemperature(temperatureK)) {
+    diagnostics.push(DIAGNOSTICS.INVALID_COLOR_TEMPERATURE(clip.id, temperatureK));
+  }
+  const lutUri = cg.lut_uri ?? null;
+  if (lutUri !== null && paths) {
+    try {
+      resolveGradeLutPath(paths.rootDir, clip.id, lutUri);
+    } catch (err) {
+      if (err instanceof CutholError) {
+        diagnostics.push(err.diagnostic);
+        return;
+      }
+      throw err;
+    }
+  }
+}
+
+/** Motion blur, mask and lane colour envelopes are stored but not compiled. */
+function warnUnappliedRenderFields(
+  seq: CutholSequence,
+  diagnostics: CutholDiagnostic[],
+  paths?: WorkspacePaths
+): void {
   const defaults = createDefaultTreatments();
   for (const clip of seq.spine.clips) {
     const fields: string[] = [];
@@ -50,13 +84,7 @@ function warnUnappliedRenderFields(seq: CutholSequence, diagnostics: CutholDiagn
       fields.push("treatments.motion_blur");
     }
     if (clip.treatments.mask !== null) fields.push("treatments.mask");
-    if (clip.treatments.color_grade.temperature_k !== defaults.color_grade.temperature_k) {
-      fields.push("treatments.color_grade.temperature_k");
-    }
-    if ((clip.treatments.color_grade.lut_uri ?? null) !== (defaults.color_grade.lut_uri ?? null)) {
-      fields.push("treatments.color_grade.lut_uri");
-    }
-    fields.push(...colorEnvelopeFields(clip.envelopes));
+    validateSpineColorGrade(clip, diagnostics, paths);
     for (const field of fields) {
       diagnostics.push(DIAGNOSTICS.RENDER_FIELD_NOT_APPLIED(clip.id, field));
     }
@@ -323,7 +351,7 @@ export function verifyG4Stage(
     }
   }
 
-  warnUnappliedRenderFields(seq, diagnostics);
+  warnUnappliedRenderFields(seq, diagnostics, paths);
 }
 
 export function verifyG5Signal(

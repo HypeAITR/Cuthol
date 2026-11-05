@@ -325,6 +325,8 @@ export function listExtensions(workspaceDir?: string | null): {
           processors: Object.keys(ext.manifest.processors ?? {}),
           planners: Object.keys(ext.manifest.planners ?? {}),
           recipes: Object.keys(ext.manifest.recipes ?? {}),
+          ...(ext.manifest.fx ? { fx: Object.keys(ext.manifest.fx) } : {}),
+          ...(ext.manifest.transitions ? { transitions: Object.keys(ext.manifest.transitions) } : {}),
           guide: ext.guideRelPath,
         },
       });

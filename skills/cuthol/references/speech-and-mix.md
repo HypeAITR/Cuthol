@@ -84,6 +84,7 @@ Compact MCP/CLI text (`--compact`) prints the summary counts (`missing`, `repeat
 - Check the `Loudness:` line (MCP) or result fields: `measured_mix_before_lufs`, `achieved_lufs`, `achieved_true_peak_dbtp`, `master_gain_db`, `target_reached` (`true`/`false`), `adjusted_clips_count`, and `warning` (if `target_reached=false`). By default, `adjusted_clips` lists the first 8 items (`adjusted_clips_omitted` shows the remaining count); pass `verbose=true` (`--verbose` / `--detailed` on CLI) for the full per-clip list. Run `mix.normalize` after all audio items and ducking are in place.
 - `mix.polish_voice(clips?, nr_db=12, clarity=true)` adds denoise (`afftdn`) + high-pass + presence boost + gentle compression.
 - G501 means a true peak above −1 dBTP — lower `gain_db` (`lane.update_cue(cue, gain_db=…)` or a spine envelope) or re-run normalize.
+- Speed-ramped spine clips (`spine.speed` `ramp`) render audio on the same time map as video (±1 frame); ramp rates outside 0.5..2.0 warn G410 (chained atempo quality). For click/transient-only tracks prefer `preserve_pitch=false` (sample-accurate resampling; pitch is meaningless for impulses).
 
 ## Ducking music under speech
 

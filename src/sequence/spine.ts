@@ -12,6 +12,8 @@ export type { TimeCoordinateSpace } from "./spine_time.js";
 export { evaluateEnvelopeAt, sliceEnvelopes, sliceReframeFocalPoints } from "./spine_envelope.js";
 export { appendSpineClip, splitSpineClip, trimSpineClip, exciseSpineRanges, removeSpineClips, reorderSpineClip, applyNumericDeltaOrValue, applyOpacityDeltaOrValue, transformSpineClip, setSpineSpeed, setSpineTransition, setItemEnvelope, setSpineMute } from "./spine_edit.js";
 export { reframeSpineClips } from "./spine_reframe.js";
+export { setSpineGrade } from "./spine_grade.js";
+export { addSpineFx, listSpineFx, removeSpineFx, setSpineFx } from "./spine_fx.js";
 export type { ReframeSpineOptions, ReframeSpineResult } from "./spine_reframe.js";
 
 

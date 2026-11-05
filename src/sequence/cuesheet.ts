@@ -29,6 +29,7 @@ import {
   TypographySpec,
   VisualTreatments,
 } from "../core/schema.js";
+import { assertValidEasing } from "../core/easing.js";
 import { loadSequence, WorkspacePaths } from "../core/workspace.js";
 import { commitVerifiedMutation, VerificationReport, verifySequence } from "../verify/gates.js";
 import { syncCueAnchors } from "./lanes.js";
@@ -102,10 +103,41 @@ export interface CueSheetDiff {
  * Applies a declarative `CutholCueSheet` onto a cloned `CutholSequence` in memory
  * and returns both the mutated sequence and a structured `CueSheetDiff`.
  */
+/**
+ * Cue-sheet easing entry check (CUTHOL-G120). Unknown easing names and
+ * `hold` in transitions are rejected here, mirroring the verify gate.
+ */
+function assertCueSheetEasingsValid(sheet: CutholCueSheet): void {
+  for (const entry of sheet.spine ?? []) {
+    for (const env of entry.envelopes ?? []) {
+      for (const pt of env.points ?? []) {
+        assertValidEasing(`${entry.id} ${env.parameter}@${pt.offset_ms}ms`, pt.easing, pt.bezier);
+      }
+    }
+    if (entry.transition_out) {
+      assertValidEasing(entry.id, entry.transition_out.easing, entry.transition_out.bezier, {
+        allowHold: false,
+      });
+    }
+  }
+  for (const entry of sheet.cues ?? []) {
+    for (const env of entry.envelopes ?? []) {
+      for (const pt of env.points ?? []) {
+        assertValidEasing(
+          `${entry.id ?? entry.lane_id} ${env.parameter}@${pt.offset_ms}ms`,
+          pt.easing,
+          pt.bezier
+        );
+      }
+    }
+  }
+}
+
 export function mergeCueSheetIntoSequence(
   baseSeq: CutholSequence,
   sheet: CutholCueSheet
 ): { nextSeq: CutholSequence; diff: CueSheetDiff } {
+  assertCueSheetEasingsValid(sheet);
   const seq: CutholSequence = structuredClone(baseSeq);
   syncSequenceHandleCounters(seq);
   const diff: CueSheetDiff = {

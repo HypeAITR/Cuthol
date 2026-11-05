@@ -25,6 +25,8 @@ export interface BriefOptions {
   targetIds?: string[];
   windowStartMs?: number;
   windowEndMs?: number;
+  /** Prepended verbatim as the top line when set (external-change notice). */
+  noticeLine?: string;
 }
 
 function describeSpinelessExtent(seq: CutholSequence): string {
@@ -55,16 +57,22 @@ function isAudioOnlyKind(kind: string): boolean {
 
 export function renderSequenceBrief(seq: CutholSequence, options: BriefOptions = {}): string {
   const lens = options.lens ?? "overview";
+  let md: string;
   switch (lens) {
     case "overview":
-      return renderOverviewLens(seq);
+      md = renderOverviewLens(seq);
+      break;
     case "flow":
-      return renderFlowLens(seq, options.windowStartMs, options.windowEndMs);
+      md = renderFlowLens(seq, options.windowStartMs, options.windowEndMs);
+      break;
     case "canvas":
-      return renderCanvasLens(seq, options.windowStartMs, options.windowEndMs);
+      md = renderCanvasLens(seq, options.windowStartMs, options.windowEndMs);
+      break;
     case "detail":
-      return renderDetailLens(seq, options.targetIds ?? []);
+      md = renderDetailLens(seq, options.targetIds ?? []);
+      break;
   }
+  return options.noticeLine ? `${options.noticeLine}\n${md}` : md;
 }
 
 function renderOverviewLens(seq: CutholSequence): string {

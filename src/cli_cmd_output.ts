@@ -1,10 +1,11 @@
 // CLI 'verify', 'monitor', 'render', and 'brief' command group handlers (split out of cli.ts).
 import { BriefLens, renderSequenceBrief } from "./brief/inspector.js";
+import { detectExternalChanges, formatExternalNotice } from "./core/external_changes.js";
 import { RenderPreset } from "./compositor/compiler.js";
 import { CutholDiagnostic, DIAGNOSTICS, VerificationGateId } from "./core/diagnostics.js";
 import { parseTimeMs } from "./core/time.js";
 import { computeSequenceDurationMs } from "./core/timeline.js";
-import { loadSequence } from "./core/workspace.js";
+import { loadSequence, toExternalChangesSummary } from "./core/workspace.js";
 import { captureMonitorFrame, captureMonitorSheet } from "./monitor/preview.js";
 import { captureMonitorTimeline } from "./monitor/timeline_view.js";
 import { renderSequenceToMp4 } from "./render/renderer.js";
@@ -141,6 +142,16 @@ export function runRenderCommand(ctx: CliCommandContext): CliCommandResult {
 export function runBriefCommand(ctx: CliCommandContext): CliCommandResult {
   const { action, flags, workspaceDir, formatFlag } = ctx;
   const { sequence } = loadSequence(workspaceDir);
+  // External-change top line (null when clean: outputs stay byte-identical).
+  let extChanges: ReturnType<typeof detectExternalChanges> | null = null;
+  let extNotice: string | null = null;
+  try {
+    extChanges = detectExternalChanges(workspaceDir);
+    extNotice = formatExternalNotice(extChanges, "cli");
+  } catch {
+    extChanges = null;
+    extNotice = null;
+  }
   const lens = (strFlag(flags, "lens", (action as BriefLens) || "overview") as BriefLens) ?? "overview";
   const idRaw = strFlag(flags, "id");
   const targetIds = idRaw ? idRaw.split(",").map((s) => s.trim()).filter(Boolean) : [];
@@ -155,7 +166,11 @@ export function runBriefCommand(ctx: CliCommandContext): CliCommandResult {
   }
 
   if (flags["json"] || formatFlag === "json") {
-    emitEnvelopeJson(workspaceDir, "brief", { lens, sequence });
+    emitEnvelopeJson(workspaceDir, "brief", {
+      lens,
+      sequence,
+      ...(extChanges && extNotice ? { external_changes: toExternalChangesSummary(extChanges, extNotice) } : {}),
+    });
     return;
   }
 
@@ -164,6 +179,7 @@ export function runBriefCommand(ctx: CliCommandContext): CliCommandResult {
     targetIds,
     windowStartMs,
     windowEndMs,
+    ...(extNotice ? { noticeLine: extNotice } : {}),
   });
   console.log(md);
   return;

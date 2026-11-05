@@ -1,5 +1,6 @@
 // Small FFmpeg filter builders: atempo chains, path escaping, envelope expressions, sub-pixel scale/pan, seekable inputs (split out of compiler.ts).
 import { ParameterEnvelope } from "../core/schema.js";
+import { compileCubicBezierEasedU } from "../core/easing.js";
 
 export function buildAtempoChain(rate: number): string[] {
   const filters: string[] = [];
@@ -18,6 +19,24 @@ export function buildAtempoChain(rate: number): string[] {
   return filters;
 }
 
+/**
+ * tek ses diliminin hiz filtresi. `preserve_pitch=true`
+ * (varsayilan) icin `atempo` zinciri, `false` icin `asetrate`+`aresample`.
+ * `compile_audio.ts` icindeki tekil-hiz mantigiyla birebir aynidir.
+ */
+export function buildAudioRampTempoFilters(
+  rate: number,
+  preservePitch: boolean | undefined,
+  sampleRate?: number | null
+): string[] {
+  if (preservePitch === false && Math.abs(rate - 1.0) > 0.001) {
+    const sr = sampleRate && sampleRate > 0 ? sampleRate : 48000;
+    const pitchedRate = Math.max(4000, Math.min(384000, Math.round(sr * rate)));
+    return [`asetrate=${pitchedRate}`, `aresample=${sr}`, `asetpts=PTS-STARTPTS`];
+  }
+  return buildAtempoChain(rate);
+}
+
 export function escapeFfmpegFilterPath(relPath: string): string {
   return relPath
     .replace(/\\/g, "/")
@@ -26,7 +45,8 @@ export function escapeFfmpegFilterPath(relPath: string): string {
 
 /**
  * Compiles a `ParameterEnvelope` into a deterministic piecewise FFmpeg expression
- * evaluated over `t` (in seconds), supporting `linear`, `ease_in`, `ease_out`, and `ease_in_out`.
+ * evaluated over `t` (in seconds), supporting `linear`, `ease_in`, `ease_out`, `ease_in_out`, `hold` (step),
+ * and `cubic_bezier` (unrolled Newton solver over `st()`/`ld()`).
  */
 export function compileEnvelopeToFfmpegExpr(options: {
   envelope: ParameterEnvelope | undefined;
@@ -57,6 +77,7 @@ export function compileEnvelopeToFfmpegExpr(options: {
     val: mapVal(p.value),
     dbVal: Number(((options.baseGainDb ?? 0) + p.value).toFixed(4)),
     easing: p.easing,
+    bezier: p.bezier,
   }));
 
   if (pts.length === 1) {
@@ -79,6 +100,8 @@ export function compileEnvelopeToFfmpegExpr(options: {
       easedU = `(1-pow(1-${uExpr},2))`;
     } else if (b.easing === "ease_in_out") {
       easedU = `(pow(${uExpr},2)*(3-2*${uExpr}))`;
+    } else if (b.easing === "cubic_bezier" && b.bezier) {
+      easedU = compileCubicBezierEasedU(b.bezier, uExpr);
     }
 
     let segExpr: string;
@@ -93,6 +116,10 @@ export function compileEnvelopeToFfmpegExpr(options: {
         Math.abs(dv) < 1e-4
           ? String(a.val)
           : `${a.val}+(${dv})*${easedU}`;
+    }
+    if (b.easing === "hold") {
+      // Step: previous value until t1; the `lt(t,t1)` nesting switches to the new value at t >= t1.
+      segExpr = String(a.val);
     }
     expr = `if(lt(t,${b.tSec}),${segExpr},${expr})`;
   }

@@ -24,8 +24,10 @@ Allowed top-level fields:
 - `helper` (optional): relative `.js` path (e.g. `"helper.js"` or `{ "entry": "helper.js" }`)
 - `assets` (optional): relative folder path (e.g. `"assets"` or `{ "dir": "assets" }`)
 - `processors` (optional): map of processor definitions (`Record<string, ExtensionProcessorSpec>`)
+- `fx` (optional): map of per-clip effect definitions for `spine fx` (`Record<string, ExtensionFxSpec>`): each entry is `{ description?, params?, video_filter, animatable? }`. `video_filter` is an ffmpeg video-filter template with `{{param}}` placeholders (no `[` `]` `;`), substituted per clip at render time. `animatable` lists the number params whose option accepts a per-frame expression, so agents may keyframe them with `envelope(param="fx.<id>.<param>")`; every `{{name}}` must be a declared param.
 - `planners` (optional): map of planner definitions (`Record<string, ExtensionPlannerSpec>`, each with `script`, optional `description`, `params`, and `timeout_sec`)
 - `recipes` (optional): map of recipe definitions (`Record<string, ExtensionRecipeSpec>`)
+- `transitions` (optional): map of spine transition definitions (see *Spine transition kinds* below)
 - `guide` (optional): relative markdown path (default `"README.md"`), readable via `guide(topic="ext:<name>")`
 
 Example `cuthol-extension.json`:
@@ -78,6 +80,26 @@ Example `cuthol-extension.json`:
   "guide": "README.md"
 }
 ```
+
+### Per-clip effects (`fx`) — example
+
+```json
+{
+  "name": "fxdemo",
+  "version": "1.0.0",
+  "description": "demo clip effects",
+  "fx": {
+    "soft_blur": {
+      "description": "Gaussian blur",
+      "params": { "sigma": { "type": "number", "default": 4, "min": 0, "max": 50 } },
+      "animatable": ["sigma"],
+      "video_filter": "gblur=sigma={{sigma}}"
+    }
+  }
+}
+```
+
+After `extension.enable`, agents call `spine.fx_add(clip="sp_01", kind="ext:fxdemo/soft_blur", params={"sigma": 8})`; the template is substituted per clip in the render graph (source asset untouched). `animatable` must name declared number params; unknown keys, undeclared `{{placeholders}}` and `[` `]` `;` in the template are `[CUTHOL-G112]`.
 
 ## Six capability kinds
 
@@ -193,6 +215,46 @@ When an edit needs a **data-dependent, variable number of cues** (for example, p
 
 ### 6. Guide (`guide`)
 - Call `guide(topic="extensions")` for this manual, or `guide(topic="ext:<name>")` to read an extension's `README.md`.
+
+## Spine transition kinds (`transitions`)
+
+An extension can register spine transition kinds used as `transition_out.kind = "ext:<name>/<transition>"`
+(`spine.transition(clip="sp_01", kind="ext:myext/push", duration="400ms", params={"dir": "left"})`;
+CLI `cuthol spine transition --clip sp_01 --kind ext:myext/push --duration 400ms --param dir=left`).
+There is no JS: a transition is ffmpeg filter/expression templates with `{{placeholder}}` substitution.
+
+Fields per transition (all optional except the name): `description`, `params` (same schema as processor
+params), `hold_outgoing` (default `true`; `false` = fade-like, the outgoing clip is not held under the
+incoming one), `outgoing_filter` / `incoming_filter` (ffmpeg filter templates on the clip chains, local
+clip time `t`), `incoming_scale` (centered scale-factor expression for the incoming clip, e.g.
+`"0.8+0.2*{{p}}"`, guarded to the transition window by the compiler), `incoming_x` / `incoming_y` and
+`outgoing_x` / `outgoing_y` (overlay position expressions, sequence time `t`; omitted = base position).
+
+Placeholders: chain fields accept `t0` (window start, local s), `dur` (duration s), `p` (eased progress in
+`[0,1]`, already carries the transition's `easing`); overlay fields additionally accept `t1` (window end,
+s), `W`/`H` (stage px), `x`/`y` (base overlay expressions); every field accepts the transition's own
+`{{param}}` values (validated numbers/strings/booleans; booleans render as `1`/`0`). Unknown placeholders
+are `[CUTHOL-G112]`. `easing` is `linear`/`ease_in`/`ease_out`/`ease_in_out`/`cubic_bezier` (bezier
+control points live on the transition; bad curves are `[CUTHOL-G120]`). Guard position templates
+builtin-style:
+`if(lt(t,{{t1}}),<motion>,{{x}})`.
+
+```json
+"transitions": {
+  "push": {
+    "description": "Incoming slides in from the right, outgoing slides out left.",
+    "incoming_x": "if(lt(t,{{t1}}),{{W}}-{{W}}*{{p}},{{x}})",
+    "outgoing_x": "if(lt(t,{{t1}}),{{x}}-{{W}}*{{p}},{{x}}-{{W}})"
+  }
+}
+```
+
+Rules: the G303 duration bound (≤ half of the shorter neighbour) applies to `ext:` transitions too.
+Unknown/disabled `ext:` kinds fail edits and render with `[CUTHOL-G122]` (never a silent dissolve); bad
+params with `[CUTHOL-G123]` (builtins take no params); a changed extension warns `[CUTHOL-G413]` on
+`verify` (re-pin with `extension.enable`). Transitions are video-only: spine audio hard-cuts at the clip
+boundary exactly as with builtins. An extension whose transitions are in use cannot be disabled until those
+transitions are replaced (G122). `extension.show` returns the `transitions` manifest section.
 
 ## Reproducibility & verification (`CUTHOL-G205`)
 

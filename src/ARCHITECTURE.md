@@ -125,6 +125,12 @@ extensions/  manager (facade): manifest, registry, lifecycle, processor, recipe,
 | `bridge_extension_assets.ts` | Extension assets copied into compositions; stale-copy detection. |
 | `cuthol_runtime.ts` | `window.__cuthol` source injected into compositions. Its output is part of the cache key; keep it byte-stable. |
 | `composition_preview.ts`, `ass_generator.ts` | Composition preview sheet; `.ass` captions. |
+| `coords_inpage.ts` | In-page box extractor (discovery, film-time seek, per-frame measurement). |
+| `coords_extract.ts` | `composition coords` orchestration: browser, cache, summaries, frame queries. |
+| `coords_query.ts` | Geometry query at one moment: ref resolution, stage mapping, gaps/overlap/order/relations. |
+| `coords_cache.ts` | Coordinate cache key (overlay-key components + stage + engine + renderer) and atomic files. |
+| `coords_map.ts` | Composition-pixel to stage-pixel mapping (compiler overlay formulas). |
+| `coords_ink.ts` | Transparent margins of image assets (once per file) for ink boxes. |
 
 ### render/ and monitor/
 | File | Responsibility |

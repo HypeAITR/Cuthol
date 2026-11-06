@@ -34,6 +34,8 @@ const BOOLEAN_FLAGS = new Set([
   "overwrite",
   "muted",
   "ripple",
+  "all",
+  "refresh",
 ]);
 
 export const KNOWN_CLI_FLAGS = new Set([
@@ -116,6 +118,8 @@ export const KNOWN_CLI_FLAGS = new Set([
   "preset",
   "cue",
   "cues",
+  "elements",
+  "frames",
   "gain-db",
   "z-index",
   "gates",

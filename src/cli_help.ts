@@ -25,6 +25,8 @@ export function printHelp(): void {
       "  cuthol spine fx [add|set|remove|list] --clip <sp_XX> [--kind ext:<ext>/<ad>|--filter \"<zincir>\"] [--param k=v] [--fx <fx_XX>]",
       "  cuthol lane [add-cue|add-composition|update-cue|remove-cue|lock|unlock] ...",
       "  cuthol composition [scaffold|sync|preview|check] --comp-dir <dir> ...",
+      "  cuthol composition coords --cue <cue_XX> | --all [--frames <a..b> | --at <sn>[,<sn>...]] [--refresh] [--dir <dir>]",
+      "  cuthol composition coords --at <1500ms|1.5s|45f> [--cue <cue_XX>] [--elements <ref>[,<ref>...]] [--refresh] [--dir <dir>] (geometry query)",
       "  cuthol cue [plan|apply|diff|export] --file <cuthol.cues.json>",
       "  cuthol speech [transcribe|synthesize|cleanup|verify-cleanup|captions] ...",
       "  cuthol speech cleanup [--clip <sp_XX> | --cue <cue_XX> | --cues <a,b>] [--across lane|all_lanes|all|spine|none] [--dry-run]",

@@ -980,6 +980,60 @@ export const DIAGNOSTICS = {
       cueId
     ),
 
+  // --- Composition coordinates: codes CUTHOL-G417, CUTHOL-G418, CUTHOL-G419, CUTHOL-G428, CUTHOL-G429 ---
+  COORDS_MEASUREMENT_FAILED: (cueId: string, reason: string) =>
+    createDiagnostic(
+      "CUTHOL-G417",
+      "G4_STAGE",
+      "WARN",
+      `Coordinate measurement failed for cue '${cueId}' (${reason}); the cue was skipped and the remaining cues continue.`,
+      `Re-run the failed cue alone: 'cuthol composition coords --cue ${cueId} --refresh'. If it still fails, open the composition with 'cuthol composition preview --cue ${cueId}' to see the page error.`,
+      cueId
+    ),
+
+  COORDS_FONTS_NOT_BUNDLED: (cueId: string, reason: string) =>
+    createDiagnostic(
+      "CUTHOL-G418",
+      "G4_STAGE",
+      "WARN",
+      `Font bundling was unavailable for cue '${cueId}' (${reason}); measured with raw HTML, so text boxes may differ from render.`,
+      `Re-run the cue after checking the renderer version ('npx hyperframes --version'): 'cuthol composition coords --cue ${cueId} --refresh'.`,
+      cueId
+    ),
+
+  COORDS_PAGE_ISSUES: (cueId: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G419",
+      "G4_STAGE",
+      "INFO",
+      `Page issues while measuring cue '${cueId}': ${detail}.`,
+      `Inspect the same page with 'cuthol composition preview --cue ${cueId}', fix the reported script error, then re-run 'cuthol composition coords --cue ${cueId} --refresh'.`,
+      cueId
+    ),
+
+  COORDS_UNKNOWN_ELEMENT: (ref: string, cueId: string, nearest: string | null) =>
+    createDiagnostic(
+      "CUTHOL-G428",
+      "G4_STAGE",
+      "ERROR",
+      `Unknown element '${ref}' in cue '${cueId}'.`,
+      nearest
+        ? `Did you mean '${nearest}'? List keys with 'cuthol composition coords --at <moment> --cue ${cueId}'.`
+        : `List keys with 'cuthol composition coords --at <moment> --cue ${cueId}'.`,
+      ref
+    ),
+
+  COORDS_QUERY_MISUSE: (detail: string, fix: string) =>
+    createDiagnostic(
+      "CUTHOL-G429",
+      "G4_STAGE",
+      "ERROR",
+      `Geometry query misuse: ${detail}.`,
+      `Use: ${fix}`
+    ),
+
+  // CUTHOL-G420..CUTHOL-G427 retired with the layout warning system; never reused (may appear in old projects/logs).
+
   // ---------------------------------------------------------------------------------------------------
 } as const;
 

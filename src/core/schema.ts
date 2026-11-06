@@ -351,6 +351,12 @@ export interface CutholSequence {
   lanes: ParallelLane[];
   markers: TimelineMarker[];
   extensions?: MountedExtensionRef[];
+  /**
+   * Retired reviewer keys (`coords_suppress`, `coords_rules`) from the removed layout
+   * warning system: ignored, but preserved so old projects keep opening and undo
+   * stays consistent (no migration rewrites the file outside the journal).
+   */
+  review?: Record<string, unknown>;
 }
 
 export function resolveAspectDimensions(aspect: AspectPreset): { width: number; height: number } {

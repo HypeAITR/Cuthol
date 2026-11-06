@@ -52,6 +52,7 @@ export function runVerifyCommand(ctx: CliCommandContext): CliCommandResult {
     gatesRaw && gatesRaw !== "all"
       ? (gatesRaw.split(",").map((s) => s.trim()) as VerificationGateId[])
       : undefined;
+  // Verify never touches coordinates: no measuring, no browser, no flags.
   const report = runWorkspaceVerification(workspaceDir, gates);
   emitEnvelopeJson(workspaceDir, "verify", { ...report, ok: report.ok });
   if (!report.ok) {

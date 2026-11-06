@@ -80,6 +80,22 @@ export const MEDIA_ACTION_SPECS: ActionSpec[] = [
       p.out("Contact sheet PNG path."),
     ],
   },
+  {
+    tool: "composition",
+    action: "coords",
+    argv: ["composition", "coords"],
+    summary: "Measure per-frame bounding boxes of visible elements in a composition cue (cached per composition content), or query geometry at one moment. Measurement returns a per-cue summary (element rows, visible sequence-frame ranges, union stage boxes) plus optional per-frame boxes; full boxes live in the reported JSON file. The geometry query (a moment `at`, optionally `elements`) reports stage-pixel boxes, edge distances, gaps, overlap, paint order, and design relations for that moment.",
+    mutates: false,
+    long: true,
+    params: [
+      { name: "cue", type: "string", description: "Composition cue id (cue_XX). Exactly one of `cue` / `all` for measurement; optional for the geometry query (default: every active cue)." },
+      { name: "all", type: "boolean", description: "Measure every composition cue on unmuted lanes." },
+      { name: "frames", type: "string", description: "Sequence frame range a..b (e.g. '75..90') to return boxes for; omit for summary only. Not with `at`." },
+      { name: "at", type: "string_list", description: "Sequence frames for per-frame boxes, e.g. ['75','90'] (omit for summary only; not with `frames`) — or one moment for the geometry query, e.g. ['1500ms'], ['1.5s'], ['45f']." },
+      { name: "refresh", type: "boolean", description: "Force re-measurement, ignoring the cache." },
+      { name: "elements", type: "string_list", description: "Geometry query element refs: '<key>' (needs `cue`) or 'cue_XX/<key>'. Omit with a moment `at` to list the visible elements instead." },
+    ],
+  },
 
   // ---------------------------------------------------------------- speech
   {

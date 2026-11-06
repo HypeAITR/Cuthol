@@ -464,6 +464,48 @@ function summarizeReframeClipPlan(p: Record<string, unknown>): Record<string, un
   };
 }
 
+function formatCoordsGeometryTable(env: Record<string, unknown>): string | null {
+  if (!Array.isArray(env.elements)) return null;
+  const elements = env.elements as Array<Record<string, unknown>>;
+  const pairs = Array.isArray(env.pairs) ? (env.pairs as Array<Record<string, unknown>>) : [];
+  const stage = (env.stage ?? {}) as Record<string, unknown>;
+  const cues = Array.isArray(env.cues) ? (env.cues as Array<Record<string, unknown>>) : [];
+  const measured = cues.filter((c) => c.cached !== true).map((c) => String(c.cue));
+  const cached = cues.filter((c) => c.cached === true).map((c) => String(c.cue));
+  const cacheNote = [
+    measured.length > 0 ? `measured: ${measured.join(", ")}` : "measured: none",
+    cached.length > 0 ? `cached: ${cached.join(", ")}` : null,
+  ]
+    .filter(Boolean)
+    .join("; ");
+  const lines: string[] = [
+    `Geometry at ${String(env.at)} (frame ${String(env.sequence_frame)}, stage ${String(stage.width)}x${String(stage.height)}): ${elements.length} element(s), ${pairs.length} pair(s); ${cacheNote}`,
+  ];
+  const box = (v: unknown): string => (Array.isArray(v) ? `[${v.join(",")}]` : "null");
+  const refOf = (v: unknown): string => (v === null || v === undefined ? "null" : String(v));
+  for (const el of elements) {
+    const ref = `${String(el.cue)}/${String(el.key)}`;
+    const head = `${ref} ${String(el.kind)} "${String(el.label)}" item=${box(el.item)} ink=${box(el.ink)} op=${String(el.opacity)} z=${String(el.z)}`;
+    if (el.visible === undefined) {
+      lines.push(head);
+      continue;
+    }
+    const edges = el.edges as Record<string, unknown> | null | undefined;
+    const edgeStr = edges
+      ? `L${String(edges.left)},T${String(edges.top)},R${String(edges.right)},B${String(edges.bottom)}`
+      : "null";
+    lines.push(
+      `${head} visible=${String(el.visible)} parent=${refOf(el.parent)} group=${refOf(el.group)} edges=${edgeStr} out=${String(el.outside_ratio)}`
+    );
+  }
+  for (const p of pairs) {
+    lines.push(
+      `${String(p.a)} <-> ${String(p.b)} gap=${String(p.distance)} dx=${String(p.gap_x)} dy=${String(p.gap_y)} inter=${String(p.intersection)} ratio=${String(p.overlap_ratio)} top=${refOf(p.top)} rel=${String(p.relation)}`
+    );
+  }
+  return lines.join("\n");
+}
+
 function formatReframeSummaryTable(env: Record<string, unknown>): string | null {
   if (!Array.isArray(env.clips) || env.clips.length === 0) return null;
   const plans = env.clips as Array<Record<string, unknown>>;
@@ -506,6 +548,10 @@ function compactPayload(
   const isReframe = spec.tool === "spine" && spec.action === "reframe";
   for (const [k, v] of Object.entries(env)) {
     if (ENVELOPE_KEYS.has(k)) continue;
+    if (env.mode === "geometry" && (k === "elements" || k === "pairs") && Array.isArray(v)) {
+      payload[`${k}_count`] = v.length;
+      continue;
+    }
     if (spec.mutates && !detailed && MUTATION_ECHO_KEYS.has(k) && !(isReframe && k === "clips")) continue;
     if (
       isCleanup &&
@@ -956,6 +1002,10 @@ export function formatEnvelopeCompact(options: FormatEnvelopeCompactOptions): {
   if (spec.tool === "spine" && spec.action === "reframe") {
     const reframeTable = formatReframeSummaryTable(env);
     if (reframeTable) lines.push(reframeTable);
+  }
+  if (spec.tool === "composition" && spec.action === "coords" && env.mode === "geometry") {
+    const geometry = formatCoordsGeometryTable(env);
+    if (geometry) lines.push(geometry);
   }
 
   if (ok && spec.tool === "render") {

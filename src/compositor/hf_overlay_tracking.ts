@@ -532,10 +532,16 @@ export function buildHyperFramesFailureError(
     .map((l) => l.trim())
     .filter((l) => l && !l.startsWith("[INFO]"));
   const errorLines = logLines.filter((l) => /error|fail|exception|timeout|cannot|not found/i.test(l));
+  // Never cut the head: the first line names the failure ("Failed: Render blocked by ...").
+  // Only pathological logs (multi-KB lines) lose their tail, never their meaning.
+  const joined =
+    (errorLines.length > 0 ? errorLines : logLines).slice(-3).join(" | ") ||
+    `exit=${proc.status ?? proc.signal}`;
   const detail = proc.error
     ? proc.error.message
-    : (errorLines.length > 0 ? errorLines : logLines).slice(-3).join(" | ").slice(-400) ||
-      `exit=${proc.status ?? proc.signal}`;
+    : joined.length > 2000
+      ? `${joined.slice(0, 2000)}…`
+      : joined;
   return new CutholError(DIAGNOSTICS.HYPERFRAMES_RENDER_FAILED(compositionDir, detail));
 }
 

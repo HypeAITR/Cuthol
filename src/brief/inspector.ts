@@ -55,6 +55,20 @@ function isAudioOnlyKind(kind: string): boolean {
   return kind === "music" || kind === "sfx" || kind === "voiceover";
 }
 
+/** Short ramp shape for lenses (`ramp 1->3x, 2 pts`), or null when unramped. */
+function describeSpeedRampShape(clip: SpineClip): string | null {
+  const ramp = clip.playback.speed_ramp;
+  if (!ramp || ramp.length < 2) return null;
+  return `ramp ${ramp[0].rate}->${ramp[ramp.length - 1].rate}x, ${ramp.length} pts`;
+}
+
+/** Full ramp description with pitch mode (`ramp 1->3x, 2 pts, pitch kept`). */
+function describeSpeedRamp(clip: SpineClip): string | null {
+  const shape = describeSpeedRampShape(clip);
+  if (!shape) return null;
+  return `${shape}, ${clip.playback.preserve_pitch ? "pitch kept" : "pitch shifts"}`;
+}
+
 export function renderSequenceBrief(seq: CutholSequence, options: BriefOptions = {}): string {
   const lens = options.lens ?? "overview";
   let md: string;
@@ -115,8 +129,10 @@ function renderOverviewLens(seq: CutholSequence): string {
     for (const clip of seq.spine.clips) {
       const endMs = clip.timeline_in_ms + clip.duration_ms;
       const trans = clip.transition_out ? ` -> [${clip.transition_out.kind} ${clip.transition_out.duration_ms}ms]` : "";
+      const ramp = describeSpeedRamp(clip);
+      const rampCell = ramp ? ` | ramp \`${ramp}\`` : "";
       lines.push(
-        `- \`${clip.id}\` (\`${clip.asset_handle}\`): timeline \`${clip.timeline_in_ms}..${endMs}ms\` | source \`${clip.source_in_ms}..${clip.source_out_ms}ms\` | rate \`${clip.playback.rate}x\`${trans}`
+        `- \`${clip.id}\` (\`${clip.asset_handle}\`): timeline \`${clip.timeline_in_ms}..${endMs}ms\` | source \`${clip.source_in_ms}..${clip.source_out_ms}ms\` | rate \`${clip.playback.rate}x\`${rampCell}${trans}`
       );
     }
   }
@@ -173,6 +189,10 @@ function renderFlowLens(seq: CutholSequence, winStart?: number, winEnd?: number)
       lines.push(
         `### [${clip.id}] ${clip.timeline_in_ms}ms .. ${clipEnd}ms (dur: ${clip.duration_ms}ms, asset: ${clip.asset_handle}, src: ${clip.source_in_ms}..${clip.source_out_ms}ms)`
       );
+      const ramp = describeSpeedRamp(clip);
+      if (ramp) {
+        lines.push(`  - Speed: ${ramp}`);
+      }
       const flags: string[] = [];
       if (clip.audio_chain.denoise.enabled) flags.push(`denoise(${clip.audio_chain.denoise.nr_db}dB)`);
       if (clip.audio_chain.voice_clarity.enabled) flags.push(`voice_clarity`);
@@ -291,8 +311,10 @@ function renderCanvasLens(seq: CutholSequence, winStart?: number, winEnd?: numbe
     const end = clip.timeline_in_ms + clip.duration_ms;
     if (isOutsideWindow(clip.timeline_in_ms, end, startFilter, endFilter)) continue;
     const scaleStr = formatScale(clip.placement.scale_x, clip.placement.scale_y);
+    const rampShape = describeSpeedRampShape(clip);
+    const notes = rampShape ? `fit=${clip.placement.fit_mode}, ${rampShape}` : `fit=${clip.placement.fit_mode}`;
     lines.push(
-      `| \`${clip.id}\` | \`spine\` | 0 | ${clip.timeline_in_ms}..${end}ms | (${clip.placement.x_pct}%, ${clip.placement.y_pct}%) | ${scaleStr} | ${clip.placement.opacity} | fit=${clip.placement.fit_mode} |`
+      `| \`${clip.id}\` | \`spine\` | 0 | ${clip.timeline_in_ms}..${end}ms | (${clip.placement.x_pct}%, ${clip.placement.y_pct}%) | ${scaleStr} | ${clip.placement.opacity} | ${notes} |`
     );
   }
 

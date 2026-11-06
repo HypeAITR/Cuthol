@@ -24,6 +24,7 @@ import { wrapTypographyLines } from "../compositor/ass_generator.js";
 import { verifyG1Schema, verifyG2Assets, verifyG3Timing } from "./gates_structural.js";
 import { verifyEasing } from "./gates_easing.js";
 import { verifyG4Stage, verifyG5Signal } from "./gates_stage_signal.js";
+import { verifyCompositionScripts } from "./gates_script_errors.js";
 import { verifyCompositionAudio } from "./gates_hf_audio.js";
 import { verifyEdgeMode } from "./gates_edge.js";
 import { verifyExtensionTransitions } from "./gates_transition.js";
@@ -275,6 +276,9 @@ export function verifySequence(
     verifyG4Stage(seq, paths, libMap, diagnostics);
     verifyEdgeMode(seq, diagnostics);
     verifyCompositionAudio(seq, paths, diagnostics);
+    // Recorded composition page script errors (no browser: reads the content-keyed
+    // records that measurement, preview, and the monitor probe wrote).
+    verifyCompositionScripts(seq, paths, diagnostics);
   }
 
   // --- Gate 5: Audio Signal & Render Frame Sanity (G5_SIGNAL) ---

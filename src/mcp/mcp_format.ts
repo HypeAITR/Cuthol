@@ -520,7 +520,7 @@ function formatCoordsGeometryTable(env: Record<string, unknown>): string | null 
   }
   for (const p of pairs) {
     lines.push(
-      `${String(p.a)} <-> ${String(p.b)} gap=${String(p.distance)} dx=${String(p.gap_x)} dy=${String(p.gap_y)} inter=${String(p.intersection)} ratio=${String(p.overlap_ratio)} top=${refOf(p.top)} rel=${String(p.relation)}`
+      `${String(p.a)} <-> ${String(p.b)} shape=${String((p as Record<string, unknown>).shape ?? "box")} gap=${String(p.distance)} dx=${String(p.gap_x)} dy=${String(p.gap_y)} inter=${String(p.intersection)} ratio=${String(p.overlap_ratio)} top=${refOf(p.top)} rel=${String(p.relation)}`
     );
   }
   return lines.join("\n");
@@ -903,12 +903,22 @@ export function formatEnvelopeCompact(options: FormatEnvelopeCompactOptions): {
   if (!ok) {
     const diag = env.diagnostic as DiagnosticLike | undefined;
     const err = env.error as { code?: string; message?: string; suggestion?: string } | string | undefined;
+    // Full message up to a sane width; longer texts keep their head (the failure
+    // line) and point at the JSON result instead of cutting both ends.
+    const shortErrorText = (text: string): string => {
+      const COMPACT_ERROR_MAX = 600;
+      if (text.length <= COMPACT_ERROR_MAX) return text;
+      const firstLine = text.split("\n")[0];
+      const head =
+        firstLine.length > COMPACT_ERROR_MAX ? `${firstLine.slice(0, COMPACT_ERROR_MAX)}…` : firstLine;
+      return `${head} … [truncated ${text.length - head.length} chars; full text in the JSON result]`;
+    };
     if (diag) {
-      lines.push(`[${diag.code}] ${diag.what}${diag.suggestion ? ` | Suggestion: ${translateCliHint(diag.suggestion)}` : ""}`);
+      lines.push(`[${diag.code}] ${shortErrorText(diag.what ?? "")}${diag.suggestion ? ` | Suggestion: ${translateCliHint(diag.suggestion)}` : ""}`);
     } else if (typeof err === "string") {
-      lines.push(translateCliHint(err));
+      lines.push(translateCliHint(shortErrorText(err)));
     } else if (err) {
-      lines.push(`[${err.code ?? "ERROR"}] ${err.message ?? ""}${err.suggestion ? ` | Suggestion: ${translateCliHint(err.suggestion)}` : ""}`);
+      lines.push(`[${err.code ?? "ERROR"}] ${shortErrorText(err.message ?? "")}${err.suggestion ? ` | Suggestion: ${translateCliHint(err.suggestion)}` : ""}`);
     } else if (Array.isArray(env.contract_findings) && env.contract_findings.length > 0) {
       for (const cf of (env.contract_findings as string[]).slice(0, 6)) {
         lines.push(`[CUTHOL-G105] ${cf}`);

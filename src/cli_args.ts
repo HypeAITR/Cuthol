@@ -191,6 +191,11 @@ function levenshtein(a: string, b: string): number {
 }
 
 export function suggestFlagFix(unknownFlag: string, group: string, action?: string): string {
+  // No `--no-*` negation pattern exists; disabling pitch preservation is an
+  // explicit value, so point at it directly.
+  if (unknownFlag === "no-preserve-pitch") {
+    return `cuthol ${group}${action ? ` ${action}` : ""} --preserve-pitch false`;
+  }
   const aliasMap: Record<string, string> = {
     compdir: "comp-dir",
     composition: "comp-dir",

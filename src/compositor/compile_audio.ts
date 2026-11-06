@@ -31,6 +31,105 @@ export interface AudioRampInfo {
 }
 
 /**
+ * Slice grid for pitch-preserving (`atempo`) ramps: fewer, longer slices than
+ * the default grid, so each independent WSOLA run has ample context. The
+ * within-slice linear-vs-curve timing error stays ~1 ms at ratio 1.15.
+ * The `asetrate` path keeps the default grid (sample-exact at any length).
+ */
+const PITCH_PRESERVING_SLICE_OPTIONS = { maxRateRatio: 1.15, maxSliceOutputMs: 500 };
+
+/**
+ * WSOLA settle margins (source ms). Measured (ffmpeg 8.1 `atempo`): a chained
+ * run maps erratically over roughly its first 500 ms of input (up to ~25 ms
+ * jitter and dropped transients on sparse content), while a single-stage run
+ * settles immediately (only head skip + tail flush remain). Each slice therefore
+ * reads extra context on both sides and the stretched margins are trimmed; the
+ * `asetrate` path needs no margins (sample-exact) and gets none.
+ */
+const RAMP_MARGIN_IN_MS_PER_STAGE = 250;
+const RAMP_MARGIN_IN_MS_SINGLE_STAGE = 100;
+
+function rampSliceMarginInMs(tempoFilters: string[]): number {
+  if (tempoFilters.length === 0) return 0;
+  if (tempoFilters.length === 1) return RAMP_MARGIN_IN_MS_SINGLE_STAGE;
+  return RAMP_MARGIN_IN_MS_PER_STAGE * tempoFilters.length;
+}
+
+interface RampedSliceMargin {
+  useHeadMs: number;
+  padHeadMs: number;
+  useTailMs: number;
+  padTailMs: number;
+}
+
+/**
+ * Settle-margin split for one ramped slice: real source context where the seek
+ * window has it, silence padding (adelay/apad before the stretcher) where it
+ * does not. The first slice through at most one WSOLA stage takes no head
+ * margin: the stream head passes through verbatim, so content at the clip head
+ * survives exactly.
+ */
+function splitRampedSliceMargin(options: {
+  marginInMs: number;
+  sliceAbsU0Ms: number;
+  sliceAbsU1Ms: number;
+  readAbsInMs: number;
+  readAbsOutMs: number;
+  isFirstSlice: boolean;
+  tempoStageCount: number;
+}): RampedSliceMargin {
+  const headAvailMs = Math.max(0, options.sliceAbsU0Ms - options.readAbsInMs);
+  const tailAvailMs = Math.max(0, options.readAbsOutMs - options.sliceAbsU1Ms);
+  let useHeadMs = Math.min(options.marginInMs, headAvailMs);
+  let padHeadMs = options.marginInMs - useHeadMs;
+  if (options.isFirstSlice && options.tempoStageCount <= 1) {
+    useHeadMs = 0;
+    padHeadMs = 0;
+  }
+  const useTailMs = Math.min(options.marginInMs, tailAvailMs);
+  const padTailMs = options.marginInMs - useTailMs;
+  return { useHeadMs, padHeadMs, useTailMs, padTailMs };
+}
+
+/**
+ * One ramped slice: source trim (with settle margins) + stretcher + exact keep
+ * window + duration safety net. With zero margins the emitted text is exactly
+ * the historical form (`atrim=start=0:end=...`), keeping the asetrate path
+ * byte-identical.
+ */
+function buildRampedSliceFilterParts(options: {
+  trimStartSec: string;
+  trimEndSec: string;
+  padHeadMs: number;
+  padTailMs: number;
+  tempo: string[];
+  keepStartMs: number;
+  keepDurationMs: number;
+}): string[] {
+  const parts = [
+    `atrim=start=${options.trimStartSec}:end=${options.trimEndSec}`,
+    `asetpts=PTS-STARTPTS`,
+  ];
+  if (options.padHeadMs > 0.0005) {
+    parts.push(`adelay=${options.padHeadMs.toFixed(3)}|${options.padHeadMs.toFixed(3)}`);
+  }
+  if (options.padTailMs > 0.0005) {
+    parts.push(`apad=pad_dur=${(options.padTailMs / 1000).toFixed(6)}`);
+  }
+  parts.push(...options.tempo);
+  const keepDurSec = (options.keepDurationMs / 1000).toFixed(6);
+  const keepStartSec = options.keepStartMs === 0 ? "0" : (options.keepStartMs / 1000).toFixed(6);
+  const keepEndSec =
+    options.keepStartMs === 0 ? keepDurSec : ((options.keepStartMs + options.keepDurationMs) / 1000).toFixed(6);
+  parts.push(
+    `atrim=start=${keepStartSec}:end=${keepEndSec}`,
+    `asetpts=PTS-STARTPTS`,
+    `apad=whole_dur=${keepDurSec}`
+  );
+  return parts;
+}
+
+/**
  * Post-rate audio chain (denoise, voice, gain, fade,
  * slice trimming, delay, padding). Produces the same order and form as the
  * post-rate block inside `buildSingleAudioTrackFilterChain`; factored out only
@@ -311,6 +410,15 @@ export function compileSequenceAudioPlan(
     // atempo output wobbles +-2ms with content (longer in tone, shorter in silence);
     // without the clamp the drift over 24 slices exceeds the 33ms frame bound. The
     // unramped path below is kept as-is (filter text byte-identical).
+    //
+    // Pitch-preserving slices additionally read settle margins on both sides:
+    // each independent atempo run consumes its head (startup skip) and tail
+    // (unflushed buffer), and chained runs map erratically over ~500 ms of
+    // input; without margins the clamp backfills the lost span with silence
+    // (audible gaps, lost transients at slice joints). The margins are trimmed
+    // after stretching, so slice boundaries stay sample-exact. The asetrate
+    // path is sample-exact without margins and keeps the old filter text
+    // byte-identical (zero margins, default grid).
     const rampInfo = item.rampInfo;
     if (rampInfo && rampInfo.ramp.length >= 2) {
       const rampSpanMs = Math.max(1, rampInfo.spanMs);
@@ -323,8 +431,10 @@ export function compileSequenceAudioPlan(
       let rampLocalSliceTrimSec: [number, number] | undefined;
       let rampLegacyClampEndSec: number | undefined;
       let rampSlices: ReturnType<typeof getAudioRampSlicesInRange>;
+      const pitchPreserving = item.preservePitch !== false;
+      const rampSliceOptions = pitchPreserving ? PITCH_PRESERVING_SLICE_OPTIONS : undefined;
       if (!activeWin) {
-        rampSlices = getAudioRampSlicesInRange(rampSpanMs, rampFallbackRate, ramp, 0, rampSpanMs);
+        rampSlices = getAudioRampSlicesInRange(rampSpanMs, rampFallbackRate, ramp, 0, rampSpanMs, rampSliceOptions);
       } else if (itemStartMs >= winStartMs) {
         rampRelTimelineStartMs = Math.max(0, Number((itemStartMs - winStartMs).toFixed(3)));
         if (itemEndMs > winEndMs + 1e-3) {
@@ -334,7 +444,7 @@ export function compileSequenceAudioPlan(
           );
           rampReadSrcOutMs = Math.min(item.srcOutMs, item.srcInMs + Math.ceil(uReadEnd));
           const readU1 = Math.max(1, rampReadSrcOutMs - item.srcInMs);
-          rampSlices = getAudioRampSlicesInRange(rampSpanMs, rampFallbackRate, ramp, 0, readU1);
+          rampSlices = getAudioRampSlicesInRange(rampSpanMs, rampFallbackRate, ramp, 0, readU1, rampSliceOptions);
           const forceLegacyClamp = process.env.CUTHOL_TEST_LEGACY_POST_ADELAY_TRIM === "1";
           if (forceLegacyClamp) {
             rampLegacyClampEndSec = totalDurationSec;
@@ -346,7 +456,7 @@ export function compileSequenceAudioPlan(
             rampLocalSliceTrimSec = [0, sliceEndSec];
           }
         } else {
-          rampSlices = getAudioRampSlicesInRange(rampSpanMs, rampFallbackRate, ramp, 0, rampSpanMs);
+          rampSlices = getAudioRampSlicesInRange(rampSpanMs, rampFallbackRate, ramp, 0, rampSpanMs, rampSliceOptions);
         }
       } else {
         rampRelTimelineStartMs = 0;
@@ -376,7 +486,7 @@ export function compileSequenceAudioPlan(
         const rampReadU0 = Math.max(0, rampReadSrcInMs - item.srcInMs);
         const rampReadU1 = Math.max(rampReadU0 + 1, rampReadSrcOutMs - item.srcInMs);
         rampSlices = getAudioRampSlicesInRange(
-          rampSpanMs, rampFallbackRate, ramp, rampReadU0, rampReadU1
+          rampSpanMs, rampFallbackRate, ramp, rampReadU0, rampReadU1, rampSliceOptions
         );
         const rampActualReadLocalStartMs = integrateRampSourceOffsetToLocalMs(
           rampSpanMs, rampFallbackRate, ramp, rampReadU0
@@ -403,10 +513,20 @@ export function compileSequenceAudioPlan(
       if (rampSlices.length === 1) {
         const s = rampSlices[0];
         const aPad = `[${item.padPrefix}_${++aStepCounter}]`;
-        const sT0 = ((item.srcInMs + s.u0) / 1000 - rampSeekInfo.seekSec).toFixed(6);
-        const sT1 = ((item.srcInMs + s.u1) / 1000 - rampSeekInfo.seekSec).toFixed(6);
-        const sDtSec = (s.dt / 1000).toFixed(6);
         const sTempo = buildAudioRampTempoFilters(s.rate, item.preservePitch, item.sampleRate);
+        const sMarginInMs = pitchPreserving ? rampSliceMarginInMs(sTempo) : 0;
+        const sMargin = splitRampedSliceMargin({
+          marginInMs: sMarginInMs,
+          sliceAbsU0Ms: item.srcInMs + s.u0,
+          sliceAbsU1Ms: item.srcInMs + s.u1,
+          readAbsInMs: rampReadSrcInMs,
+          readAbsOutMs: rampReadSrcOutMs,
+          isFirstSlice: true,
+          tempoStageCount: sTempo.length,
+        });
+        const sT0 = ((item.srcInMs + s.u0 - sMargin.useHeadMs) / 1000 - rampSeekInfo.seekSec).toFixed(6);
+        const sT1 = ((item.srcInMs + s.u1 + sMargin.useTailMs) / 1000 - rampSeekInfo.seekSec).toFixed(6);
+        const sHeadDropMs = (sMargin.useHeadMs + sMargin.padHeadMs) / Math.max(1e-9, s.rate);
         const sPost = buildRampedAudioPostFilters({
           audioChain: item.audioChain,
           envelopes: item.envelopes,
@@ -418,12 +538,15 @@ export function compileSequenceAudioPlan(
           totalDurationSec,
         });
         const sParts = [
-          `atrim=start=${sT0}:end=${sT1}`,
-          `asetpts=PTS-STARTPTS`,
-          ...sTempo,
-          `atrim=start=0:end=${sDtSec}`,
-          `asetpts=PTS-STARTPTS`,
-          `apad=whole_dur=${sDtSec}`,
+          ...buildRampedSliceFilterParts({
+            trimStartSec: sT0,
+            trimEndSec: sT1,
+            padHeadMs: sMargin.padHeadMs,
+            padTailMs: sMargin.padTailMs,
+            tempo: sTempo,
+            keepStartMs: sHeadDropMs,
+            keepDurationMs: s.dt,
+          }),
           ...sPost,
         ];
         filterChains.push(`[${rampInIdx}:a]${sParts.join(",")}${aPad}`);
@@ -452,18 +575,29 @@ export function compileSequenceAudioPlan(
         const sliceDuMs = s.u1 - s.u0 + extSrcMs;
         const sliceOutMs = s.dt + extendMs;
         const sliceRate = sliceDuMs / Math.max(1e-9, sliceOutMs);
-        const t0 = ((item.srcInMs + s.u0) / 1000 - rampSeekInfo.seekSec).toFixed(6);
-        const t1 = ((item.srcInMs + s.u1 + extSrcMs) / 1000 - rampSeekInfo.seekSec).toFixed(6);
         const tempo = buildAudioRampTempoFilters(sliceRate, item.preservePitch, item.sampleRate);
-        const dtSec = (sliceOutMs / 1000).toFixed(6);
-        const parts = [
-          `atrim=start=${t0}:end=${t1}`,
-          `asetpts=PTS-STARTPTS`,
-          ...tempo,
-          `atrim=start=0:end=${dtSec}`,
-          `asetpts=PTS-STARTPTS`,
-          `apad=whole_dur=${dtSec}`,
-        ];
+        const marginInMs = pitchPreserving ? rampSliceMarginInMs(tempo) : 0;
+        const margin = splitRampedSliceMargin({
+          marginInMs,
+          sliceAbsU0Ms: item.srcInMs + s.u0,
+          sliceAbsU1Ms: item.srcInMs + s.u1,
+          readAbsInMs: rampReadSrcInMs,
+          readAbsOutMs: rampReadSrcOutMs,
+          isFirstSlice: i === 0,
+          tempoStageCount: tempo.length,
+        });
+        const t0 = ((item.srcInMs + s.u0 - margin.useHeadMs) / 1000 - rampSeekInfo.seekSec).toFixed(6);
+        const t1 = ((item.srcInMs + s.u1 + margin.useTailMs + extSrcMs) / 1000 - rampSeekInfo.seekSec).toFixed(6);
+        const headDropMs = (margin.useHeadMs + margin.padHeadMs) / Math.max(1e-9, sliceRate);
+        const parts = buildRampedSliceFilterParts({
+          trimStartSec: t0,
+          trimEndSec: t1,
+          padHeadMs: margin.padHeadMs,
+          padTailMs: margin.padTailMs,
+          tempo,
+          keepStartMs: headDropMs,
+          keepDurationMs: sliceOutMs,
+        });
         filterChains.push(`${rampSplitPads[i]}${parts.join(",")}${rampSliceOutPads[i]}`);
       });
       let rampMixedPad = rampSliceOutPads[0];

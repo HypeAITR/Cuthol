@@ -11,7 +11,7 @@ export interface HfCompositionAudioMarker {
   /** File (relative to the composition dir) where the marker was found. */
   file: string;
   kind: "audio" | "video" | "audio-group" | "js";
-  /** Human detail embedded in the G416 text, e.g. `index.html'de <audio src="assets/tone.wav">`. */
+  /** Human detail embedded in the G416 text, e.g. `in index.html: <audio src="assets/tone.wav">`. */
   detail: string;
 }
 
@@ -142,7 +142,7 @@ function scanHtmlForAudioMarkers(
     markers.push({
       file: relPath,
       kind: "audio",
-      detail: `${relPath}'de <audio${src ? ` src="${src}"` : ""}>`,
+      detail: `in ${relPath}: <audio${src ? ` src="${src}"` : ""}>`,
     });
   }
 
@@ -161,7 +161,7 @@ function scanHtmlForAudioMarkers(
     }
     if (src === null || stripSrcQuery(src) === "") continue;
     if (isRemoteSrc(src)) {
-      markers.push({ file: relPath, kind: "video", detail: `${relPath}'de <video src="${src}">` });
+      markers.push({ file: relPath, kind: "video", detail: `in ${relPath}: <video src="${src}">` });
       continue;
     }
     const absMedia = path.resolve(htmlDir, stripSrcQuery(src));
@@ -179,7 +179,7 @@ function scanHtmlForAudioMarkers(
     markers.push({
       file: relPath,
       kind: "audio-group",
-      detail: `${relPath}'de <hf-audio-group>`,
+      detail: `in ${relPath}: <hf-audio-group>`,
     });
   }
   return markers;

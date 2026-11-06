@@ -521,6 +521,149 @@ export function topLevelKeyDiff(a: unknown, b: unknown): string[] {
   return out;
 }
 
+/** Short-output line budget for the sequence JSON-path diff (the JSON carries all). */
+export const SEQUENCE_DIFF_SHORT_LINES = 10;
+
+/** Hard cap on the JSON-path diff list (pathological hand edits). */
+export const SEQUENCE_DIFF_MAX_LINES = 2000;
+
+function fmtDiffValue(value: unknown): string {
+  if (typeof value === "string") {
+    return JSON.stringify(value.length > 80 ? `${value.slice(0, 77)}…` : value);
+  }
+  if (value === null || typeof value === "number" || typeof value === "boolean") {
+    return JSON.stringify(value) ?? String(value);
+  }
+  const flat = JSON.stringify(value) ?? String(value);
+  return flat.length > 120 ? `${flat.slice(0, 117)}…` : flat;
+}
+
+function isPlainDiffObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value) as unknown;
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Identity key for an array's elements (`id`, then `handle`, then `parameter`),
+ * or null when the elements do not share one (positional diff then applies).
+ */
+function diffIdentityKey(items: unknown[]): "id" | "handle" | "parameter" | null {
+  if (items.length === 0) return null;
+  for (const key of ["id", "handle", "parameter"] as const) {
+    if (
+      items.every(
+        (it) => isPlainDiffObject(it) && typeof (it as Record<string, unknown>)[key] === "string"
+      )
+    ) {
+      return key;
+    }
+  }
+  return null;
+}
+
+interface DiffState {
+  out: string[];
+  capped: boolean;
+}
+
+function pushDiffLine(state: DiffState, line: string): boolean {
+  if (state.out.length >= SEQUENCE_DIFF_MAX_LINES) {
+    state.capped = true;
+    return false;
+  }
+  state.out.push(line);
+  return true;
+}
+
+function diffJsonValue(oldValue: unknown, newValue: unknown, path: string, state: DiffState): void {
+  if (state.capped) return;
+  if (isPlainDiffObject(oldValue) && isPlainDiffObject(newValue)) {
+    for (const key of Object.keys(oldValue)) {
+      if (state.capped) return;
+      const child = path ? `${path}.${key}` : key;
+      if (!(key in newValue)) {
+        pushDiffLine(state, `${child}: - ${fmtDiffValue(oldValue[key])}`);
+      } else {
+        diffJsonValue(oldValue[key], newValue[key], child, state);
+      }
+    }
+    for (const key of Object.keys(newValue)) {
+      if (state.capped) return;
+      if (!(key in oldValue)) {
+        const child = path ? `${path}.${key}` : key;
+        pushDiffLine(state, `${child}: + ${fmtDiffValue(newValue[key])}`);
+      }
+    }
+    return;
+  }
+  if (Array.isArray(oldValue) && Array.isArray(newValue)) {
+    const idKey = diffIdentityKey([...oldValue, ...newValue]);
+    if (idKey) {
+      const oldById = new Map<string, unknown>();
+      for (const it of oldValue) oldById.set((it as Record<string, string>)[idKey], it);
+      const newById = new Map<string, { index: number; value: unknown }>();
+      newValue.forEach((it, index) => newById.set((it as Record<string, string>)[idKey], { index, value: it }));
+      for (const id of oldById.keys()) {
+        if (state.capped) return;
+        if (!newById.has(id)) pushDiffLine(state, `-${id}`);
+      }
+      for (const [id, entry] of newById) {
+        if (state.capped) return;
+        const oldEntry = oldById.get(id);
+        if (oldEntry !== undefined) {
+          diffJsonValue(oldEntry, entry.value, `${path}[${entry.index}]`, state);
+        }
+      }
+      newValue.forEach((it) => {
+        if (state.capped) return;
+        const id = (it as Record<string, string>)[idKey];
+        if (!oldById.has(id)) pushDiffLine(state, `+${id}`);
+      });
+      // Same identities, different order: a reorder is a real change (paint order).
+      if (oldById.size === newById.size && oldValue.length === newValue.length) {
+        const oldOrder = oldValue.map((it) => (it as Record<string, string>)[idKey]);
+        const newOrder = newValue.map((it) => (it as Record<string, string>)[idKey]);
+        if (oldOrder.some((id, i) => id !== newOrder[i])) {
+          const short = (ids: string[]): string =>
+            ids.length > 12 ? `${ids.slice(0, 12).join(",")},…` : ids.join(",");
+          pushDiffLine(state, `${path || "(root)"}: order ${short(oldOrder)} → ${short(newOrder)}`);
+        }
+      }
+      return;
+    }
+    const maxLen = Math.max(oldValue.length, newValue.length);
+    for (let i = 0; i < maxLen; i++) {
+      if (state.capped) return;
+      const child = `${path}[${i}]`;
+      if (i >= oldValue.length) {
+        pushDiffLine(state, `${child}: + ${fmtDiffValue(newValue[i])}`);
+      } else if (i >= newValue.length) {
+        pushDiffLine(state, `${child}: - ${fmtDiffValue(oldValue[i])}`);
+      } else {
+        diffJsonValue(oldValue[i], newValue[i], child, state);
+      }
+    }
+    return;
+  }
+  if (canonicalizeJson(oldValue) !== canonicalizeJson(newValue)) {
+    pushDiffLine(state, `${path || "(root)"}: ${fmtDiffValue(oldValue)} → ${fmtDiffValue(newValue)}`);
+  }
+}
+
+/**
+ * JSON-path diff between two parsed sequence files: `spine.clips[1].placement.opacity:
+ * 1 → 0.5`, `+cue_07`, `-sp_03`. Arrays of identified objects (`id`, `handle`,
+ * `parameter`) match by identity, never by position; everything else diffs in place.
+ * Deterministic for its inputs (old-key order, then new-only keys; array order).
+ */
+export function diffSequenceJson(oldValue: unknown, newValue: unknown): string[] {
+  const state: DiffState = { out: [], capped: false };
+  diffJsonValue(oldValue, newValue, "", state);
+  if (state.capped) state.out.push(`(… diff cut, first ${SEQUENCE_DIFF_MAX_LINES} lines)`);
+  return state.out;
+}
+
 // --- Detection ---
 
 export interface CursorSequenceBaseline {
@@ -832,6 +975,8 @@ export interface ShowPayload {
   cursor_revision: number;
   sequence: SequenceChange | null;
   sequence_diff_keys: string[] | null;
+  /** Full JSON-path diff of `cuthol.sequence.json` (null unless modified). */
+  sequence_diff: string[] | null;
   compositions: ShowComp[];
   summary_text: string;
 }
@@ -936,8 +1081,10 @@ export function buildChangesShow(dir: string, compFilter?: string): ShowPayload 
   }
 
   let sequence_diff_keys: string[] | null = null;
+  let sequence_diff: string[] | null = null;
   if (changes.sequence?.status === "modified" && diskParsed && baseline.snapshot_parsed) {
     sequence_diff_keys = topLevelKeyDiff(baseline.snapshot_parsed, diskParsed);
+    sequence_diff = diffSequenceJson(baseline.snapshot_parsed, diskParsed);
   }
 
   const scopedChanges = compFilter ? comps.length > 0 || changes.sequence !== null : changes.has_changes;
@@ -952,6 +1099,13 @@ export function buildChangesShow(dir: string, compFilter?: string): ShowPayload 
           ? `- \`cuthol.sequence.json\`: CORRUPT — ${changes.sequence.detail}. \`adopt\` is refused; fix the file or run \`revert\` to return to the journal's last state.`
           : `- \`cuthol.sequence.json\`: edited outside Cuthol — ${changes.sequence.detail}.`
       );
+      if (changes.sequence.status === "modified" && sequence_diff && sequence_diff.length > 0) {
+        const shown = sequence_diff.slice(0, SEQUENCE_DIFF_SHORT_LINES);
+        for (const line of shown) out.push(`    ${line}`);
+        if (sequence_diff.length > shown.length) {
+          out.push(`    (… +${sequence_diff.length - shown.length} more lines in JSON)`);
+        }
+      }
     }
     for (const c of comps) {
       out.push(`- \`${c.key}\` (${c.files.length} file${c.files.length === 1 ? "" : "s"}):`);
@@ -971,6 +1125,7 @@ export function buildChangesShow(dir: string, compFilter?: string): ShowPayload 
     cursor_revision: changes.cursor_revision,
     sequence: changes.sequence,
     sequence_diff_keys,
+    sequence_diff,
     compositions: comps,
     summary_text: out.join("\n"),
   };

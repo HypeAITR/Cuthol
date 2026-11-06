@@ -15,6 +15,12 @@ import { loadSequence } from "../core/workspace.js";
 import { CoordsDocItem, CoordsDocument, measureCompositionCues } from "./coords_extract.js";
 import { mapLocalBoxToStage, roundBox1 } from "./coords_map.js";
 
+/** Four corners `[[x1,y1],[x2,y2],[x3,y3],[x4,y4]]` of a convex quad. */
+export type StageQuad = [[number, number], [number, number], [number, number], [number, number]];
+
+/** Local (composition-pixel) quad corners, flat `[x1,y1,x2,y2,x3,y3,x4,y4]`. */
+type LocalQuad = [number, number, number, number, number, number, number, number];
+
 /** Stage-pixel box, `[x, y, w, h]`, rounded to 0.1 px. */
 export type GeometryBox = [number, number, number, number];
 
@@ -55,6 +61,11 @@ export interface GeometryPairRow {
   /** Qualified refs (`cue_XX/key`), canonical order (composition, cue, key). */
   a: string;
   b: string;
+  /**
+   * Which shapes the pair math used: `quad` when at least one end has a measured
+   * quad (convex-polygon intersection / distance), else `box` (axis-aligned math).
+   */
+  shape: "quad" | "box";
   /** Horizontal / vertical gap between effective boxes (0 when ranges overlap). */
   gap_x: number | null;
   gap_y: number | null;
@@ -209,6 +220,8 @@ interface PreparedDoc {
   docFps: number;
   itemsByEl: Map<number, CoordsDocItem>;
   inkByEl: Map<number, [number, number, number, number]>;
+  quadsByEl: Map<number, LocalQuad>;
+  inkQuadsByEl: Map<number, LocalQuad>;
   ancestorsByEl: Map<number, Set<number>>;
 }
 
@@ -247,9 +260,21 @@ function prepareDocs(
     const row = inRange ? nearestFrameRow(doc.frames, localRequested) : null;
     const itemsByEl = new Map<number, CoordsDocItem>();
     const inkByEl = new Map<number, [number, number, number, number]>();
+    const quadsByEl = new Map<number, LocalQuad>();
+    const inkQuadsByEl = new Map<number, LocalQuad>();
     if (row) {
       for (const it of row.items) itemsByEl.set(it[0], it);
       for (const ink of row.ink ?? []) inkByEl.set(ink[0], [ink[1], ink[2], ink[3], ink[4]]);
+      for (const q of row.quads ?? []) {
+        if (q.length === 9 && q.slice(1).every((v) => Number.isFinite(v))) {
+          quadsByEl.set(q[0], [q[1], q[2], q[3], q[4], q[5], q[6], q[7], q[8]]);
+        }
+      }
+      for (const q of row.ink_quads ?? []) {
+        if (q.length === 9 && q.slice(1).every((v) => Number.isFinite(v))) {
+          inkQuadsByEl.set(q[0], [q[1], q[2], q[3], q[4], q[5], q[6], q[7], q[8]]);
+        }
+      }
     }
     const ancestorsByEl = new Map<number, Set<number>>();
     doc.elements.forEach((_, elIndex) => ancestorsByEl.set(elIndex, ancestorsOf(doc.elements, elIndex)));
@@ -264,6 +289,8 @@ function prepareDocs(
       docFps: Math.max(1, doc.fps),
       itemsByEl,
       inkByEl,
+      quadsByEl,
+      inkQuadsByEl,
       ancestorsByEl,
     };
   });
@@ -376,11 +403,150 @@ function outsideRatio(
   return Math.min(1, Math.max(0, (total - inside) / total));
 }
 
+/**
+ * Maps a local quad to stage pixels through the SAME placement math boxes use:
+ * each corner is mapped as a degenerate (zero-size) box, so quads can never drift
+ * from the compiler-mirror formulas in `coords_map.ts` (a box's own corners map to
+ * exactly its mapped box).
+ */
+export function mapLocalQuadToStage(
+  quad: LocalQuad,
+  cue: LaneCue,
+  ctx: { compWidth: number; compHeight: number; stageWidth: number; stageHeight: number },
+  localMs: number
+): StageQuad {
+  const pts: Array<[number, number]> = [];
+  for (let k = 0; k < 8; k += 2) {
+    const r = mapLocalBoxToStage({ x: quad[k], y: quad[k + 1], w: 0, h: 0 }, cue, ctx, localMs).box;
+    pts.push([r.x, r.y]);
+  }
+  return [pts[0], pts[1], pts[2], pts[3]];
+}
+
+/** Convex polygon corners in stage pixels (any winding, e.g. a mapped quad). */
+export type ConvexPoly = Array<[number, number]>;
+
+type Poly = ConvexPoly;
+
+function signedPolyArea(poly: Poly): number {
+  let s = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const [x1, y1] = poly[i];
+    const [x2, y2] = poly[(i + 1) % poly.length];
+    s += x1 * y2 - x2 * y1;
+  }
+  return s / 2;
+}
+
+/** Convex polygon intersection area (Sutherland–Hodgman clip; any winding). */
+export function convexPolygonIntersectionArea(a: Poly, b: Poly): number {
+  if (a.length < 3 || b.length < 3) return 0;
+  const ccw = signedPolyArea(b) > 0;
+  let output = a.map((p): [number, number] => [p[0], p[1]]);
+  for (let i = 0; i < b.length; i++) {
+    const cp1 = b[i];
+    const cp2 = b[(i + 1) % b.length];
+    const ex = cp2[0] - cp1[0];
+    const ey = cp2[1] - cp1[1];
+    const inside = (p: [number, number]): boolean => {
+      const cross = ex * (p[1] - cp1[1]) - ey * (p[0] - cp1[0]);
+      return ccw ? cross >= -1e-9 : cross <= 1e-9;
+    };
+    const intersect = (s: [number, number], e: [number, number]): [number, number] => {
+      const dx = e[0] - s[0];
+      const dy = e[1] - s[1];
+      const denom = dx * ey - dy * ex;
+      if (Math.abs(denom) < 1e-12) return [e[0], e[1]];
+      const t = ((cp1[0] - s[0]) * ey - (cp1[1] - s[1]) * ex) / denom;
+      return [s[0] + t * dx, s[1] + t * dy];
+    };
+    const input = output;
+    output = [];
+    if (input.length === 0) break;
+    let s = input[input.length - 1];
+    for (const e of input) {
+      const eIn = inside(e);
+      const sIn = inside(s);
+      if (eIn) {
+        if (!sIn) output.push(intersect(s, e));
+        output.push(e);
+      } else if (sIn) {
+        output.push(intersect(s, e));
+      }
+      s = e;
+    }
+  }
+  if (output.length < 3) return 0;
+  return Math.max(0, Math.abs(signedPolyArea(output)));
+}
+
+function pointSegmentDistance(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (!(len2 > 0)) return Math.hypot(px - ax, py - ay);
+  const t = Math.min(1, Math.max(0, ((px - ax) * dx + (py - ay) * dy) / len2));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+/**
+ * True convex-polygon distance: 0 when the polygons touch or overlap, otherwise the
+ * minimum vertex-to-edge distance. Unlike `hypot(gap_x, gap_y)` this is exact for
+ * rotated shapes.
+ */
+export function convexPolygonDistance(a: Poly, b: Poly): number {
+  if (a.length === 0 || b.length === 0) return 0;
+  if (convexPolygonIntersectionArea(a, b) > 1e-9) return 0;
+  let best = Infinity;
+  for (const [px, py] of a) {
+    for (let i = 0; i < b.length; i++) {
+      const [ax, ay] = b[i];
+      const [bx, by] = b[(i + 1) % b.length];
+      const d = pointSegmentDistance(px, py, ax, ay, bx, by);
+      if (d < best) best = d;
+    }
+  }
+  for (const [px, py] of b) {
+    for (let i = 0; i < a.length; i++) {
+      const [ax, ay] = a[i];
+      const [bx, by] = a[(i + 1) % a.length];
+      const d = pointSegmentDistance(px, py, ax, ay, bx, by);
+      if (d < best) best = d;
+    }
+  }
+  return best === Infinity ? 0 : best;
+}
+
+function boxCornersAsPoly(box: { x: number; y: number; w: number; h: number }): Poly {
+  return [
+    [box.x, box.y],
+    [box.x + box.w, box.y],
+    [box.x + box.w, box.y + box.h],
+    [box.x, box.y + box.h],
+  ];
+}
+
+function polyAabb(poly: Poly): { x: number; y: number; w: number; h: number } {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const [x, y] of poly) {
+    if (x < x0) x0 = x;
+    if (y < y0) y0 = y;
+    if (x > x1) x1 = x;
+    if (y > y1) y1 = y;
+  }
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
 interface MappedElement {
   resolved: ResolvedElement;
   visible: boolean;
   item: { x: number; y: number; w: number; h: number } | null;
   ink: { x: number; y: number; w: number; h: number } | null;
+  quad: StageQuad | null;
+  inkQuad: StageQuad | null;
   opacity: number | null;
   z: number | null;
 }
@@ -388,13 +554,14 @@ interface MappedElement {
 /**
  * Maps one element to stage pixels at the used frame. Ink (glyph/pixel box)
  * wins over the item box wherever present; both map through the same placement.
+ * Quads map corner by corner through the same formulas (see `mapLocalQuadToStage`).
  */
 function mapElement(
   resolved: ResolvedElement,
   sequence: CutholSequence
 ): MappedElement {
   const { prep, elIndex } = resolved;
-  const base = { resolved, visible: false, item: null, ink: null, opacity: null, z: null };
+  const base = { resolved, visible: false, item: null, ink: null, quad: null, inkQuad: null, opacity: null, z: null };
   if (!prep.active || prep.usedLocal === null) return base;
   const it = prep.itemsByEl.get(elIndex);
   if (!it) return base;
@@ -422,7 +589,11 @@ function mapElement(
         localMs
       ).box
     : null;
-  return { resolved, visible: true, item, ink, opacity: it[5], z: it[6] };
+  const quadLocal = prep.quadsByEl.get(elIndex);
+  const quad = quadLocal ? mapLocalQuadToStage(quadLocal, prep.cue, ctx, localMs) : null;
+  const inkQuadLocal = prep.inkQuadsByEl.get(elIndex);
+  const inkQuad = inkQuadLocal ? mapLocalQuadToStage(inkQuadLocal, prep.cue, ctx, localMs) : null;
+  return { resolved, visible: true, item, ink, quad, inkQuad, opacity: it[5], z: it[6] };
 }
 
 function elementRow(
@@ -506,11 +677,28 @@ function entryLess(x: ResolvedElement, y: ResolvedElement): boolean {
   );
 }
 
+/**
+ * Effective end shape for pair math: ink wins over item (as before), quads win over
+ * boxes. An end with a measured quad contributes its true corners; otherwise its box
+ * corners stand in. Returns the polygon plus whether a true quad was used.
+ */
+function endPoly(mapped: MappedElement): { poly: Poly; isQuad: boolean } | null {
+  const box = (mapped.ink ?? mapped.item) as { x: number; y: number; w: number; h: number } | null;
+  if (!box) return null;
+  if (mapped.ink) {
+    if (mapped.inkQuad) return { poly: mapped.inkQuad.map((p): [number, number] => [p[0], p[1]]), isQuad: true };
+    return { poly: boxCornersAsPoly(box), isQuad: false };
+  }
+  if (mapped.quad) return { poly: mapped.quad.map((p): [number, number] => [p[0], p[1]]), isQuad: true };
+  return { poly: boxCornersAsPoly(box), isQuad: false };
+}
+
 function pairRow(a: MappedElement, b: MappedElement): GeometryPairRow {
   const [first, second] = entryLess(a.resolved, b.resolved) ? [a, b] : [b, a];
   const row: GeometryPairRow = {
     a: first.resolved.ref,
     b: second.resolved.ref,
+    shape: "box",
     gap_x: null,
     gap_y: null,
     distance: null,
@@ -522,6 +710,30 @@ function pairRow(a: MappedElement, b: MappedElement): GeometryPairRow {
   const boxA = (first.ink ?? first.item) as { x: number; y: number; w: number; h: number } | null;
   const boxB = (second.ink ?? second.item) as { x: number; y: number; w: number; h: number } | null;
   if (!first.visible || !second.visible || !boxA || !boxB) return row;
+  const endA = endPoly(first);
+  const endB = endPoly(second);
+  if (endA && endB && (endA.isQuad || endB.isQuad)) {
+    // Quad path: convex-polygon intersection / distance. Axis gaps stay defined on
+    // the polygon AABBs (axis projections of the true shapes).
+    const inter = convexPolygonIntersectionArea(endA.poly, endB.poly);
+    const areaA = Math.abs(signedPolyArea(endA.poly));
+    const areaB = Math.abs(signedPolyArea(endB.poly));
+    const minArea = Math.min(areaA, areaB);
+    const aabbA = polyAabb(endA.poly);
+    const aabbB = polyAabb(endB.poly);
+    const xw = Math.min(aabbA.x + aabbA.w, aabbB.x + aabbB.w) - Math.max(aabbA.x, aabbB.x);
+    const yh = Math.min(aabbA.y + aabbA.h, aabbB.y + aabbB.h) - Math.max(aabbA.y, aabbB.y);
+    const gx = xw < 0 ? -xw : 0;
+    const gy = yh < 0 ? -yh : 0;
+    row.shape = "quad";
+    row.gap_x = round1(gx);
+    row.gap_y = round1(gy);
+    row.distance = round1(inter > 0 ? 0 : convexPolygonDistance(endA.poly, endB.poly));
+    row.intersection = round1(inter);
+    row.overlap_ratio = round4(minArea > 0 ? inter / minArea : 0);
+    row.top = comparePaint(first, second) >= 0 ? first.resolved.ref : second.resolved.ref;
+    return row;
+  }
   const xw = Math.min(boxA.x + boxA.w, boxB.x + boxB.w) - Math.max(boxA.x, boxB.x);
   const yh = Math.min(boxA.y + boxA.h, boxB.y + boxB.h) - Math.max(boxA.y, boxB.y);
   const inter = xw > 0 && yh > 0 ? xw * yh : 0;

@@ -38,6 +38,13 @@ import {
   renderMultipleCompositeFramesRgb24,
   renderSingleCompositeFrameRgb24,
 } from "../render/renderer.js";
+import { readCurrentScriptErrorRecord } from "../compositor/coords_extract.js";
+import {
+  CompositionScriptRecord,
+  probeScriptRecordsChildSync,
+  ScriptProbeJob,
+  scriptRecordToDiagnostic,
+} from "../compositor/hf_script_errors.js";
 import { evaluateEnvelopeAt } from "../sequence/spine.js";
 import { measureCuePixelBox } from "../verify/gates.js";
 
@@ -539,6 +546,79 @@ export function annotateRgb24BufferToCanvas(
   return { canvas, metrics, diagnostic };
 }
 
+function activeCompositionCuesAt(sequence: CutholSequence, tMs: number): LaneCue[] {
+  const ids = new Set(activeVisualCueIdsAt(sequence, tMs));
+  const out: LaneCue[] = [];
+  for (const lane of sequence.lanes) {
+    for (const cue of lane.cues) {
+      if (ids.has(cue.id) && cue.kind === "composition" && cue.composition) out.push(cue);
+    }
+  }
+  return out;
+}
+
+/**
+ * Script-error diagnostics for the compositions active at the rendered moment(s).
+ * Reads content-keyed records (measurement / preview / earlier probes) and probes
+ * only compositions with no record, so a broken script can never present a frame
+ * as healthy while healthy projects pay the probe cost once.
+ */
+function collectCompositionScriptDiagnostics(
+  sequence: CutholSequence,
+  projectDir: string,
+  cues: LaneCue[]
+): CutholDiagnostic[] {
+  const resolveDir = (cue: LaneCue): string | null => {
+    const dir = cue.composition?.composition_dir;
+    if (!dir) return null;
+    try {
+      return path.isAbsolute(dir) ? dir : path.resolve(projectDir, dir);
+    } catch {
+      return null;
+    }
+  };
+  const seen = new Set<string>();
+  const records = new Map<string, CompositionScriptRecord>();
+  const missing: ScriptProbeJob[] = [];
+  for (const cue of cues) {
+    if (seen.has(cue.id) || !cue.composition) continue;
+    seen.add(cue.id);
+    const absCompDir = resolveDir(cue);
+    if (!absCompDir) continue;
+    const entryHtml = cue.composition.entry_html;
+    const record = readCurrentScriptErrorRecord(projectDir, absCompDir, entryHtml);
+    if (record) {
+      records.set(cue.id, record);
+    } else {
+      missing.push({
+        cueId: cue.id,
+        absCompDir,
+        entryHtml,
+        width: sequence.stage.width,
+        height: sequence.stage.height,
+        fps: Math.max(1, sequence.stage.fps),
+        durationSec: Math.max(0.2, cue.duration_ms / 1000),
+      });
+    }
+  }
+  if (missing.length > 0) {
+    probeScriptRecordsChildSync(projectDir, missing);
+    for (const job of missing) {
+      const record = readCurrentScriptErrorRecord(projectDir, job.absCompDir, job.entryHtml);
+      if (record) records.set(job.cueId, record);
+    }
+  }
+  const diags: CutholDiagnostic[] = [];
+  for (const cue of cues) {
+    const record = records.get(cue.id);
+    if (!record) continue;
+    records.delete(cue.id);
+    const diag = scriptRecordToDiagnostic(cue.id, record);
+    if (diag) diags.push(diag);
+  }
+  return diags;
+}
+
 export function captureMonitorFrame(options: {
   workspaceDir: string;
   atMs: number;
@@ -573,19 +653,26 @@ export function captureMonitorFrame(options: {
 
   canvas.saveAs(resolvedOut);
 
+  // On an empty sequence every frame is backdrop; say why once instead of reporting a blank frame.
+  const baseDiagnostics =
+    computeSequenceDurationMs(sequence) <= 0
+      ? [DIAGNOSTICS.EMPTY_SEQUENCE("WARN")]
+      : diagnostic
+        ? [diagnostic]
+        : [];
+  const scriptDiagnostics = collectCompositionScriptDiagnostics(
+    sequence,
+    paths.rootDir,
+    activeCompositionCuesAt(sequence, clampedMs)
+  );
+
   return {
     ok: true,
     png_path: resolvedOut,
     width,
     height,
     metrics,
-    // On an empty sequence every frame is backdrop; say why once instead of reporting a blank frame.
-    diagnostics:
-      computeSequenceDurationMs(sequence) <= 0
-        ? [DIAGNOSTICS.EMPTY_SEQUENCE("WARN")]
-        : diagnostic
-          ? [diagnostic]
-          : [],
+    diagnostics: [...baseDiagnostics, ...scriptDiagnostics],
   };
 }
 
@@ -755,6 +842,14 @@ export function captureMonitorSheet(options: {
     // On an empty sequence every cell is backdrop; one clear diagnostic replaces a blank-frame warning per cell.
     diagnostics.splice(0, diagnostics.length, DIAGNOSTICS.EMPTY_SEQUENCE("WARN"));
   }
+  // Script errors for the distinct compositions active across the rendered cells.
+  const sheetCues: LaneCue[] = [];
+  for (const cell of renderedCells) {
+    for (const cue of activeCompositionCuesAt(sequence, cell.clampedMs)) {
+      if (!sheetCues.some((c) => c.id === cue.id)) sheetCues.push(cue);
+    }
+  }
+  diagnostics.push(...collectCompositionScriptDiagnostics(sequence, paths.rootDir, sheetCues));
 
   return {
     ok: true,

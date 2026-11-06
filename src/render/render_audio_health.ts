@@ -13,9 +13,11 @@ import {
 import {
   resolveMaxClipsPerRenderSegment
 } from "../core/env.js";
-import { CutholSequence, getCuePlaybackRate, maxSourceDurationMs } from "../core/schema.js";
+import { CutholSequence, getCuePlaybackRate, maxSourceDurationMs, SpeedRampPoint } from "../core/schema.js";
 import { WorkspacePaths } from "../core/workspace.js";
 import { resolveLibraryItemPath } from "../library/probe.js";
+import { compileSequenceAudioPlan } from "../compositor/compile_audio.js";
+import { integrateRampSourceOffsetToLocalMs, invertRampLocalMsToSourceOffset } from "../sequence/spine_time.js";
 import { runParallelFfmpegJobsSync } from "./render_frames.js";
 import { computeRenderTimeSegments, RenderTimeSegment } from "./render_segments.js";
 
@@ -67,10 +69,11 @@ function computeNormalizedCrossCorrelation(
   targetCenterStartIdx: number,
   maxLagSamples: number,
   sampleRate: number
-): { offsetMs: number; similarity: number } {
+): { offsetMs: number; similarity: number; inconclusive: boolean } {
+  const inconclusiveNone = { offsetMs: 0, similarity: 0, inconclusive: false };
   const winLen = refSignal.length;
   if (winLen < 32 || targetSignal.length < 32) {
-    return { offsetMs: 0, similarity: 0 };
+    return inconclusiveNone;
   }
 
   let refMean = 0;
@@ -83,13 +86,13 @@ function computeNormalizedCrossCorrelation(
     refEnergy += v * v;
   }
   if (refEnergy < 1e-9) {
-    return { offsetMs: 0, similarity: 0 };
+    return inconclusiveNone;
   }
 
   const minLag = Math.max(-maxLagSamples, -targetCenterStartIdx);
   const maxLag = Math.min(maxLagSamples, targetSignal.length - winLen - targetCenterStartIdx);
   if (maxLag < minLag) {
-    return { offsetMs: 0, similarity: 0 };
+    return inconclusiveNone;
   }
 
   // Coarse search with step=4 samples, then fine search ±6 samples around coarse peak
@@ -123,8 +126,10 @@ function computeNormalizedCrossCorrelation(
   let bestLag = 0;
   let bestCorr = -2;
   const coarseStep = 4;
+  const coarsePairs: Array<{ lag: number; corr: number }> = [];
   for (let lag = minLag; lag <= maxLag; lag += coarseStep) {
     const c = evalLag(lag);
+    coarsePairs.push({ lag, corr: c });
     if (c > bestCorr) {
       bestCorr = c;
       bestLag = lag;
@@ -164,10 +169,233 @@ function computeNormalizedCrossCorrelation(
     }
   }
 
+  // A perfectly periodic signal (pure sine) correlates almost equally well at
+  // lags far from the peak, so no shift measurement is meaningful. Speech and
+  // other aperiodic signals have no strong far rivals (pitch correlation
+  // decays with distance), so the check stays conclusive for them.
+  let inconclusive = false;
+  if (bestCorr >= 0.5) {
+    const farSamples = Math.round(0.15 * sampleRate);
+    const rivalBar = 0.98 * bestCorr;
+    for (const p of coarsePairs) {
+      if (Math.abs(p.lag - bestLag) > farSamples && p.corr >= rivalBar) {
+        inconclusive = true;
+        break;
+      }
+    }
+  }
+
   return {
     offsetMs: Number(((subLag * 1000) / sampleRate).toFixed(3)),
     similarity: Number(Math.max(-1, Math.min(1, bestCorr)).toFixed(4)),
+    inconclusive,
   };
+}
+
+interface GapScanItem {
+  id: string;
+  absAssetPath: string;
+  srcInMs: number;
+  srcOutMs: number;
+  effectiveRate: number;
+  timelineStartMs: number;
+  postTrimDurationMs: number;
+  fadeInMs: number;
+  fadeOutMs: number;
+  rampSpanMs?: number;
+  rampFallbackRate?: number;
+  ramp?: SpeedRampPoint[] | null;
+}
+
+/**
+ * Output-gap scan: finds spans >= 3 ms where the render is (near-)silent and
+ * reports the ones where a mapped source has clear signal. Spans over silent
+ * sources, fade zones, or unmapped (muted/excised/past-end) regions never
+ * count, so a hit means rendered audio was actually lost. Dense source spans
+ * (noise, tone) flag directly; sparse spans (isolated transients) flag only
+ * events missing from the output near their mapped instant, so WSOLA-shifted
+ * but present events never count.
+ */
+function scanRenderedOutputGaps(options: {
+  renderPcm: Float32Array;
+  sampleRate: number;
+  totalDurationMs: number;
+  audioItems: GapScanItem[];
+  paths: WorkspacePaths;
+}): PostRenderAudioHealthResult["issues"] {
+  const { renderPcm, sampleRate, totalDurationMs, audioItems, paths } = options;
+  const issues: PostRenderAudioHealthResult["issues"] = [];
+  const hop = Math.max(1, Math.round(sampleRate / 1000));
+  const winCount = Math.min(
+    Math.floor(renderPcm.length / hop),
+    Math.max(0, Math.ceil(totalDurationMs))
+  );
+  if (audioItems.length === 0 || winCount < 3) return issues;
+
+  const quietLin = Math.pow(10, -60 / 20);
+  const quiet: boolean[] = new Array(winCount);
+  for (let w = 0; w < winCount; w++) {
+    let sumSq = 0;
+    const base = w * hop;
+    for (let i = base; i < base + hop; i++) sumSq += renderPcm[i] * renderPcm[i];
+    quiet[w] = Math.sqrt(sumSq / hop) < quietLin;
+  }
+  interface GapSpan {
+    startMs: number;
+    endMs: number;
+  }
+  const gaps: GapSpan[] = [];
+  let w = 0;
+  while (w < winCount) {
+    if (!quiet[w]) {
+      w++;
+      continue;
+    }
+    let e = w;
+    while (e < winCount && quiet[e]) e++;
+    if (e - w >= 3) gaps.push({ startMs: (w * hop * 1000) / sampleRate, endMs: (e * hop * 1000) / sampleRate });
+    w = e;
+  }
+  if (gaps.length === 0) return issues;
+
+  interface GapSourceJob {
+    gap: GapSpan;
+    item: GapScanItem;
+    srcStartMs: number;
+    srcEndMs: number;
+  }
+  const jobs: GapSourceJob[] = [];
+  for (const gap of gaps) {
+    const centerMs = (gap.startMs + gap.endMs) / 2;
+    for (const item of audioItems) {
+      const itemStart = item.timelineStartMs;
+      const itemEnd = itemStart + item.postTrimDurationMs;
+      if (gap.endMs <= itemStart || gap.startMs >= itemEnd) continue;
+      // Fade zones ramp through silence by design; never count them.
+      if (centerMs < itemStart + item.fadeInMs + 50) continue;
+      if (centerMs > itemEnd - item.fadeOutMs - 50) continue;
+      const localG0 = Math.max(0, Math.min(item.postTrimDurationMs, gap.startMs - itemStart));
+      const localG1 = Math.max(0, Math.min(item.postTrimDurationMs, gap.endMs - itemStart));
+      if (localG1 <= localG0) continue;
+      const ramped = Boolean(item.ramp && item.ramp.length >= 2 && item.rampSpanMs && item.rampFallbackRate);
+      const srcG0 = ramped
+        ? item.srcInMs +
+          invertRampLocalMsToSourceOffset(item.rampSpanMs as number, item.rampFallbackRate as number, item.ramp ?? null, localG0)
+        : item.srcInMs + localG0 * item.effectiveRate;
+      const srcG1 = ramped
+        ? item.srcInMs +
+          invertRampLocalMsToSourceOffset(item.rampSpanMs as number, item.rampFallbackRate as number, item.ramp ?? null, localG1)
+        : item.srcInMs + localG1 * item.effectiveRate;
+      if (!Number.isFinite(srcG0) || !Number.isFinite(srcG1)) continue;
+      // Core mapped span only (no padding): a loud sample counts only if the
+      // source instant it belongs to maps inside the quiet output span, so
+      // inter-tick silence next to a loud tick never counts.
+      const srcStartMs = Math.max(item.srcInMs, Math.min(srcG0, srcG1));
+      const srcEndMs = Math.min(item.srcOutMs, Math.max(srcG0, srcG1));
+      if (srcEndMs <= srcStartMs) continue;
+      jobs.push({ gap, item, srcStartMs, srcEndMs });
+    }
+  }
+  if (jobs.length === 0) return issues;
+
+  const ffmpegJobs: ParallelFfmpegJob[] = jobs.map((j) => ({
+    args: [
+      "-v",
+      "error",
+      "-i",
+      j.item.absAssetPath,
+      "-vn",
+      "-af",
+      `atrim=start=${(j.srcStartMs / 1000).toFixed(6)}:end=${(j.srcEndMs / 1000).toFixed(6)},asetpts=PTS-STARTPTS,aresample=${sampleRate}`,
+      "-ac",
+      "1",
+      "-ar",
+      String(sampleRate),
+      "-f",
+      "f32le",
+      "pipe:1",
+    ],
+    cwd: paths.rootDir,
+  }));
+  const results = runParallelFfmpegJobsSync(
+    ffmpegJobs,
+    ffmpegJobs.map(() => 1024 * 1024),
+    Math.max(2, Math.min(os.cpus().length, 6))
+  );
+  const loudLin = 0.02;
+  const loudNeed = Math.ceil(0.003 * sampleRate);
+  const outputRmsNear = (centerMs: number, halfMs: number): number => {
+    const a = Math.max(0, Math.floor(((centerMs - halfMs) / 1000) * sampleRate));
+    const b = Math.min(renderPcm.length, Math.ceil(((centerMs + halfMs) / 1000) * sampleRate));
+    if (b <= a) return 0;
+    let sumSq = 0;
+    for (let k = a; k < b; k++) sumSq += renderPcm[k] * renderPcm[k];
+    return Math.sqrt(sumSq / (b - a));
+  };
+  const flagged = new Set<string>();
+  for (let i = 0; i < jobs.length; i++) {
+    const res = results[i];
+    if (!res || res.status !== 0 || res.stdout.byteLength < 64) continue;
+    const pcm = new Float32Array(res.stdout.buffer, res.stdout.byteOffset, Math.floor(res.stdout.byteLength / 4));
+    const j = jobs[i];
+    // Dense spans (noise, tone): loud throughout while the output is quiet.
+    let loud = 0;
+    for (let k = 0; k < pcm.length; k++) {
+      if (Math.abs(pcm[k]) > loudLin) loud++;
+    }
+    let flag = pcm.length > 0 && loud / pcm.length > 0.5;
+    if (!flag && loud >= loudNeed) {
+      // Sparse spans: cluster loud samples into events; an event counts only
+      // when missing from the output near its mapped instant, so a WSOLA-
+      // shifted but present event never counts.
+      const mergeGap = Math.ceil(0.005 * sampleRate);
+      const clusters: Array<{ start: number; end: number }> = [];
+      let k = 0;
+      while (k < pcm.length) {
+        if (Math.abs(pcm[k]) <= loudLin) {
+          k++;
+          continue;
+        }
+        let e = k;
+        while (e < pcm.length) {
+          let n = e + 1;
+          while (n < pcm.length && Math.abs(pcm[n]) <= loudLin) n++;
+          if (n - e - 1 >= mergeGap || n >= pcm.length) break;
+          e = n;
+        }
+        clusters.push({ start: k, end: Math.min(pcm.length, e + 1) });
+        k = e + 1;
+      }
+      const itemStart = j.item.timelineStartMs;
+      const rampedItem = Boolean(j.item.ramp && j.item.ramp.length >= 2 && j.item.rampSpanMs && j.item.rampFallbackRate);
+      let unrendered = 0;
+      for (const cluster of clusters) {
+        const srcCenterMs = j.srcStartMs + (((cluster.start + cluster.end) / 2 / sampleRate) * 1000);
+        const fwdMs = rampedItem
+          ? itemStart +
+            integrateRampSourceOffsetToLocalMs(
+              j.item.rampSpanMs as number, j.item.rampFallbackRate as number, j.item.ramp ?? null, srcCenterMs - j.item.srcInMs
+            )
+          : itemStart + (srcCenterMs - j.item.srcInMs) / Math.max(1e-9, j.item.effectiveRate);
+        if (!Number.isFinite(fwdMs) || outputRmsNear(fwdMs, 30) <= loudLin) {
+          unrendered += cluster.end - cluster.start;
+        }
+      }
+      flag = unrendered >= loudNeed;
+    }
+    if (!flag) continue;
+    const key = `${j.item.id}@${Math.round(j.gap.startMs)}`;
+    if (flagged.has(key)) continue;
+    flagged.add(key);
+    issues.push({
+      item_id: j.item.id,
+      check_at_ms: Math.round(((j.gap.startMs + j.gap.endMs) / 2) * 10) / 10,
+      measured_offset_ms: 0,
+      similarity: 0,
+      detail: `silent gap ${Math.round(j.gap.startMs)}..${Math.round(j.gap.endMs)}ms in output while source has signal`,
+    });
+  }
+  return issues;
 }
 
 /**
@@ -191,6 +419,7 @@ export function scanRenderedMp4AudioHealth(
   interface ActiveAudioItemInfo {
     id: string;
     kind: "spine" | "voiceover" | "music" | "sfx" | "broll";
+    assetHandle: string;
     absAssetPath: string;
     srcInMs: number;
     srcOutMs: number;
@@ -201,6 +430,9 @@ export function scanRenderedMp4AudioHealth(
     postTrimDurationMs: number;
     fadeInMs: number;
     fadeOutMs: number;
+    rampSpanMs?: number;
+    rampFallbackRate?: number;
+    ramp?: SpeedRampPoint[] | null;
   }
 
   const audioItems: ActiveAudioItemInfo[] = [];
@@ -236,6 +468,7 @@ export function scanRenderedMp4AudioHealth(
       audioItems.push({
         id: cue.id,
         kind: cue.kind,
+        assetHandle: asset.handle,
         absAssetPath,
         srcInMs,
         srcOutMs,
@@ -246,6 +479,7 @@ export function scanRenderedMp4AudioHealth(
         postTrimDurationMs,
         fadeInMs: cue.audio_chain?.fade_in_ms ?? 0,
         fadeOutMs: cue.audio_chain?.fade_out_ms ?? 0,
+        ramp: null,
       });
     }
   }
@@ -262,6 +496,7 @@ export function scanRenderedMp4AudioHealth(
     audioItems.push({
       id: clip.id,
       kind: "spine",
+      assetHandle: clip.asset_handle,
       absAssetPath,
       srcInMs: clip.source_in_ms,
       srcOutMs: clip.source_out_ms,
@@ -272,6 +507,9 @@ export function scanRenderedMp4AudioHealth(
       postTrimDurationMs: clip.duration_ms,
       fadeInMs: clip.audio_chain.fade_in_ms,
       fadeOutMs: clip.audio_chain.fade_out_ms,
+      rampSpanMs: Math.max(1, clip.source_out_ms - clip.source_in_ms),
+      rampFallbackRate: clip.playback.rate,
+      ramp: clip.playback.speed_ramp,
     });
   }
 
@@ -369,25 +607,18 @@ export function scanRenderedMp4AudioHealth(
     };
   }
 
-  // Decode rendered MP4 audio stream at 16 kHz mono f32le (bounded to target window span)
-  const minCheckMs = Math.max(0, Math.min(...candidates.map((c) => c.seg.startMs)) - 1000);
-  const maxCheckMs = Math.min(
-    totalDurationMs,
-    Math.max(...candidates.map((c) => c.probeEndMs)) + 1500
-  );
-  const renderReadSpanSec = Math.max(1, (maxCheckMs - minCheckMs) / 1000);
-  const renderSeekArgs =
-    minCheckMs >= 5000 ? ["-ss", (minCheckMs / 1000).toFixed(3)] : [];
-  const renderBaseOffsetMs = minCheckMs >= 5000 ? Number((minCheckMs / 1000).toFixed(3)) * 1000 : 0;
+  // Decode the full rendered MP4 audio stream at 16 kHz mono f32le. The gap
+  // detector below scans the whole render (slice-joint gaps can sit anywhere,
+  // not just near correlation candidates), and full-decode sample alignment is
+  // exact (no seek rounding).
+  const renderBaseOffsetMs = 0;
+  const renderReadSpanSec = Math.max(1, totalDurationMs / 1000);
 
   const renderAudioProc = spawnWatchedSync(
     "ffmpeg",
     [
       "-v",
       "error",
-      ...renderSeekArgs,
-      "-t",
-      (renderReadSpanSec + 2).toFixed(3),
       "-i",
       mp4Path,
       "-vn",
@@ -421,48 +652,45 @@ export function scanRenderedMp4AudioHealth(
     Math.floor(renderBuf.byteLength / 4)
   );
 
-  // Decode each candidate's source audio slice in parallel
-  const sourceJobs: ParallelFfmpegJob[] = candidates.map((c) => {
-    const localStartMs = Math.max(0, c.probeStartMs - c.item.timelineStartMs);
-    const localEndMs = Math.min(
-      c.item.postTrimDurationMs,
-      c.probeEndMs - c.item.timelineStartMs
-    );
-    const srcStartMs = c.item.srcInMs + localStartMs * c.item.effectiveRate;
-    const srcEndMs = Math.min(
-      c.item.srcOutMs,
-      c.item.srcInMs + localEndMs * c.item.effectiveRate + 100
-    );
-    const seekSec = srcStartMs >= 3000 ? Math.floor((srcStartMs - 1000) / 1000) : 0;
-    const relStartSec = Math.max(0, srcStartMs / 1000 - seekSec).toFixed(6);
-    const relEndSec = Math.max(0.01, srcEndMs / 1000 - seekSec).toFixed(6);
-    const rateFilters =
-      c.item.preservePitch === false && Math.abs(c.item.effectiveRate - 1.0) > 0.001
-        ? (() => {
-            const sr = c.item.sampleRate && c.item.sampleRate > 0 ? c.item.sampleRate : 48000;
-            const pitched = Math.max(4000, Math.min(384000, Math.round(sr * c.item.effectiveRate)));
-            return [`asetrate=${pitched}`, `aresample=${sr}`, `asetpts=PTS-STARTPTS`];
-          })()
-        : buildHealthCheckAtempoChain(c.item.effectiveRate);
-    const af = [
-      `atrim=start=${relStartSec}:end=${relEndSec}`,
-      `asetpts=PTS-STARTPTS`,
-      ...rateFilters,
-      `aresample=${sampleRate}`,
-    ].join(",");
-
-    return {
-      args: [
+  // Reference audio per candidate. Unramped items keep the legacy single-rate
+  // source decode. Ramped items get an exact reference: the candidate probe
+  // window recompiled through the real audio compiler (same ramp integral map,
+  // same slicer, same stretcher), with every other audio item muted so the
+  // reference holds exactly this item's rendered contribution.
+  const isRampedCandidate = (c: CheckCandidate): boolean =>
+    Boolean(c.item.ramp && c.item.ramp.length >= 2);
+  const renderRampedReference = (
+    c: CheckCandidate
+  ): { status: number; stdout: Buffer } | { skipped: string } => {
+    let plan: { inputArgs: string[]; filterComplex: string; audioOutPad: string };
+    try {
+      const clone: CutholSequence = structuredClone(seq);
+      for (const clip of clone.spine.clips) {
+        if (clip.id !== c.item.id) clip.audio_chain.muted = true;
+      }
+      for (const lane of clone.lanes) {
+        for (const cue of lane.cues) {
+          if (cue.id !== c.item.id && cue.audio_chain) cue.audio_chain.muted = true;
+        }
+      }
+      plan = compileSequenceAudioPlan(clone, paths, undefined, {
+        activeWindowMs: [c.probeStartMs, c.probeEndMs],
+        applyMasterFinalize: false,
+      });
+    } catch (err) {
+      return { skipped: `reference compile failed (${err instanceof Error ? err.message : String(err)})` };
+    }
+    const spanSec = Math.max(0.5, (c.probeEndMs - c.probeStartMs) / 1000);
+    const proc = spawnWatchedSync(
+      "ffmpeg",
+      [
         "-v",
         "error",
-        ...(seekSec > 0 ? ["-ss", String(seekSec)] : []),
-        "-t",
-        String(Math.ceil((srcEndMs - seekSec * 1000) / 1000 + 2)),
-        "-i",
-        c.item.absAssetPath,
-        "-vn",
-        "-af",
-        af,
+        ...plan.inputArgs,
+        "-filter_complex",
+        plan.filterComplex,
+        "-map",
+        plan.audioOutPad,
         "-ac",
         "1",
         "-ar",
@@ -471,24 +699,129 @@ export function scanRenderedMp4AudioHealth(
         "f32le",
         "pipe:1",
       ],
-      cwd: paths.rootDir,
-    };
+      {
+        cwd: paths.rootDir,
+        maxBuffer: Math.ceil((spanSec + 5) * sampleRate * 4) + 1024 * 1024,
+        step: "ffmpeg audio health ramp reference",
+      }
+    );
+    if (proc.status !== 0 || !proc.stdout || (proc.stdout as Buffer).length < 256) {
+      return { skipped: "reference render unavailable" };
+    }
+    return { status: 0, stdout: proc.stdout as Buffer };
+  };
+
+  const rampedRefByIdx = new Map<number, { status: number | null; stdout: Buffer }>();
+  const skippedRampByIdx = new Map<number, string>();
+  const legacyIdx: number[] = [];
+  const sourceJobs: ParallelFfmpegJob[] = [];
+  candidates.forEach((c, idx) => {
+    if (!isRampedCandidate(c)) {
+      const localStartMs = Math.max(0, c.probeStartMs - c.item.timelineStartMs);
+      const localEndMs = Math.min(
+        c.item.postTrimDurationMs,
+        c.probeEndMs - c.item.timelineStartMs
+      );
+      const srcStartMs = c.item.srcInMs + localStartMs * c.item.effectiveRate;
+      const srcEndMs = Math.min(
+        c.item.srcOutMs,
+        c.item.srcInMs + localEndMs * c.item.effectiveRate + 100
+      );
+      const seekSec = srcStartMs >= 3000 ? Math.floor((srcStartMs - 1000) / 1000) : 0;
+      const relStartSec = Math.max(0, srcStartMs / 1000 - seekSec).toFixed(6);
+      const relEndSec = Math.max(0.01, srcEndMs / 1000 - seekSec).toFixed(6);
+      const rateFilters =
+        c.item.preservePitch === false && Math.abs(c.item.effectiveRate - 1.0) > 0.001
+          ? (() => {
+              const sr = c.item.sampleRate && c.item.sampleRate > 0 ? c.item.sampleRate : 48000;
+              const pitched = Math.max(4000, Math.min(384000, Math.round(sr * c.item.effectiveRate)));
+              return [`asetrate=${pitched}`, `aresample=${sr}`, `asetpts=PTS-STARTPTS`];
+            })()
+          : buildHealthCheckAtempoChain(c.item.effectiveRate);
+      const af = [
+        `atrim=start=${relStartSec}:end=${relEndSec}`,
+        `asetpts=PTS-STARTPTS`,
+        ...rateFilters,
+        `aresample=${sampleRate}`,
+      ].join(",");
+
+      legacyIdx.push(idx);
+      sourceJobs.push({
+        args: [
+          "-v",
+          "error",
+          ...(seekSec > 0 ? ["-ss", String(seekSec)] : []),
+          "-t",
+          String(Math.ceil((srcEndMs - seekSec * 1000) / 1000 + 2)),
+          "-i",
+          c.item.absAssetPath,
+          "-vn",
+          "-af",
+          af,
+          "-ac",
+          "1",
+          "-ar",
+          String(sampleRate),
+          "-f",
+          "f32le",
+          "pipe:1",
+        ],
+        cwd: paths.rootDir,
+      });
+      return;
+    }
+    if (
+      !c.item.rampSpanMs ||
+      !c.item.rampFallbackRate ||
+      !Number.isFinite(invertRampLocalMsToSourceOffset(
+        c.item.rampSpanMs, c.item.rampFallbackRate, c.item.ramp ?? null, c.probeStartMs - c.item.timelineStartMs
+      ))
+    ) {
+      skippedRampByIdx.set(idx, "ramp map unavailable");
+      return;
+    }
+    const ref = renderRampedReference(c);
+    if ("skipped" in ref) {
+      skippedRampByIdx.set(idx, ref.skipped);
+    } else {
+      rampedRefByIdx.set(idx, ref);
+    }
   });
 
   progressSet(0, candidates.length);
   progressWatch({ mode: "ffmpeg-jobs" });
-  const sourceResults = runParallelFfmpegJobsSync(
+  const legacyResults = runParallelFfmpegJobsSync(
     sourceJobs,
-    candidates.map(() => 4 * 1024 * 1024),
+    sourceJobs.map(() => 4 * 1024 * 1024),
     Math.max(2, Math.min(os.cpus().length, 6))
   );
+  const legacyByIdx = new Map<number, { status: number | null; stdout: Buffer }>();
+  legacyIdx.forEach((idx, pos) => {
+    const r = legacyResults[pos];
+    if (r) legacyByIdx.set(idx, { status: r.status, stdout: r.stdout as Buffer });
+  });
 
   const points: AudioHealthCheckPoint[] = [];
   const issues: PostRenderAudioHealthResult["issues"] = [];
 
   for (let idx = 0; idx < candidates.length; idx++) {
     const c = candidates[idx];
-    const srRes = sourceResults[idx];
+    const skippedReason = skippedRampByIdx.get(idx);
+    if (skippedReason !== undefined) {
+      points.push({
+        item_id: c.item.id,
+        segment_index: c.seg.index,
+        check_at_ms: c.probeStartMs,
+        window_ms: Math.max(0, c.probeEndMs - c.probeStartMs),
+        measured_offset_ms: 0,
+        similarity: 0,
+        ok: true,
+        detail: `skipped (ramp: ${skippedReason})`,
+      });
+      progressSet(idx + 1, candidates.length);
+      continue;
+    }
+    const srRes = rampedRefByIdx.get(idx) ?? legacyByIdx.get(idx);
     if (!srRes || srRes.status !== 0 || srRes.stdout.byteLength < 256) {
       progressSet(idx + 1, candidates.length);
       continue;
@@ -543,13 +876,32 @@ export function scanRenderedMp4AudioHealth(
     if (renderCenterIdx < 0 || renderCenterIdx + winSamples > renderPcm.length) continue;
 
     const maxLagSamples = Math.round(0.45 * sampleRate); // ±450 ms search window
-    let { offsetMs, similarity } = computeNormalizedCrossCorrelation(
+    const ncc = computeNormalizedCrossCorrelation(
       refSlice,
       renderPcm,
       renderCenterIdx,
       maxLagSamples,
       sampleRate
     );
+    let { offsetMs, similarity } = ncc;
+    const { inconclusive } = ncc;
+
+    // A perfectly periodic signal (pure sine) matches almost equally well at
+    // many lags: report inconclusive instead of alarming on a meaningless lag.
+    if (inconclusive) {
+      points.push({
+        item_id: c.item.id,
+        segment_index: c.seg.index,
+        check_at_ms: Number(checkAtMs.toFixed(1)),
+        window_ms: winMs,
+        measured_offset_ms: offsetMs,
+        similarity,
+        ok: true,
+        detail: "inconclusive (periodic signal: shift unmeasurable)",
+      });
+      progressSet(idx + 1, candidates.length);
+      continue;
+    }
 
     let ok = similarity >= 0.52 && Math.abs(offsetMs) <= 20;
     let detail: string | undefined;
@@ -633,6 +985,18 @@ export function scanRenderedMp4AudioHealth(
     }
     progressSet(idx + 1, candidates.length);
   }
+
+  // Output-gap scan: spans >= 3 ms where the render is (near-)silent while a
+  // mapped source has clear signal. Silent sources, fade zones and muted or
+  // excised (unmapped) spans never count, so this only fires on lost audio.
+  const gapIssues = scanRenderedOutputGaps({
+    renderPcm,
+    sampleRate,
+    totalDurationMs,
+    audioItems,
+    paths,
+  });
+  issues.push(...gapIssues);
 
   const diagnostics: CutholDiagnostic[] =
     issues.length > 0 ? [DIAGNOSTICS.RENDER_AUDIO_ALIGNMENT_MISMATCH(issues)] : [];

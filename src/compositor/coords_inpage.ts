@@ -33,10 +33,20 @@ export type CoordsInpageItem = [number, number, number, number, number, number, 
 /** [element index, x, y, w, h] in composition pixels. */
 export type CoordsInpageInk = [number, number, number, number, number];
 
+/**
+ * Rotated corners of one element in one frame: `[elementIndex, x1, y1, x2, y2, x3, y3, x4, y4]`
+ * in composition pixels (border-frame order TL, TR, BR, BL mapped through the transform chain).
+ * Present only for elements with a non-trivial 2D transform chain whose mapped corners verify
+ * against the measured box (±1.2 px per edge); untransformed elements keep boxes only.
+ */
+export type CoordsInpageQuad = [number, number, number, number, number, number, number, number, number];
+
 export interface CoordsInpageFrame {
   f: number;
   items: CoordsInpageItem[];
   ink?: CoordsInpageInk[];
+  quads?: CoordsInpageQuad[];
+  inkQuads?: CoordsInpageQuad[];
 }
 
 /** Fractional transparent margins of one image asset, resolved on the Node side. */
@@ -70,6 +80,21 @@ export function coordsInpageInstall(args: { w: number; h: number }): CoordsInpag
   // suppresses `tl.call` callbacks while render runs them) + `gsap.ticker.tick()`,
   // then CSS/WAAPI animations are paused and pinned to film time (matches the renderer's
   // snapshot of the same instant: a keyframed box sits at the same x), then the `hf-seek` event.
+  //
+  // A seek that throws (e.g. a `tl.call` callback) must not break the measurement loop,
+  // but it must not vanish either: render swallows the same throw, so the recording
+  // below is the only place the agent ever sees it. Capped and de-duplicated.
+  const seekErrors: string[] = [];
+  function recordSeekError(err: unknown): void {
+    try {
+      const msg = err instanceof Error ? err.message || String(err) : String(err);
+      const text = msg.replace(/\s+/g, " ").trim().slice(0, 300);
+      if (!text || seekErrors.length >= 5 || seekErrors.includes(text)) return;
+      seekErrors.push(text);
+    } catch {
+      // ignore recorder failure
+    }
+  }
   function coordsSeek(t: number): void {
     const w = window as unknown as Record<string, any>;
     const player = w.__player as { renderSeek?: unknown; seek?: unknown } | undefined;
@@ -80,7 +105,8 @@ export function coordsInpageInstall(args: { w: number; h: number }): CoordsInpag
         (player.renderSeek as (time: number) => void)(t);
         done = true;
       }
-    } catch {
+    } catch (e) {
+      recordSeekError(e);
       // fall through to the next seek target
     }
     if (!done) {
@@ -89,7 +115,8 @@ export function coordsInpageInstall(args: { w: number; h: number }): CoordsInpag
           (hf.seek as (time: number) => void)(t);
           done = true;
         }
-      } catch {
+      } catch (e) {
+        recordSeekError(e);
         // fall through to the next seek target
       }
     }
@@ -99,7 +126,8 @@ export function coordsInpageInstall(args: { w: number; h: number }): CoordsInpag
           (player.seek as (time: number) => void)(t);
           done = true;
         }
-      } catch {
+      } catch (e) {
+        recordSeekError(e);
         // fall through to the timelines branch
       }
     }
@@ -112,14 +140,14 @@ export function coordsInpageInstall(args: { w: number; h: number }): CoordsInpag
         const tl = tls[k];
         try {
           if (tl && typeof tl.pause === "function") (tl.pause as () => void)();
-        } catch {
-          // ignore one broken timeline
+        } catch (e) {
+          recordSeekError(e);
         }
         try {
           if (tl && typeof tl.seek === "function")
             (tl.seek as (time: number, suppress: boolean) => void)(t, false);
-        } catch {
-          // ignore one broken timeline
+        } catch (e) {
+          recordSeekError(e);
         }
       }
     }
@@ -1927,14 +1955,246 @@ export function coordsInpageInstall(args: { w: number; h: number }): CoordsInpag
     ];
   }
 
+  // --- Quads: rotated corners for transformed elements ---
 
-  function measure(): { items: CoordsInpageItem[]; ink: CoordsInpageInk[] } {
+  /** Per-edge tolerance (px, composition space) between a quad's AABB and its box. */
+  const QUAD_VERIFY_TOL = 1.2;
+
+  function quadAabbMatchesBox(
+    corners: Array<[number, number]>,
+    box: [number, number, number, number]
+  ): boolean {
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (const [cx, cy] of corners) {
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) return false;
+      if (cx < x0) x0 = cx;
+      if (cy < y0) y0 = cy;
+      if (cx > x1) x1 = cx;
+      if (cy > y1) y1 = cy;
+    }
+    return (
+      Math.abs(x0 - box[0]) <= QUAD_VERIFY_TOL &&
+      Math.abs(y0 - box[1]) <= QUAD_VERIFY_TOL &&
+      Math.abs(x1 - (box[0] + box[2])) <= QUAD_VERIFY_TOL &&
+      Math.abs(y1 - (box[1] + box[3])) <= QUAD_VERIFY_TOL
+    );
+  }
+
+  function clientCornersToComp(
+    corners: Array<[number, number]>
+  ): [number, number, number, number, number, number, number, number] | null {
+    const flat: number[] = [];
+    for (const [cx, cy] of corners) {
+      const rx = (cx - state.rootLeft) / state.scaleX;
+      const ry = (cy - state.rootTop) / state.scaleY;
+      if (!Number.isFinite(rx) || !Number.isFinite(ry)) return null;
+      flat.push(rx, ry);
+    }
+    return flat as [number, number, number, number, number, number, number, number];
+  }
+
+  /**
+   * Item quad for a non-text element: the border-box corners through the verified
+   * chain map. Returns null for flat chains or any verification mismatch (the caller
+   * keeps the box, which is always emitted).
+   */
+  function itemQuadForBox(
+    el: Element,
+    cs: CSSStyleDeclaration,
+    chain: ChainInfo,
+    clientBox: { x: number; y: number; w: number; h: number },
+    itemBox: [number, number, number, number]
+  ): [number, number, number, number, number, number, number, number] | null {
+    if (chain.transforms.length === 0 || chain.complex) return null;
+    const map = composeLocalToClient(el, cs, clientBox, chain);
+    if (!map) return null;
+    const tol = chain.transforms.length > 0 && chain.transforms[0].node !== el ? 1.2 : 0.6;
+    if (!selfCheckMapping(el, cs, clientBox, map, tol)) return null;
+    const size = borderSizeOf(cs);
+    if (!size) return null;
+    try {
+      const corners: Array<[number, number]> = [
+        map(0, 0),
+        map(size[0], 0),
+        map(size[0], size[1]),
+        map(0, size[1]),
+      ];
+      const comp = clientCornersToComp(corners);
+      if (!comp) return null;
+      const compCorners: Array<[number, number]> = [
+        [comp[0], comp[1]],
+        [comp[2], comp[3]],
+        [comp[4], comp[5]],
+        [comp[6], comp[7]],
+      ];
+      return quadAabbMatchesBox(compCorners, itemBox) ? comp : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Ink quad for an image/svg element under a transform: the local ink rect corners
+   * through the same verified chain map the ink box used. Null when the ink box is
+   * absent (flat path) or the corners do not verify against it.
+   */
+  function inkQuadForLocalRect(
+    el: Element,
+    cs: CSSStyleDeclaration,
+    chain: ChainInfo,
+    clientBox: { x: number; y: number; w: number; h: number },
+    local: [number, number, number, number],
+    inkBox: [number, number, number, number]
+  ): [number, number, number, number, number, number, number, number] | null {
+    if (chain.transforms.length === 0 || chain.complex) return null;
+    const map = composeLocalToClient(el, cs, clientBox, chain);
+    if (!map) return null;
+    const tol = chain.transforms.length > 0 && chain.transforms[0].node !== el ? 1.2 : 0.6;
+    if (!selfCheckMapping(el, cs, clientBox, map, tol)) return null;
+    try {
+      const [ix, iy, iw, ih] = local;
+      const corners: Array<[number, number]> = [
+        map(ix, iy),
+        map(ix + iw, iy),
+        map(ix + iw, iy + ih),
+        map(ix, iy + ih),
+      ];
+      const comp = clientCornersToComp(corners);
+      if (!comp) return null;
+      const compCorners: Array<[number, number]> = [
+        [comp[0], comp[1]],
+        [comp[2], comp[3]],
+        [comp[4], comp[5]],
+        [comp[6], comp[7]],
+      ];
+      return quadAabbMatchesBox(compCorners, inkBox) ? comp : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Item + ink quads for transformed text, from the cached border-frame line boxes
+   * `textInkMulti` just populated (same frame, same key): the item quad covers the
+   * line-box union, the ink quad the glyph union. Returns null on a cold cache or any
+   * verification mismatch; the boxes always stay.
+   */
+  function textQuadsMulti(
+    el: Element,
+    cs: CSSStyleDeclaration,
+    chain: ChainInfo,
+    itemBox: [number, number, number, number],
+    inkBox: [number, number, number, number] | null
+  ): {
+    item: [number, number, number, number, number, number, number, number];
+    ink: [number, number, number, number, number, number, number, number] | null;
+  } | null {
+    if (chain.transforms.length === 0 || chain.complex) return null;
+    const rec = cs as unknown as Record<string, string>;
+    if (rec["direction"] === "rtl" || rec["position"] === "fixed") return null;
+    const nodes: Text[] = [];
+    for (const n of Array.from(el.childNodes)) {
+      if (n.nodeType === 3 && /\S/.test(n.nodeValue || "")) nodes.push(n as Text);
+    }
+    if (nodes.length === 0) return null;
+    const map = inkChainMap(el, cs);
+    if (!map) return null;
+    const fontSig = fontSigOf(cs);
+    const widthPx = (el as HTMLElement).clientWidth || 0;
+    const key = fontSig + "|" + widthPx + "|" + inkLayoutSig(cs);
+    let lx0 = Infinity;
+    let ly0 = Infinity;
+    let lx1 = -Infinity;
+    let ly1 = -Infinity;
+    let gx0 = Infinity;
+    let gy0 = Infinity;
+    let gx1 = -Infinity;
+    let gy1 = -Infinity;
+    const sw = parseFloat(cs.getPropertyValue("-webkit-text-stroke-width") || "") || 0;
+    const pad = sw > 0 ? sw / 2 + 0.5 : 0;
+    for (const n of nodes) {
+      const boxes = inkReadMultiCache(n, key);
+      if (!boxes) return null;
+      const cache = nodeInkCache(n, el, cs);
+      if (!cache || cache.lines.length !== boxes.length) return null;
+      const emH = cache.fontAsc + cache.fontDesc;
+      for (let j = 0; j < boxes.length; j++) {
+        const b = boxes[j];
+        const lm = cache.lines[j] as InkLineMetric;
+        if (!(b[2] > 0) || !(b[3] > 0)) return null;
+        lx0 = Math.min(lx0, b[0]);
+        ly0 = Math.min(ly0, b[1]);
+        lx1 = Math.max(lx1, b[0] + b[2]);
+        ly1 = Math.max(ly1, b[1] + b[3]);
+        const halfLead = (b[3] - emH) / 2;
+        const topTrim = halfLead + (cache.fontAsc - lm.asc);
+        const botTrim = halfLead + (cache.fontDesc - lm.desc);
+        const lx = b[0] - lm.left - pad;
+        const rx = b[0] + lm.right + pad;
+        const ty = b[1] + topTrim - pad;
+        const by = b[1] + b[3] - botTrim + pad;
+        if (!(rx > lx) || !(by > ty)) return null;
+        gx0 = Math.min(gx0, lx);
+        gy0 = Math.min(gy0, ty);
+        gx1 = Math.max(gx1, rx);
+        gy1 = Math.max(gy1, by);
+      }
+    }
+    if (!(lx1 > lx0) || !(ly1 > ly0) || !(gx1 > gx0) || !(gy1 > gy0)) return null;
+    try {
+      const itemCorners: Array<[number, number]> = [
+        map(lx0, ly0),
+        map(lx1, ly0),
+        map(lx1, ly1),
+        map(lx0, ly1),
+      ];
+      const itemComp = clientCornersToComp(itemCorners);
+      if (!itemComp) return null;
+      const itemCc: Array<[number, number]> = [
+        [itemComp[0], itemComp[1]],
+        [itemComp[2], itemComp[3]],
+        [itemComp[4], itemComp[5]],
+        [itemComp[6], itemComp[7]],
+      ];
+      if (!quadAabbMatchesBox(itemCc, itemBox)) return null;
+      let inkComp: [number, number, number, number, number, number, number, number] | null = null;
+      if (inkBox) {
+        const inkCorners: Array<[number, number]> = [
+          map(gx0, gy0),
+          map(gx1, gy0),
+          map(gx1, gy1),
+          map(gx0, gy1),
+        ];
+        const comp = clientCornersToComp(inkCorners);
+        if (comp) {
+          const cc: Array<[number, number]> = [
+            [comp[0], comp[1]],
+            [comp[2], comp[3]],
+            [comp[4], comp[5]],
+            [comp[6], comp[7]],
+          ];
+          if (quadAabbMatchesBox(cc, inkBox)) inkComp = comp;
+        }
+      }
+      return { item: itemComp, ink: inkComp };
+    } catch {
+      return null;
+    }
+  }
+
+
+  function measure(): { items: CoordsInpageItem[]; ink: CoordsInpageInk[]; quads: CoordsInpageQuad[]; inkQuads: CoordsInpageQuad[] } {
     // MutationObserver is async (never fires inside the loop), so also watch the
     // synchronous node counter every frame. Same count means the same list.
     if (state.dirty || root.getElementsByTagName("*").length !== state.lastCount) discover();
     syncRoot();
     const out: CoordsInpageItem[] = [];
     const inkOut: CoordsInpageInk[] = [];
+    const quadOut: CoordsInpageQuad[] = [];
+    const inkQuadOut: CoordsInpageQuad[] = [];
     const items = state.items;
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
@@ -2069,8 +2329,70 @@ export function coordsInpageInstall(args: { w: number; h: number }): CoordsInpag
           // ink failure must never drop the item
         }
       }
+      // Quads: rotated corners for transformed elements; best effort like ink, never
+      // affects the item or ink box above. Emitted only when the corners verify
+      // against the measured box (±1.2 px per edge).
+      if (selfCs) {
+        try {
+          const chain: ChainInfo = { transforms, complex, selfCs };
+          if (chain.transforms.length > 0 && !chain.complex) {
+            const itemClient = { x: clientX, y: clientY, w: clientW, h: clientH };
+            const itemBox: [number, number, number, number] = [r1(x), r1(y), r1(w), r1(h)];
+            const rq = (corners: [number, number, number, number, number, number, number, number]): CoordsInpageQuad => [
+              i,
+              r1(corners[0]),
+              r1(corners[1]),
+              r1(corners[2]),
+              r1(corners[3]),
+              r1(corners[4]),
+              r1(corners[5]),
+              r1(corners[6]),
+              r1(corners[7]),
+            ];
+            if (it.textBox) {
+              const lastInk = inkOut.length > 0 && inkOut[inkOut.length - 1][0] === i ? inkOut[inkOut.length - 1] : null;
+              const tq = textQuadsMulti(
+                el,
+                selfCs,
+                chain,
+                itemBox,
+                lastInk ? [lastInk[1], lastInk[2], lastInk[3], lastInk[4]] : null
+              );
+              if (tq) {
+                quadOut.push(rq(tq.item));
+                if (tq.ink && lastInk) inkQuadOut.push(rq(tq.ink));
+              }
+            } else {
+              const itemQ = itemQuadForBox(el, selfCs, chain, itemClient, itemBox);
+              if (itemQ) quadOut.push(rq(itemQ));
+              const lastInk = inkOut.length > 0 && inkOut[inkOut.length - 1][0] === i ? inkOut[inkOut.length - 1] : null;
+              if (lastInk) {
+                const local =
+                  it.kind === "image"
+                    ? imageLocalInk(el, selfCs, it)
+                    : it.kind === "svg"
+                      ? svgLocalInk(el, selfCs)
+                      : null;
+                if (local) {
+                  const inkQ = inkQuadForLocalRect(
+                    el,
+                    selfCs,
+                    chain,
+                    itemClient,
+                    local,
+                    [lastInk[1], lastInk[2], lastInk[3], lastInk[4]]
+                  );
+                  if (inkQ) inkQuadOut.push(rq(inkQ));
+                }
+              }
+            }
+          }
+        } catch {
+          // quad failure must never drop the item or the ink
+        }
+      }
     }
-    return { items: out, ink: inkOut };
+    return { items: out, ink: inkOut, quads: quadOut, inkQuads: inkQuadOut };
   }
 
   function seek(t: number): void {
@@ -2117,6 +2439,11 @@ export function coordsInpageInstall(args: { w: number; h: number }): CoordsInpag
     setInkData,
     elements: () => publicElements(),
     count: () => state.items.length,
+    seekErrors: () => {
+      const out = seekErrors.slice();
+      seekErrors.length = 0;
+      return out;
+    },
   };
   return discover();
 }
@@ -2124,23 +2451,29 @@ export function coordsInpageInstall(args: { w: number; h: number }): CoordsInpag
 export function coordsLoopRun(args: { frames: number[]; fps: number; rescan: boolean }): {
   frames: CoordsInpageFrame[];
   elements: CoordsInpageElement[];
+  seekErrors: string[];
 } {
   // `page.evaluate` serializes this function alone: no module references, the page
   // API installed above carries seek/measure/discover.
   const api = (window as unknown as Record<string, any>)["__cxcoords"] as {
     discover: () => CoordsInpageElement[];
-    measure: () => { items: CoordsInpageItem[]; ink: CoordsInpageInk[] };
+    measure: () => { items: CoordsInpageItem[]; ink: CoordsInpageInk[]; quads: CoordsInpageQuad[]; inkQuads: CoordsInpageQuad[] };
     seek: (t: number) => void;
     elements: () => CoordsInpageElement[];
+    seekErrors: () => string[];
   };
   const out: CoordsInpageFrame[] = [];
   for (const f of args.frames) {
     api.seek(f / args.fps);
     if (args.rescan) api.discover();
     const m = api.measure();
-    out.push(m.ink.length > 0 ? { f, items: m.items, ink: m.ink } : { f, items: m.items });
+    const frame: CoordsInpageFrame = { f, items: m.items };
+    if (m.ink.length > 0) frame.ink = m.ink;
+    if (m.quads.length > 0) frame.quads = m.quads;
+    if (m.inkQuads.length > 0) frame.inkQuads = m.inkQuads;
+    out.push(frame);
   }
-  return { frames: out, elements: api.elements() };
+  return { frames: out, elements: api.elements(), seekErrors: api.seekErrors() };
 }
 
 export function coordsInpageSetInkData(args: {

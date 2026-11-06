@@ -12,7 +12,7 @@ import { renameWithRetrySync } from "./hf_common.js";
 import type { CoordsDocument } from "./coords_extract.js";
 
 /** Bumped when the measurement rules change; old cache files are treated as misses. */
-export const COORDS_ENGINE_VERSION = "3";
+export const COORDS_ENGINE_VERSION = "4";
 
 export const COORDS_SCHEMA = "cuthol.coords/2";
 

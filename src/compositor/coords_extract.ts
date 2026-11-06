@@ -51,6 +51,14 @@ import {
   readInvokedHyperFramesVersion,
 } from "./hf_common.js";
 import { syncScalarVarsAndComputeCompositionHash } from "./hf_cache_state.js";
+import {
+  buildScriptErrorRecord,
+  CompositionScriptError,
+  CompositionScriptRecord,
+  parsePageErrorLocation,
+  readScriptErrorRecord,
+  writeScriptErrorRecord,
+} from "./hf_script_errors.js";
 
 /**
  * Element rows per cue in the envelope summary; the full list lives in the cache file.
@@ -82,10 +90,19 @@ export type CoordsDocItem = [number, number, number, number, number, number, num
  */
 export type CoordsDocInk = [number, number, number, number, number];
 
+/**
+ * Rotated corners of one element in one frame: `[elementIndex, x1, y1, x2, y2, x3, y3, x4, y4]`
+ * in composition pixels. Present only for elements with a non-trivial 2D transform chain;
+ * geometry queries intersect these quads (falling back to boxes where absent).
+ */
+export type CoordsDocQuad = [number, number, number, number, number, number, number, number, number];
+
 export interface CoordsDocFrame {
   f: number;
   items: CoordsDocItem[];
   ink?: CoordsDocInk[];
+  quads?: CoordsDocQuad[];
+  ink_quads?: CoordsDocQuad[];
 }
 
 export interface CoordsDocument {
@@ -321,6 +338,11 @@ export async function resolveCoordsFontBundler(): Promise<FontBundlerFn> {
   return mod.bundleWithLocalizedFonts as FontBundlerFn;
 }
 
+/** Launches the shared measurement browser (exported for the script-error probe). */
+export async function launchScriptProbeBrowser(): Promise<Browser> {
+  return launchCoordsBrowser();
+}
+
 async function launchCoordsBrowser(): Promise<Browser> {
   coordsBrowserLaunchCount++;
   return puppeteer.launch({
@@ -429,6 +451,10 @@ interface OpenedComposition {
   server: http.Server;
   errors: string[];
   elements: CoordsInpageElement[];
+  /** Structured page issues with load/run phase (kept alongside `errors` for records). */
+  issues: Array<{ phase: "load" | "run"; kind: "pageerror" | "console"; text: string; err: unknown }>;
+  /** Flips to `run` once page load settles; listeners tag new issues with it. */
+  phaseRef: { phase: "load" | "run" };
 }
 
 async function openCompositionPage(
@@ -441,18 +467,44 @@ async function openCompositionPage(
   const { server, url } = await startCoordsStaticServer(compDir, entryHtml, bundledHtml);
   const page = await browser.newPage();
   const errors: string[] = [];
-  page.on("pageerror", (e) =>
-    errors.push(`pageerror: ${String((e as Error)?.message || e).slice(0, 300)}`)
-  );
+  const issues: OpenedComposition["issues"] = [];
+  const phaseRef: OpenedComposition["phaseRef"] = { phase: "load" };
+  page.on("pageerror", (e) => {
+    const text = `pageerror: ${String((e as Error)?.message || e).slice(0, 300)}`;
+    errors.push(text);
+    issues.push({ phase: phaseRef.phase, kind: "pageerror", text, err: e });
+  });
   page.on("console", (m) => {
     try {
-      if (m.type() === "error") errors.push(`console: ${m.text().slice(0, 300)}`);
+      if (m.type() === "error") {
+        const text = `console: ${m.text().slice(0, 300)}`;
+        errors.push(text);
+        issues.push({ phase: phaseRef.phase, kind: "console", text, err: null });
+      }
     } catch {
       // ignore listener failure
     }
   });
   try {
     await page.evaluateOnNewDocument("window.__timelines = window.__timelines || {};");
+    // Puppeteer does not reliably surface unhandled promise rejections as `pageerror`
+    // on every version, so the page records them itself (drained after the run).
+    await page.evaluateOnNewDocument(`(() => {
+      const w = window;
+      w.__cutholRejections = [];
+      w.addEventListener("unhandledrejection", (ev) => {
+        try {
+          const list = w.__cutholRejections;
+          if (Array.isArray(list) && list.length < 10) {
+            const reason = ev && ev.reason !== undefined ? ev.reason : "rejected";
+            const text = reason instanceof Error ? (reason.stack || reason.message) : String(reason);
+            list.push({ t: Date.now(), text: String(text).slice(0, 500) });
+          }
+        } catch {
+          // ignore recorder failure
+        }
+      });
+    })();`);
     await page.setViewport({
       width: meta.width,
       height: meta.height,
@@ -485,7 +537,8 @@ async function openCompositionPage(
       w: meta.width,
       h: meta.height,
     })) as CoordsInpageElement[];
-    return { page, server, errors, elements: discovered ?? [] };
+    phaseRef.phase = "run";
+    return { page, server, errors, elements: discovered ?? [], issues, phaseRef };
   } catch (err) {
     try {
       await page.close({ runBeforeUnload: false });
@@ -514,14 +567,317 @@ async function closeCompositionPage(opened: OpenedComposition): Promise<void> {
   }
 }
 
+/** Serialized into the page: reports whether the main timeline registered. */
+function inpageTimelineStatus(): { expected: boolean; registered: boolean } {
+  const w = window as unknown as Record<string, unknown>;
+  const root =
+    document.querySelector('[data-composition-id="main"]') ||
+    document.querySelector("[data-composition-id]");
+  const id = root ? root.getAttribute("data-composition-id") : null;
+  const expected = root ? !root.hasAttribute("data-no-timeline") : true;
+  const tls = (w.__timelines || {}) as Record<string, unknown>;
+  const key = id || "main";
+  const tl = tls[key];
+  return { expected, registered: tl !== undefined && tl !== null };
+}
+
+async function readTimelineStatus(page: Page): Promise<{ expected: boolean; registered: boolean }> {
+  try {
+    const res = (await page.evaluate(inpageTimelineStatus)) as {
+      expected: boolean;
+      registered: boolean;
+    };
+    return { expected: res.expected !== false, registered: res.registered === true };
+  } catch {
+    return { expected: true, registered: false };
+  }
+}
+
+interface RecordedRejection {
+  t: number;
+  text: string;
+}
+
+async function drainRecordedRejections(page: Page): Promise<RecordedRejection[]> {
+  try {
+    const recs = (await page.evaluate(
+      `(() => {
+        const w = window;
+        const list = Array.isArray(w.__cutholRejections) ? w.__cutholRejections.slice(0, 10) : [];
+        w.__cutholRejections = [];
+        return list;
+      })();`
+    )) as Array<{ t: unknown; text: unknown }>;
+    return recs
+      .filter((r) => r && typeof r.text === "string")
+      .map((r) => ({ t: typeof r.t === "number" ? r.t : 0, text: String(r.text) }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Merges a page run's listener issues and recorded rejections into structured script
+ * errors. `loadEndMs` (node clock) splits load-phase from run-phase rejections.
+ */
+export function collectPageScriptErrors(
+  issues: Array<{ phase: "load" | "run"; kind: "pageerror" | "console"; text: string; err: unknown }>,
+  rejections: RecordedRejection[],
+  loadEndMs: number
+): CompositionScriptError[] {
+  const out: CompositionScriptError[] = [];
+  for (const it of issues) {
+    const text = it.text.replace(/^(pageerror|console):\s*/, "");
+    if (!text.trim()) continue;
+    const loc = it.kind === "pageerror" ? parsePageErrorLocation(it.err) : {};
+    out.push({
+      phase: it.phase,
+      kind: it.kind === "pageerror" ? "pageerror" : "console",
+      text,
+      ...loc,
+    });
+  }
+  for (const r of rejections) {
+    const firstLine = r.text.split("\n")[0].trim() || "unhandled promise rejection";
+    out.push({
+      phase: r.t > 0 && r.t < loadEndMs ? "load" : "run",
+      kind: "rejection",
+      text: firstLine,
+      ...parsePageErrorLocation(r.text),
+    });
+  }
+  return out;
+}
+
+/** Tool tag binding script-error records to the measuring renderer version. */
+export function scriptErrorToolTag(): string {
+  try {
+    return `hf:${readInvokedHyperFramesVersion()}`;
+  } catch {
+    return "hf:unknown";
+  }
+}
+
+/**
+ * Reads the script-error record matching the CURRENT composition files (null when
+ * unknown — never "clean"). Pure reads, no browser: this is what `verify` uses.
+ */
+export function readCurrentScriptErrorRecord(
+  projectDir: string,
+  absCompDir: string,
+  entryHtml: string
+): CompositionScriptRecord | null {
+  try {
+    const filesHash = hashCompositionFilesExcludingBridgeData(absCompDir);
+    return readScriptErrorRecord(projectDir, filesHash, entryHtml, scriptErrorToolTag());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Writes a script-error record for the current composition files (best effort) and
+ * returns it, so the caller can turn it into diagnostics without re-reading.
+ */
+export function writeCurrentScriptErrorRecord(
+  projectDir: string,
+  params: {
+    absCompDir: string;
+    entryHtml: string;
+    source: CompositionScriptRecord["source"];
+    timelineExpected: boolean;
+    timelineRegistered: boolean;
+    errors: CompositionScriptError[];
+  }
+): CompositionScriptRecord {
+  const toolTag = scriptErrorToolTag();
+  const record = buildScriptErrorRecord({
+    filesHash: hashCompositionFilesExcludingBridgeData(params.absCompDir),
+    entryHtml: params.entryHtml,
+    toolTag,
+    source: params.source,
+    timelineExpected: params.timelineExpected,
+    timelineRegistered: params.timelineRegistered,
+    errors: params.errors,
+  });
+  writeScriptErrorRecord(projectDir, record, toolTag);
+  return record;
+}
+
+export interface ScriptProbeOptions {
+  compDir: string;
+  entryHtml: string;
+  width: number;
+  height: number;
+  fps: number;
+  durationSec: number;
+  /** Shared browser; when absent the probe launches and closes its own. */
+  browser?: Browser;
+}
+
+export interface ScriptProbeResult {
+  errors: CompositionScriptError[];
+  timelineExpected: boolean;
+  timelineRegistered: boolean;
+  ms: number;
+}
+
+/**
+ * Lightweight composition page probe: loads the raw page (no font bundling, no frame
+ * loop), polls for timeline registration, then seeks three timeline samples so
+ * `tl.call` callbacks fire the way render seeks fire them. Used by `monitor` and
+ * `preview` when no record matches the current files; the caller stores the result.
+ */
+export async function probeCompositionScriptErrors(
+  options: ScriptProbeOptions
+): Promise<ScriptProbeResult> {
+  const t0 = Date.now();
+  const { server, url } = await startCoordsStaticServer(options.compDir, options.entryHtml, null);
+  const browser = options.browser ?? (await launchCoordsBrowser());
+  const ownBrowser = options.browser === undefined;
+  const page = await browser.newPage();
+  const issues: Array<{ phase: "load" | "run"; kind: "pageerror" | "console"; text: string; err: unknown }> = [];
+  const phaseRef = { phase: "load" as "load" | "run" };
+  page.on("pageerror", (e) => {
+    const text = `pageerror: ${String((e as Error)?.message || e).slice(0, 300)}`;
+    issues.push({ phase: phaseRef.phase, kind: "pageerror", text, err: e });
+  });
+  page.on("console", (m) => {
+    try {
+      if (m.type() === "error") {
+        issues.push({ phase: phaseRef.phase, kind: "console", text: `console: ${m.text().slice(0, 300)}`, err: null });
+      }
+    } catch {
+      // ignore listener failure
+    }
+  });
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  try {
+    await page.evaluateOnNewDocument("window.__timelines = window.__timelines || {};");
+    await page.evaluateOnNewDocument(`(() => {
+      const w = window;
+      w.__cutholRejections = [];
+      w.addEventListener("unhandledrejection", (ev) => {
+        try {
+          const list = w.__cutholRejections;
+          if (Array.isArray(list) && list.length < 10) {
+            const reason = ev && ev.reason !== undefined ? ev.reason : "rejected";
+            const text = reason instanceof Error ? (reason.stack || reason.message) : String(reason);
+            list.push({ t: Date.now(), text: String(text).slice(0, 500) });
+          }
+        } catch {
+          // ignore recorder failure
+        }
+      });
+    })();`);
+    await page.setViewport({
+      width: Math.max(1, Math.round(options.width)),
+      height: Math.max(1, Math.round(options.height)),
+      deviceScaleFactor: 1,
+    });
+    const resp = await page.goto(url, { waitUntil: "load", timeout: 30000 });
+    if (!resp || !resp.ok()) {
+      throw new Error(`composition page HTTP ${resp ? resp.status() : "no-response"}`);
+    }
+    await page
+      .evaluate(async () => {
+        try {
+          await Promise.race([
+            document.fonts.ready,
+            new Promise((r) => setTimeout(r, 2000)),
+          ]);
+        } catch {
+          // ignore
+        }
+      })
+      .catch(() => undefined);
+    await page.evaluate(coordsInpageInstall, {
+      w: Math.max(1, Math.round(options.width)),
+      h: Math.max(1, Math.round(options.height)),
+    });
+    const loadEndMs = Date.now();
+    phaseRef.phase = "run";
+    // Async patterns (`fonts.ready`) register late: poll briefly before judging.
+    let status = await readTimelineStatus(page);
+    const pollEnd = Date.now() + 3000;
+    while (status.expected && !status.registered && Date.now() < pollEnd) {
+      await sleep(250);
+      status = await readTimelineStatus(page);
+    }
+    // Timeline samples fire `tl.call` callbacks like render seeks do. A throw inside
+    // the evaluated seek rejects here instead of emitting `pageerror` (the exception
+    // crosses the CDP bridge), so a rejected seek is itself a run-phase page error.
+    const dur = Math.max(0.1, options.durationSec || 0);
+    for (const frac of [0.25, 0.5, 0.75]) {
+      try {
+        await page.evaluate((t: number) => {
+          const api = (window as unknown as Record<string, { seek?: (t: number) => void }>)["__cxcoords"];
+          if (api && typeof api.seek === "function") api.seek(t);
+        }, dur * frac);
+        await sleep(120);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const firstLine = msg.split("\n")[0].trim() || "timeline seek threw";
+        issues.push({ phase: "run", kind: "pageerror", text: `pageerror: ${firstLine.slice(0, 300)}`, err });
+      }
+    }
+    // Throws swallowed by the in-page seek (see `recordSeekError`): drain them as
+    // run-phase page errors.
+    try {
+      const seekErrors = (await page.evaluate(() => {
+        const api = (
+          window as unknown as Record<string, { seekErrors?: () => unknown }>
+        )["__cxcoords"];
+        return typeof api?.seekErrors === "function" ? api.seekErrors() : [];
+      })) as unknown;
+      if (Array.isArray(seekErrors)) {
+        for (const s of seekErrors) {
+          if (typeof s === "string" && s) {
+            issues.push({ phase: "run", kind: "pageerror", text: `pageerror: ${s}`, err: null });
+          }
+        }
+      }
+    } catch {
+      // drain failure must never fail the probe
+    }
+    const rejections = await drainRecordedRejections(page);
+    status = await readTimelineStatus(page);
+    return {
+      errors: collectPageScriptErrors(issues, rejections, loadEndMs),
+      timelineExpected: status.expected,
+      timelineRegistered: status.registered,
+      ms: Date.now() - t0,
+    };
+  } finally {
+    try {
+      await page.close({ runBeforeUnload: false });
+    } catch {
+      // ignore
+    }
+    try {
+      server.close();
+    } catch {
+      // ignore
+    }
+    if (ownBrowser) {
+      try {
+        await browser.close();
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
 async function extractAllFrames(
   page: Page,
   meta: CompositionMeta,
   onChunkElements?: (elements: CoordsInpageElement[]) => Promise<void>
-): Promise<{ frames: CoordsInpageFrame[]; elements: CoordsInpageElement[] }> {
+): Promise<{ frames: CoordsInpageFrame[]; elements: CoordsInpageElement[]; seekErrors: string[] }> {
   const all = Array.from({ length: meta.frameCount }, (_, i) => i);
   const chunk = 300;
   const frames: CoordsInpageFrame[] = [];
+  const seekErrors: string[] = [];
   let elements: CoordsInpageElement[] = [];
   for (let i = 0; i < all.length; i += chunk) {
     const part = all.slice(i, i + chunk);
@@ -532,6 +888,11 @@ async function extractAllFrames(
     });
     frames.push(...res.frames);
     elements = res.elements;
+    for (const s of res.seekErrors ?? []) {
+      if (typeof s === "string" && s && seekErrors.length < 5 && !seekErrors.includes(s)) {
+        seekErrors.push(s);
+      }
+    }
     if (onChunkElements) {
       try {
         await onChunkElements(elements);
@@ -540,7 +901,7 @@ async function extractAllFrames(
       }
     }
   }
-  return { frames, elements };
+  return { frames, elements, seekErrors };
 }
 
 /** Drops in-page-only fields (`asset`); keeps the stored element shape. */
@@ -589,6 +950,17 @@ export function pruneCoordsElements(
       else el.group = g;
     }
   }
+  const remapQuad = (row: number[]): CoordsDocQuad => [
+    map.get(row[0]) as number,
+    row[1],
+    row[2],
+    row[3],
+    row[4],
+    row[5],
+    row[6],
+    row[7],
+    row[8],
+  ];
   for (const fr of frames) {
     fr.items = fr.items.map(
       (it) => [map.get(it[0]) as number, it[1], it[2], it[3], it[4], it[5], it[6]]
@@ -603,6 +975,21 @@ export function pruneCoordsElements(
           row[3],
           row[4],
         ]);
+    }
+    // In-page frames carry quads under camelCase keys; the document stores snake_case.
+    const raw = fr as unknown as Record<string, unknown>;
+    const quads = raw.quads;
+    const inkQuads = raw.ink_quads ?? raw.inkQuads;
+    delete raw.inkQuads;
+    if (Array.isArray(quads)) {
+      const keptQuads = (quads as number[][]).filter((row) => map.has(row[0])).map(remapQuad);
+      if (keptQuads.length > 0) fr.quads = keptQuads;
+      else delete fr.quads;
+    }
+    if (Array.isArray(inkQuads)) {
+      const keptInkQuads = (inkQuads as number[][]).filter((row) => map.has(row[0])).map(remapQuad);
+      if (keptInkQuads.length > 0) fr.ink_quads = keptInkQuads;
+      else delete fr.ink_quads;
     }
   }
   return kept;
@@ -1121,6 +1508,7 @@ async function measureMisses(
         meta,
         bundledHtml
       );
+      const loadEndMs = Date.now();
       try {
         // Image ink margins, resolved once per asset URL (late-discovered images
         // with new URLs are pushed after each chunk for the frames after that).
@@ -1142,7 +1530,13 @@ async function measureMisses(
         } catch {
           // ink data is best effort and must never break the measurement
         }
-        const { frames, elements } = await extractAllFrames(opened.page, meta, pushInkData);
+        const { frames, elements, seekErrors } = await extractAllFrames(opened.page, meta, pushInkData);
+        // Throws swallowed by the in-page seek (e.g. `tl.call` callbacks render also
+        // swallows): run-phase page errors for the warnings and the record below.
+        for (const s of seekErrors) {
+          opened.errors.push(`pageerror: ${s}`);
+          opened.issues.push({ phase: "run", kind: "pageerror", text: `pageerror: ${s}`, err: null });
+        }
         const kept = pruneCoordsElements(
           toDocElements(elements),
           frames as CoordsDocFrame[]
@@ -1173,6 +1567,24 @@ async function measureMisses(
           const first = opened.errors[0];
           const extra = opened.errors.length > 1 ? ` (+${opened.errors.length - 1} more)` : "";
           warnings.push(DIAGNOSTICS.COORDS_PAGE_ISSUES(m.cue.id, `${first}${extra}`));
+        }
+        // Script-error record: every measurement (clean ones too) refreshes the
+        // content-keyed record that `verify` and `monitor` read without a browser.
+        // Best effort; a record failure must never fail the measurement.
+        try {
+          const rejections = await drainRecordedRejections(opened.page);
+          const status = await readTimelineStatus(opened.page);
+          const scriptErrors = collectPageScriptErrors(opened.issues, rejections, loadEndMs);
+          writeCurrentScriptErrorRecord(projectDir, {
+            absCompDir: m.absCompDir,
+            entryHtml: m.entryHtml,
+            source: "coords",
+            timelineExpected: status.expected,
+            timelineRegistered: status.registered,
+            errors: scriptErrors,
+          });
+        } catch {
+          // ignore record failure
         }
       } finally {
         await closeCompositionPage(opened);

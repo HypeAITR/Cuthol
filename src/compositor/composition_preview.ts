@@ -36,6 +36,13 @@ import {
   recordCompositionAlphaBboxSidecar,
   validateHyperFramesCompositionContract,
 } from "./hyperframes_bridge.js";
+import { readCurrentScriptErrorRecord, writeCurrentScriptErrorRecord } from "./coords_extract.js";
+import {
+  dedupeScriptErrors,
+  parseCheckRuntimeScriptErrors,
+  probeScriptRecordsChildSync,
+  scriptRecordToDiagnostic,
+} from "./hf_script_errors.js";
 
 const PACKAGE_ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -401,6 +408,7 @@ export function previewAndCheckComposition(options: {
   }
 
   const hfBin = findLocalHyperFramesCliMjs();
+  let checkParsedJson: unknown = null;
   if (fs.existsSync(hfBin)) {
     // Run `npx hyperframes check --json` on the preview build (with footage background)
     const checkProc = spawnWatchedSync(
@@ -423,6 +431,7 @@ export function previewAndCheckComposition(options: {
           findings?: Array<{ rule?: string; message?: string; severity?: string }>;
           contrast?: { findings?: Array<{ message?: string }> };
         };
+        checkParsedJson = parsed;
         for (const f of parsed.findings ?? []) {
           if (f.message) hfCheckFindings.push(`[${f.severity ?? "info"}] ${f.rule ?? "check"}: ${f.message}`);
         }
@@ -470,6 +479,64 @@ export function previewAndCheckComposition(options: {
         cleanupPathsOnStall: [snapDir],
       }
     );
+  }
+
+  // Composition page script errors: `hyperframes check --json` runs the page in a
+  // browser, so its runtime findings name real page errors; the probe (one sync child
+  // process, since preview is sync) adds timeline registration status plus seek-time
+  // errors. The merged record is content-keyed so fixing the script invalidates it,
+  // and `verify`/`monitor` read it back without a browser.
+  const checkScriptErrors = parseCheckRuntimeScriptErrors(checkParsedJson);
+  try {
+    probeScriptRecordsChildSync(paths.rootDir, [
+      {
+        cueId: targetCue?.id ?? path.basename(absCompDir),
+        absCompDir,
+        entryHtml,
+        width: sequence.stage.width,
+        height: sequence.stage.height,
+        fps: Math.max(1, sequence.stage.fps),
+        durationSec,
+      },
+    ]);
+    const probed = readCurrentScriptErrorRecord(paths.rootDir, absCompDir, entryHtml);
+    if (probed) {
+      const merged = dedupeScriptErrors([...probed.errors, ...checkScriptErrors]);
+      const record =
+        merged.length !== probed.errors.length
+          ? writeCurrentScriptErrorRecord(paths.rootDir, {
+              absCompDir,
+              entryHtml,
+              source: "preview",
+              timelineExpected: probed.timeline_expected,
+              timelineRegistered: probed.timeline_registered,
+              errors: merged,
+            })
+          : probed;
+      const scriptDiag = scriptRecordToDiagnostic(
+        targetCue?.id ?? path.basename(absCompDir),
+        record
+      );
+      if (scriptDiag) diagnostics.push(scriptDiag);
+    } else if (checkScriptErrors.length > 0) {
+      // Probe failure with renderer findings: fail closed (a page that defeats the
+      // probe while the renderer reports runtime errors is not trustworthy).
+      const record = writeCurrentScriptErrorRecord(paths.rootDir, {
+        absCompDir,
+        entryHtml,
+        source: "preview",
+        timelineExpected: true,
+        timelineRegistered: false,
+        errors: checkScriptErrors,
+      });
+      const scriptDiag = scriptRecordToDiagnostic(
+        targetCue?.id ?? path.basename(absCompDir),
+        record
+      );
+      if (scriptDiag) diagnostics.push(scriptDiag);
+    }
+  } catch {
+    // A probe/record failure must never fail the preview.
   }
 
   const capturedPngs = fs.existsSync(snapDir)

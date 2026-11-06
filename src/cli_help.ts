@@ -21,7 +21,7 @@ export function printHelp(): void {
       "  cuthol library query --handle <vid_01|ln_captions> [--kind transcript|beats|waveform|scenes|captions] [--range 0s..5s] [--text <q>] [--limit 40] [--cursor <idx>] [--max-tokens 2000]",
       "  cuthol spine [append|split|trim|excise|remove|reorder|transform|speed|transition|envelope|grade|fx] ...",
       "  cuthol spine transform --clip <sp_XX> [--x N] [--y N] [--scale N] [--rotation N] [--opacity N] [--fit cover|contain|fill] [--edge transparent|mirror|clamp]",
-      "  cuthol spine speed --clip <sp_XX> [--rate <1.5>] [--ramp \"0s:1,2s:4\"|none] [--preserve-pitch]",
+      "  cuthol spine speed --clip <sp_XX> [--rate <1.5>] [--ramp \"0s:1,2s:4\"|none] [--preserve-pitch true|false]",
       "  cuthol spine transition --clip <sp_01> --kind <dissolve|fade|wipe_left|wipe_right|slide_up|zoom_in|ext:<ext>/<name>|none> [--duration 400ms] [--easing linear|ease_in|ease_out|ease_in_out|\"cubic-bezier(x1,y1,x2,y2)\"] [--param name=value,...] [--params '{\"name\":\"value\"}']",
       "  cuthol spine envelope --clip <sp_XX|cue_XX> --param <name> --points <0ms:1.0,4s:1.15> [--easing linear|ease_in|ease_out|ease_in_out|\"cubic-bezier(x1,y1,x2,y2)\"]",
       "  cuthol spine fx [add|set|remove|list] --clip <sp_XX> [--kind ext:<ext>/<name>|--filter \"<chain>\"] [--param k=v] [--fx <fx_XX>]",

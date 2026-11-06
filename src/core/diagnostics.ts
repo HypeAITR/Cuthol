@@ -1101,6 +1101,39 @@ export const DIAGNOSTICS = {
 
   // --- end of provider block ---
 
+  // --- Composition script errors: CUTHOL-G430 .. CUTHOL-G434 ---
+  // (G433 and G434 are reserved for future composition page diagnostics.)
+
+  COMPOSITION_SCRIPT_FAILED_BEFORE_TIMELINE: (cueId: string, error: string, where: string | null) =>
+    createDiagnostic(
+      "CUTHOL-G430",
+      "G4_STAGE",
+      "ERROR",
+      `Composition '${cueId}' page script threw before its timeline registered ('${error}'${where ? ` at ${where}` : ""}); the overlay cannot render (render stops with CUTHOL-G503) and monitor frames show the static unanimated page.`,
+      `Fix the script${where ? ` (${where})` : ""}, then re-check with 'cuthol composition preview --cue ${cueId}' (preview re-runs the page); 'cuthol verify' stays red while the recorded error matches the current composition files.`,
+      cueId
+    ),
+
+  COMPOSITION_SCRIPT_FAILED_AFTER_TIMELINE: (cueId: string, error: string, where: string | null) =>
+    createDiagnostic(
+      "CUTHOL-G431",
+      "G4_STAGE",
+      "WARN",
+      `Composition '${cueId}' page script threw while its timeline was running ('${error}'${where ? ` at ${where}` : ""}); the render output is unaffected, but the throwing code path never completes.`,
+      `Fix the callback${where ? ` (${where})` : ""}, then re-check with 'cuthol composition preview --cue ${cueId}'.`,
+      cueId
+    ),
+
+  COMPOSITION_CONSOLE_ERROR: (cueId: string, error: string, where: string | null) =>
+    createDiagnostic(
+      "CUTHOL-G432",
+      "G4_STAGE",
+      "WARN",
+      `Composition '${cueId}' page logged a console error ('${error}'${where ? ` at ${where}` : ""}); the render output is unaffected, but the message signals a real page problem (for example a failed shader compile or a missing asset).`,
+      `Inspect the cause${where ? ` (${where})` : ""}, then re-check with 'cuthol composition preview --cue ${cueId}'.`,
+      cueId
+    ),
+
   // ---------------------------------------------------------------------------------------------------
 } as const;
 

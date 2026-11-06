@@ -1,0 +1,21 @@
+# Cuthol
+
+> Cuthol is a local, open-source non-linear video editor built for AI agents. An agent edits through a CLI (`cuthol`) or an MCP server (`cuthol mcp`, 14 tools): a magnetic spine and typed lanes, speech transcription and cleanup, captions, voiceover, loudness and ducking, clip effects and speed ramps, HyperFrames motion graphics composited with alpha, per-frame layout geometry, verification gates, frame previews that match the render, and a journaled undo for every change.
+
+Start an agent with `guide(topic="overview")` over MCP, or load `skills/cuthol/SKILL.md`. Diagnostics read `[CUTHOL-Gxxx] what | Suggestion: next step`.
+
+## Docs
+
+- [README](https://github.com/HypeAITR/Cuthol/blob/main/README.md): install, MCP client setup, features, configuration
+- [Agent skill](https://github.com/HypeAITR/Cuthol/blob/main/skills/cuthol/SKILL.md): workflow, rules and the order of operations
+- [Editing](https://github.com/HypeAITR/Cuthol/blob/main/skills/cuthol/references/editing.md): spine, lanes, trims, speed and ramps, effects, transitions, colour
+- [Speech and mix](https://github.com/HypeAITR/Cuthol/blob/main/skills/cuthol/references/speech-and-mix.md): transcription, cleanup, captions, voiceover, providers, normalize, duck, beat alignment
+- [Compositions](https://github.com/HypeAITR/Cuthol/blob/main/skills/cuthol/references/compositions.md): HyperFrames compositions, the `window.__cuthol` runtime, coordinate measurement and the geometry query
+- [Verify and monitor](https://github.com/HypeAITR/Cuthol/blob/main/skills/cuthol/references/verify-and-monitor.md): verification gates, every diagnostic code, frames, contact sheets
+- [Extensions](https://github.com/HypeAITR/Cuthol/blob/main/skills/cuthol/references/extensions.md): helpers, processors, effects, transitions, recipes, planners, speech and media providers
+- [MCP](https://github.com/HypeAITR/Cuthol/blob/main/skills/cuthol/references/mcp.md): tool and argument reference
+
+## Optional
+
+- [Architecture](https://github.com/HypeAITR/Cuthol/blob/main/src/ARCHITECTURE.md): source map
+- [Example extensions](https://github.com/HypeAITR/Cuthol/tree/main/examples/extensions): command-based speech recognition and voiceover bridges, a local media folder provider

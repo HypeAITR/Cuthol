@@ -57,6 +57,8 @@ import {
   runVerifyCommand,
 } from "./cli_cmd_output.js";
 import { runExtensionCommand } from "./cli_cmd_extension.js";
+import { runSkillsCommand } from "./cli_cmd_skills.js";
+import { maybeAutoInstallSkills } from "./core/skills_install.js";
 
 async function main(): Promise<void> {
   const { positionals, flags } = parseArgv(process.argv.slice(2));
@@ -78,6 +80,15 @@ async function main(): Promise<void> {
     const mcpDir = typeof flags["dir"] === "string" ? flags["dir"] : undefined;
     startMcpStdioServer({ defaultDir: mcpDir });
     return;
+  }
+
+  // Install Cuthol skills into detected agent tools on first run of a new
+  // package version. Silent once settled; never breaks the running command.
+  // (The `mcp` branch above returns early; the server runs the same hook and
+  // reports it on the first tool response instead of stderr.)
+  const skillsAutoNote = maybeAutoInstallSkills();
+  if (skillsAutoNote) {
+    console.error(skillsAutoNote);
   }
 
   for (const key of Object.keys(flags)) {
@@ -195,6 +206,9 @@ async function main(): Promise<void> {
       break;
     case "extension":
       if (runExtensionCommand(ctx) !== CLI_NOT_HANDLED) return;
+      break;
+    case "skills":
+      if (runSkillsCommand(ctx) !== CLI_NOT_HANDLED) return;
       break;
   }
 

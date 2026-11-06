@@ -290,7 +290,7 @@ export const OUTPUT_ACTION_SPECS: ActionSpec[] = [
         name: "topic",
         type: "string",
         description:
-          "Manual topic: overview (default), editing, speech_mix, compositions, verify_monitor, extensions, mcp, or 'ext:<name>' for an extension's README.md.",
+          "Manual topic: a skill name ('cuthol' when omitted, or a category skill), '<skill>/<reference>' for a reference file, a legacy alias (overview, editing, speech_mix, compositions, verify_monitor, extensions, mcp), or 'ext:<name>' for an extension's README.md.",
       },
     ],
   },

@@ -31,6 +31,14 @@ import {
   WORKSPACELESS_TOOLS,
 } from "./catalog.js";
 import { formatWorkspaceOpenSummary, loadSequence } from "../core/workspace.js";
+import {
+  buildSkillsCatalogSection,
+  LEGACY_GUIDE_FILES,
+  maybeAutoInstallSkills,
+  resolveGuideTopic,
+  resolvePackageSkillsDir,
+  scanSkills,
+} from "../core/skills_install.js";
 import { detectExternalChanges, formatExternalNotice, formatExternalReminder } from "../core/external_changes.js";
 import { resolveExtension } from "../extensions/manager.js";
 import { CUTHOL_PROGRESS_PREFIX } from "../core/progress.js";
@@ -42,26 +50,38 @@ export type { FormatEnvelopeCompactOptions } from "./mcp_format.js";
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT_DIR = path.resolve(MODULE_DIR, "../..");
 const DEFAULT_CLI_PATH = path.resolve(MODULE_DIR, "../cli.js");
-const SKILL_DIR = path.join(PACKAGE_ROOT_DIR, "skills", "cuthol");
 const PROTOCOL_VERSION = "2025-06-18";
 const SUPPORTED_PROTOCOL_VERSIONS = new Set(["2024-11-05", "2025-03-26", "2025-06-18"]);
 const MAX_IMAGE_WIDTH = 1600;
 
-export const GUIDE_TOPICS: Record<string, string> = {
-  overview: "SKILL.md",
-  editing: "references/editing.md",
-  speech_mix: "references/speech-and-mix.md",
-  compositions: "references/compositions.md",
-  verify_monitor: "references/verify-and-monitor.md",
-  extensions: "references/extensions.md",
-  mcp: "references/mcp.md",
-};
+// Legacy topic -> file under `skills/cuthol/`. Aliases fall back to these while
+// the old single-skill tree is in place (the new skill folder is missing).
+export const GUIDE_TOPICS: Record<string, string> = { ...LEGACY_GUIDE_FILES };
 
 /** Tools visible before `discover_capabilities` when progressive disclosure is enabled. */
 const PROGRESSIVE_CORE_TOOLS = new Set(["workspace", "library", "brief", "spine", "lane", "verify", "monitor", "guide"]);
 const SPECIALIST_TOOLS = ["composition", "speech", "mix", "cue", "render", "extension"];
 
-export const SERVER_INSTRUCTIONS = `Cuthol is a video editor you drive through tools. A project is a folder with cuthol.sequence.json.
+/**
+ * Build the server instructions. The skill topic list is generated from a scan
+ * of `skills/`, never fixed in code, so later skills show up automatically.
+ */
+export function buildServerInstructions(skillsDir?: string): string {
+  let names: string[];
+  try {
+    names = scanSkills(skillsDir ?? resolvePackageSkillsDir()).map((s) => s.name);
+  } catch {
+    names = ["cuthol"];
+  }
+  if (!names.includes("cuthol")) names = ["cuthol", ...names];
+  const categories = names.filter((n) => n !== "cuthol");
+  const categoryLine =
+    categories.length > 0
+      ? `Read a category skill only when you need it: ${categories.join(", ")}.`
+      : `No category skills are installed; the main skill covers everything.`;
+  return `Cuthol is a video editor you drive through tools. A project is a folder with cuthol.sequence.json.
+
+First step: read guide(topic="cuthol") — the main skill with the workflow, the timeline model and the rules. ${categoryLine} A reference file inside a skill: guide(topic="<skill>/<reference>").
 
 Workflow:
 1. workspace.init (new folder, set aspect/fps) or workspace.open (existing). The session then remembers the folder; pass dir only to switch projects.
@@ -75,9 +95,12 @@ Rules:
 - Times are '1500ms', '1.5s' or '00:01.500'. Lane x/y are % offsets from the centre of the stage.
 - Every edit returns the new revision, what changed and what an undo would revert. Undo with expect_rev; use dry_run when unsure.
 - Errors explain the fix ("Suggestion"). Do not repeat an identical failing call; change the arguments.
-- For your own animations: composition.scaffold preset=blank, write index.html (your file tools or composition.write) using window.__cuthol (C.word, C.beats, C.beatGrid, C.audio, C.cuts, C.drive, C.value), mount with lane.add_composition, then composition.preview. Read guide(topic='compositions') first.
-- For reusable custom helpers, brand kits, media processors or multi-step recipes: use the extension tool (list/create/show/enable/disable/promote/remove/run) and read guide(topic='extensions') or guide(topic='ext:<name>').
-- Read guide(topic=...) for details: overview, editing, speech_mix, compositions, verify_monitor, extensions, mcp.`;
+- For your own animations: composition.scaffold preset=blank, write index.html (your file tools or composition.write) using window.__cuthol (C.word, C.beats, C.beatGrid, C.audio, C.cuts, C.drive, C.value), mount with lane.add_composition, then composition.preview. Read guide(topic="cuthol-motion") first.
+- For reusable custom helpers, brand kits, media processors or multi-step recipes: use the extension tool (list/create/show/enable/disable/promote/remove/run) and read guide(topic="cuthol-extensions") or guide(topic="ext:<name>").
+- Legacy guide aliases still work: overview, editing, speech_mix, compositions, verify_monitor, extensions, mcp.`;
+}
+
+export const SERVER_INSTRUCTIONS = buildServerInstructions();
 
 export interface McpContent {
   type: "text" | "image";
@@ -122,6 +145,8 @@ export interface CutholMcpServerOptions {
   structuredOutput?: boolean;
   cliPath?: string;
   onNotification?: (notif: JsonRpcNotification) => void;
+  /** One-line note (e.g. skills auto-install) prepended to the first tool response only. */
+  skillsNote?: string | null;
 }
 
 interface CallContext {
@@ -181,12 +206,14 @@ export class CutholMcpServer {
   private readonly running = new Map<string, ChildProcess>();
   private lastFailedSignature: string | null = null;
   private consecutiveFailures = 0;
+  private pendingSkillsNote: string | null;
   public readonly sentNotifications: JsonRpcNotification[] = [];
 
   constructor(options: CutholMcpServerOptions = {}) {
     this.options = options;
     this.cliPath = options.cliPath ?? DEFAULT_CLI_PATH;
     this.sessionDir = options.defaultDir ? path.resolve(options.defaultDir) : null;
+    this.pendingSkillsNote = options.skillsNote ?? null;
   }
 
   private notify(method: string, params?: Record<string, unknown>): void {
@@ -231,7 +258,7 @@ export class CutholMcpServer {
               protocolVersion: SUPPORTED_PROTOCOL_VERSIONS.has(requested) ? requested : PROTOCOL_VERSION,
               serverInfo: { name: "cuthol", title: "Cuthol video editor", version: readPackageVersion() },
               capabilities: { tools: { listChanged: true } },
-              instructions: SERVER_INSTRUCTIONS,
+              instructions: buildServerInstructions(),
             },
           };
         }
@@ -304,8 +331,23 @@ export class CutholMcpServer {
     return formatExternalNotice(changes, "mcp");
   }
 
-  /** Executes one tool call and returns an MCP tool result. Never throws. */
+  /**
+   * Executes one tool call and returns an MCP tool result. Never throws.
+   * A pending skills-install note is prepended to the first response only.
+   */
   public async callTool(toolName: string, rawArgs: unknown, ctx: CallContext = {}): Promise<McpToolResult> {
+    const result = await this.callToolInner(toolName, rawArgs, ctx);
+    const note = this.pendingSkillsNote;
+    this.pendingSkillsNote = null;
+    const first = result.content[0];
+    if (note && first?.type === "text" && typeof first.text === "string") {
+      result.content[0] = { ...first, text: `${note}\n${first.text}` };
+    }
+    return result;
+  }
+
+  /** Executes one tool call and returns an MCP tool result. Never throws. */
+  private async callToolInner(toolName: string, rawArgs: unknown, ctx: CallContext = {}): Promise<McpToolResult> {
     const args = repairToolArguments(rawArgs);
 
     if (toolName === "discover_capabilities") {
@@ -362,7 +404,7 @@ export class CutholMcpServer {
           : this.sessionDir;
       return this.recordOutcome(
         signature,
-        this.readGuide(String(values.topic ?? "overview"), hintDir),
+        this.readGuide(String(values.topic ?? ""), hintDir),
         false
       );
     }
@@ -576,7 +618,7 @@ export class CutholMcpServer {
   }
 
   private readGuide(topic: string, workspaceDir?: string | null): McpToolResult {
-    const trimmed = (topic || "overview").trim();
+    const trimmed = (topic || "").trim();
     if (/^ext:/i.test(trimmed)) {
       const extName = trimmed.slice(4).trim();
       try {
@@ -598,15 +640,30 @@ export class CutholMcpServer {
         );
       }
     }
-    const rel = GUIDE_TOPICS[trimmed];
-    const file = rel ? path.join(SKILL_DIR, rel) : null;
-    if (!file || !fs.existsSync(file)) {
+    const resolution = resolveGuideTopic(trimmed, resolvePackageSkillsDir());
+    if (!resolution.ok) {
+      return this.textResult(`FAILED guide: ${resolution.message}`, true);
+    }
+    if (resolution.kind === "catalog") {
+      if (!fs.existsSync(resolution.mainFile)) {
+        return this.textResult(`FAILED guide: main skill file '${resolution.mainFile}' not found.`, true);
+      }
+      const main = fs.readFileSync(resolution.mainFile, "utf8").replace(/^---[\s\S]*?---\s*/, "");
+      return this.textResult(`${main}\n\n${buildSkillsCatalogSection(resolution.skills)}`, false);
+    }
+    if (!fs.existsSync(resolution.file)) {
       return this.textResult(
-        `FAILED guide: topic '${trimmed}' not available. Topics: ${Object.keys(GUIDE_TOPICS).join(", ")}, or ext:<name>.`,
+        `FAILED guide: topic '${trimmed}' is not available (file '${resolution.file}' not found).`,
         true
       );
     }
-    const text = fs.readFileSync(file, "utf8").replace(/^---[\s\S]*?---\s*/, "");
+    const text = fs.readFileSync(resolution.file, "utf8").replace(/^---[\s\S]*?---\s*/, "");
+    if (resolution.appendAudioPointer) {
+      return this.textResult(
+        `${text}\n\nRelated: for loudness, voice cleanup and music ducking also read guide(topic="cuthol-audio").`,
+        false
+      );
+    }
     return this.textResult(text, false);
   }
 
@@ -770,11 +827,13 @@ export function startMcpStdioServer(options: Omit<CutholMcpServerOptions, "onNot
   const write = (msg: unknown): void => {
     process.stdout.write(`${JSON.stringify(msg)}\n`);
   };
+  const autoSkillsNote = maybeAutoInstallSkills();
   const server = new CutholMcpServer({
     progressive: process.env.CUTHOL_MCP_PROGRESSIVE === "1",
     structuredOutput: process.env.CUTHOL_MCP_STRUCTURED === "1",
     defaultDir: options.defaultDir ?? process.env.CUTHOL_WORKSPACE,
     ...options,
+    skillsNote: options.skillsNote ?? autoSkillsNote,
     onNotification: write,
   });
   const rl = readline.createInterface({ input: process.stdin, terminal: false });

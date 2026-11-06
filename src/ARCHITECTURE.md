@@ -53,7 +53,7 @@ extensions/  manager (facade): manifest, registry, lifecycle, processor, recipe,
 |---|---|
 | `cli.ts` | `main()`: argument validation, help, context setup, and dispatch `switch` over command groups. |
 | `cli_output.ts` | CLI output state (`activeCli*`), `CliCommandContext`, and `emitEnvelopeObject` / `emitEnvelopeJson`. |
-| `cli_cmd_*.ts` | Per-group CLI command handlers (`workspace`, `library`, `spine`, `lane`, `composition`/`cue`, `speech`, `mix`, `verify`/`monitor`/`render`/`brief`, `extension`). |
+| `cli_cmd_*.ts` | Per-group CLI command handlers (`workspace`, `library`, `spine`, `lane`, `composition`/`cue`, `speech`, `mix`, `verify`/`monitor`/`render`/`brief`, `extension`, `skills`). |
 | `cli_args.ts` | Flag lexicon (`KNOWN_CLI_FLAGS`, `BOOLEAN_FLAGS`), typo suggestions, `parseArgv`, `strFlag`/`numFlag`/`boolFlag`. |
 | `cli_help.ts` | Plain-text help. |
 | `mcp/server.ts` | `CutholMcpServer` (stdio JSON-RPC), session project, progress/cancel, `guide`. |
@@ -73,6 +73,7 @@ extensions/  manager (facade): manifest, registry, lifecycle, processor, recipe,
 | `subprocess.ts` | Spawning with the progress watchdog (stall → kill tree). |
 | `standards.ts` | Default parameters and their sources. |
 | `env.ts`, `png_canvas.ts` | `.env` loader; dependency-free PNG canvas. |
+| `skills_install.ts` | Agent skill installer: `skills/` scan, agent-tool detection, atomic install/update/remove, auto-install hook, MCP `guide` topic resolution. |
 
 ### sequence/
 | File | Responsibility |

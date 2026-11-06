@@ -59,6 +59,16 @@ Environment switches:
 - **Loop guard**: the third identical failing call in a row is refused without running.
 - **Outside changes**: if the project was modified by something else (another agent, the CLI) since your last call, the result starts with `NOTE the project changed outside this session` — re-read with `brief`.
 - **Out-of-journal edits**: composition files (HTML/CSS/JS/assets under a mounted `comp_dir`) and hand edits to `cuthol.sequence.json` are not journal revisions. When they change outside a Cuthol edit, results start with `NOTE External project change detected: …` (full text on the first call, a one-line reminder on later calls until the change grows). Run `workspace(action="changes_show")` to see the diff, then ask the user (or follow their standing instruction) to `changes_adopt` (new undoable revision) or `changes_revert` (back to the journal's last state). A `CUTHOL-G211` error means a Cuthol op would have silently overwritten such an edit: show, then adopt or revert, then retry.
-- **Manual**: `guide(topic)` returns these documents: `overview`, `editing`, `speech_mix`, `compositions`, `verify_monitor`, `extensions`, `mcp`, or `ext:<name>` for an installed extension's `README.md`.
+- **Manual**: `guide()` with no topic returns the main `cuthol` skill plus the
+  name and description of every skill. `guide(topic="<skill>")` returns that
+  skill (`cuthol`, `cuthol-editing`, `cuthol-speech`, `cuthol-audio`,
+  `cuthol-motion`, `cuthol-geometry`, `cuthol-review`, `cuthol-render`,
+  `cuthol-extensions`); `guide(topic="<skill>/<reference>")` returns one of its
+  reference files (e.g. `cuthol-review/diagnostics`, `cuthol/mcp`).
+  Older topic names still work as aliases: `overview` → `cuthol`,
+  `editing` → `cuthol-editing`, `speech_mix` → `cuthol-speech`,
+  `compositions` → `cuthol-motion`, `verify_monitor` → `cuthol-review`,
+  `extensions` → `cuthol-extensions`, `mcp` → `cuthol/mcp`.
+  `guide(topic="ext:<name>")` reads an installed extension's `README.md`.
 
 Composition HTML can be edited with your own file tools (`<project>/<comp_dir>/index.html`) or, if you have none, with `composition.read(comp_dir)` / `composition.write(comp_dir, content, file?)`. `write` only accepts .html/.css/.js/.json/.svg files inside the composition folder and flags obvious contract mistakes. Edits through `write`, your own file tools, or `composition.scaffold` appear as out-of-journal changes until adopted — run `workspace(action="changes_adopt")` to journal them (undoable) or `changes_revert` to discard them.

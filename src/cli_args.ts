@@ -36,6 +36,7 @@ const BOOLEAN_FLAGS = new Set([
   "ripple",
   "all",
   "refresh",
+  "force",
 ]);
 
 export const KNOWN_CLI_FLAGS = new Set([
@@ -171,6 +172,7 @@ export const KNOWN_CLI_FLAGS = new Set([
   "max",
   "asr",
   "tts",
+  "agent",
 ]);
 
 function levenshtein(a: string, b: string): number {

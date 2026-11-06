@@ -100,7 +100,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     name: "guide",
     title: "Cuthol manual",
     description:
-      "Read the Cuthol manual. Topics: overview (workflow & rules), editing (spine/lanes/time/undo), speech_mix (ASR, captions, cleanup, ducking), compositions (writing HyperFrames overlays with window.__cuthol), verify_monitor (gates, frames, render), extensions (writing & using extensions), mcp (this server's conventions), or ext:<name> (an extension's README.md).",
+      "Read the Cuthol manual. Start with topic 'cuthol' (workflow & rules), then read a category skill only when you need it, or '<skill>/<reference>' for a reference file. Legacy aliases (overview, editing, speech_mix, compositions, verify_monitor, extensions, mcp) and ext:<name> (an extension's README.md) also work.",
   },
 ];
 

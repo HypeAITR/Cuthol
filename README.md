@@ -29,7 +29,7 @@
   <a href="#what-you-can-ask">What you can ask</a> ·
   <a href="#features">Features</a> ·
   <a href="#how-it-works">How it works</a> ·
-  <a href="skills/cuthol/SKILL.md">Agent skill</a> ·
+  <a href="skills/cuthol/SKILL.md">Agent skills</a> ·
   <a href="llms.txt">llms.txt</a> ·
   <a href="src/ARCHITECTURE.md">Architecture</a>
 </p>
@@ -50,12 +50,6 @@ Then connect it to your agent. Use the absolute path of your clone.
 
 ```bash
 claude mcp add cuthol -- node /absolute/path/to/cuthol/dist/cli.js mcp
-```
-
-Optional skill (lean context; the agent loads references only when needed):
-
-```bash
-cp -r skills/cuthol ~/.claude/skills/
 ```
 </details>
 
@@ -99,6 +93,12 @@ args = ["/absolute/path/to/cuthol/dist/cli.js", "mcp"]
 Register a stdio server that runs `node /absolute/path/to/cuthol/dist/cli.js mcp`. Start a new session afterwards; most clients read MCP servers only at session start.
 </details>
 
+### Agent skills (installed for you)
+
+Cuthol teaches your agent through skills: an entry skill, `cuthol`, that the agent reads at the start of a session, and category skills it loads only when the task needs them — `cuthol-editing`, `cuthol-speech`, `cuthol-audio`, `cuthol-motion`, `cuthol-geometry`, `cuthol-review`, `cuthol-render` and `cuthol-extensions`.
+
+The first time you run any `cuthol` command, the skills are installed into every agent tool found on your machine (Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot, OpenCode and the shared `~/.agents` folder) and kept up to date afterwards; skills you edited yourself are left alone. Start a new agent session to load them. Manage them with `cuthol skills list | install | check | remove`, or set `CUTHOL_SKILLS_AUTO=0` to turn the automatic install off. Over MCP the same content is served by the `guide` tool.
+
 **Requirements:** Node.js ≥ 22.5, `ffmpeg` and `ffprobe` 8.x on `PATH`, and a Chrome/Chromium that HyperFrames can launch for motion graphics (`npx hyperframes doctor`). Speech is optional: `DEEPGRAM_API_KEY` (transcription) and `ELEVENLABS_API_KEY` (voiceover) in the environment or a project `.env` — or a local model or another service through an [extension provider](examples/extensions).
 
 ## What you can ask
@@ -121,7 +121,7 @@ Editing software is built around a person with a mouse and a timeline they can s
 - **Text views of the edit.** Compact lenses (overview, flow, canvas, detail), transcripts with word timings, and exact per-frame geometry of every motion-graphics element.
 - **Images only where they help.** Frame previews and contact sheets come from the same pipeline as the final render: what the agent sees is what ships.
 - **Nothing is lost.** An atomic journal with undo previews; verification gates before every render; results reported as short diffs.
-- **Light on context.** The CLI with the skill loads a ~10 KB skill file and only the references the agent opens. The MCP server exposes 14 tools whose schemas cost about 13k tokens once per session (measured).
+- **Light on context.** The entry skill is about 9 KB; each category skill (6–9 KB) is loaded only when its task comes up. The MCP server exposes 14 tools whose schemas cost about 13k tokens once per session (measured).
 
 ## Features
 

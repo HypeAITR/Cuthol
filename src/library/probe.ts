@@ -127,7 +127,7 @@ export function resolveSourceColorSpec(
       inMatrix: "bt2020",
       inRange,
       sourceRule: "tagged",
-      note: "BT.2020 kaynak renk matrisi (bt2020) kullanılarak BT.709'a dönüştürüldü (HDR ton eşleme uygulanmadı).",
+      note: "Converted to BT.709 using the BT.2020 source color matrix (bt2020) (no HDR tone mapping applied).",
     };
   }
   if (cs === "smpte240m") {
@@ -222,7 +222,7 @@ export function probeLocalMediaFile(
   const absPath = path.resolve(filePath);
   if (!fs.existsSync(absPath)) {
     const shownUri =
-      filePath !== absPath ? `${filePath} (denenen mutlak yol: ${absPath})` : absPath;
+      filePath !== absPath ? `${filePath} (absolute path tried: ${absPath})` : absPath;
     throw new CutholError(DIAGNOSTICS.MISSING_FILE_ON_DISK("ingest", shownUri));
   }
 
@@ -460,12 +460,12 @@ export function ingestAssetsIntoWorkspace(options: {
         const absFile = path.resolve(rawFile);
         if (!fs.existsSync(absFile)) {
           const shownUri =
-            rawFile !== absFile ? `${rawFile} (denenen mutlak yol: ${absFile})` : absFile;
+            rawFile !== absFile ? `${rawFile} (absolute path tried: ${absFile})` : absFile;
           const diag = DIAGNOSTICS.MISSING_FILE_ON_DISK("ingest", shownUri);
           const candidateInWorkspace = path.resolve(paths.rootDir, rawFile);
           if (!path.isAbsolute(rawFile) && candidateInWorkspace !== absFile) {
-            diag.suggestion = `CLI göreli yolları çalışma dizinine (${process.cwd()}) göre çözer; proje klasörüne göre değil. Dosya yolunu düzeltin (ör. '${candidateInWorkspace}') veya 'cuthol library ingest' ile doğru yolu verin.`;
-            diag.formatted = `[${diag.code}] ${diag.what} | Öneri: ${diag.suggestion}`;
+            diag.suggestion = `The CLI resolves relative paths against the working directory (${process.cwd()}), not the project folder. Fix the file path (e.g. '${candidateInWorkspace}') or pass the right path with 'cuthol library ingest'.`;
+            diag.formatted = `[${diag.code}] ${diag.what} | Suggestion: ${diag.suggestion}`;
           }
           throw new CutholError(diag);
         }

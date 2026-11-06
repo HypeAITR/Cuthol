@@ -20,9 +20,9 @@ export function buildAtempoChain(rate: number): string[] {
 }
 
 /**
- * tek ses diliminin hiz filtresi. `preserve_pitch=true`
- * (varsayilan) icin `atempo` zinciri, `false` icin `asetrate`+`aresample`.
- * `compile_audio.ts` icindeki tekil-hiz mantigiyla birebir aynidir.
+ * Rate filter of a single audio slice. An `atempo` chain for `preserve_pitch=true`
+ * (default), `asetrate`+`aresample` for `false`.
+ * Identical to the single-rate logic in `compile_audio.ts`.
  */
 export function buildAudioRampTempoFilters(
   rate: number,

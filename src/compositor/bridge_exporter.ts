@@ -230,7 +230,7 @@ export function syncCompositionBridgeFiles(
     )
     .replace(
       "if (!audioFps || !arr || !arr.length) return 0;",
-      "if (!audioFps || !arr || !arr.length) { var aw = (Array.isArray(d.warnings) && d.warnings[0]) || 'Ses enerjisi (C.audio) verisi boş — C.audio 0 döner'; if (warnings.indexOf(aw) < 0) warnings.push(aw); return 0; }"
+      "if (!audioFps || !arr || !arr.length) { var aw = (Array.isArray(d.warnings) && d.warnings[0]) || 'Audio energy (C.audio) data empty — C.audio returns 0'; if (warnings.indexOf(aw) < 0) warnings.push(aw); return 0; }"
     );
   const existingRuntime = fs.existsSync(runtimeJsPath)
     ? fs.readFileSync(runtimeJsPath, "utf8")

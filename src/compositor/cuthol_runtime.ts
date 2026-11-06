@@ -323,16 +323,16 @@ export function createCutholRuntime(
   const d = (rawData ?? {}) as Partial<CutholBridgeV1>;
 
   if (!rawData) {
-    errors.push("Veri yok: window.__CUTHOL_DATA__ bulunamadı");
+    errors.push("No data: window.__CUTHOL_DATA__ not found");
   }
   if (d.schema && d.schema !== CUTHOL_BRIDGE_SCHEMA) {
-    errors.push(`Şema uyuşmuyor: ${d.schema} != ${CUTHOL_BRIDGE_SCHEMA}`);
+    errors.push(`Schema mismatch: ${d.schema} != ${CUTHOL_BRIDGE_SCHEMA}`);
   }
 
   const comp = d.composition ?? ({} as Partial<CutholBridgeV1["composition"]>);
   const D = isFiniteNum(comp.duration) && comp.duration > 0 ? comp.duration : 0;
   if (!D) {
-    errors.push("composition.duration eksik veya 0");
+    errors.push("composition.duration missing or 0");
   }
   const FPS = isFiniteNum(comp.fps) && comp.fps > 0 ? comp.fps : 30;
   const W = isFiniteNum(comp.width) && comp.width > 0 ? comp.width : 1920;
@@ -391,7 +391,7 @@ export function createCutholRuntime(
   const words = rawWordsExpanded.sort((a, b) => a.t0 - b.t0);
 
   if (words.length === 0) {
-    warnings.push("words boş — C.word fallback kullanır");
+    warnings.push("words empty — C.word uses fallback");
   }
 
   const rawBeatTimes = d.beats?.times ?? [];
@@ -434,7 +434,7 @@ export function createCutholRuntime(
     for (const gt of gridT) {
       beatT.push(gt);
     }
-    warnings.push("beats.times boş — BPM ızgarası üretildi");
+    warnings.push("beats.times empty — BPM grid generated");
   }
 
   let downT = (d.beats?.downbeats ?? [])
@@ -816,7 +816,7 @@ export function createCutholRuntime(
 
       const chosen = matches[nth];
       if (!chosen) {
-        warnings.push(`Kelime/ifade bulunamadı (global): '${query}'`);
+        warnings.push(`Word/phrase not found (global): '${query}'`);
         const fbStart = clamp(o.fallback ?? 0, 0, globalD || 1);
         const fbEnd = clamp(
           fbStart + Math.max(o.minDur ?? 0.5, 1 / FPS),
@@ -1071,7 +1071,7 @@ export function createCutholRuntime(
 
       const chosen = matches[nth];
       if (!chosen) {
-        warnings.push(`Kelime/ifade bulunamadı: '${query}'`);
+        warnings.push(`Word/phrase not found: '${query}'`);
         const fbStart = clamp(o.fallback ?? 0, 0, D || 1);
         const fbEnd = clamp(fbStart + Math.max(o.minDur ?? 0.5, 1 / FPS), fbStart, D || fbStart + 0.5);
         return {
@@ -1285,12 +1285,12 @@ export function getCutholRuntimeJsSource(): string {
   function create(rawData, externalVars) {
     var warnings = [], errors = [];
     var d = rawData || {};
-    if (!rawData) errors.push("Veri yok: window.__CUTHOL_DATA__ bulunamadı");
-    if (d.schema && d.schema !== SCHEMA) errors.push("Şema uyuşmuyor: " + d.schema + " != " + SCHEMA);
+    if (!rawData) errors.push("No data: window.__CUTHOL_DATA__ not found");
+    if (d.schema && d.schema !== SCHEMA) errors.push("Schema mismatch: " + d.schema + " != " + SCHEMA);
 
     var comp = d.composition || {};
     var D = isFiniteNum(comp.duration) && comp.duration > 0 ? comp.duration : 0;
-    if (!D) errors.push("composition.duration eksik veya 0");
+    if (!D) errors.push("composition.duration missing or 0");
     var FPS = isFiniteNum(comp.fps) && comp.fps > 0 ? comp.fps : 30;
     var W = isFiniteNum(comp.width) && comp.width > 0 ? comp.width : 1920;
     var H = isFiniteNum(comp.height) && comp.height > 0 ? comp.height : 1080;
@@ -1326,7 +1326,7 @@ export function getCutholRuntimeJsSource(): string {
     });
     var words = rawWordsExpanded.sort(function (a, b) { return a.t0 - b.t0; });
 
-    if (!words.length) warnings.push("words boş — C.word fallback kullanır");
+    if (!words.length) warnings.push("words empty — C.word uses fallback");
 
     var rawBeatTimes = (d.beats && d.beats.times) || [];
     var rawStrengths = (d.beats && d.beats.strength) || [];
@@ -1355,7 +1355,7 @@ export function getCutholRuntimeJsSource(): string {
     }
     if (!beatT.length && gridT.length) {
       for (var gi = 0; gi < gridT.length; gi++) beatT.push(gridT[gi]);
-      warnings.push("beats.times boş — BPM ızgarası üretildi");
+      warnings.push("beats.times empty — BPM grid generated");
     }
 
     var downT = ((d.beats && d.beats.downbeats) || [])
@@ -1637,7 +1637,7 @@ export function getCutholRuntimeJsSource(): string {
         var chosen = matches[nth];
         var minDurVal = o.minDur != null ? o.minDur : 0.5;
         if (!chosen) {
-          warnings.push("Kelime/ifade bulunamadı (global): '" + query + "'");
+          warnings.push("Word/phrase not found (global): '" + query + "'");
           var fbStart = clamp(o.fallback != null ? o.fallback : 0, 0, globalD || 1);
           var fbEnd = clamp(fbStart + Math.max(minDurVal, 1 / FPS), fbStart, globalD || fbStart + 0.5);
           var s = +fbStart.toFixed(4), e = +fbEnd.toFixed(4);
@@ -1828,7 +1828,7 @@ export function getCutholRuntimeJsSource(): string {
         var chosen = matches[nth];
         var minDurVal = o.minDur != null ? o.minDur : 0.5;
         if (!chosen) {
-          warnings.push("Kelime/ifade bulunamadı: '" + query + "'");
+          warnings.push("Word/phrase not found: '" + query + "'");
           var fbStart = clamp(o.fallback != null ? o.fallback : 0, 0, D || 1);
           var fbEnd = clamp(fbStart + Math.max(minDurVal, 1 / FPS), fbStart, D || fbStart + 0.5);
           return {

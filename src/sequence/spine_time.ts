@@ -491,12 +491,12 @@ export interface NormalizedSpeedRampSegment {
 }
 
 /**
- * `buildNormalizedRampSegments` çıktısını görüntü derleyiciyle paylaşan
- * saf okuma yardımcısı. Mevcut integral fonksiyonlarına dokunmaz; döndürdüğü
- * parçalar `integrateSourceOffsetToClipLocalMs` ile aynı normalize eğridir
- * (ms biriminde `u0/u1`, hız `r0/r1`, parça süresi `dt`).
+ * Shares the `buildNormalizedRampSegments` output with the video compiler: a
+ * pure read helper. It does not touch the existing integral functions; the
+ * segments it returns are the same normalized curve as `integrateSourceOffsetToClipLocalMs`
+ * (`u0/u1` in ms, rate `r0/r1`, segment duration `dt`).
  */
-/** ses dilimi (kaynak ofsetleri ms, cikti suresi ms, dilim hizi). */
+/** Audio slice (source offsets in ms, output duration in ms, slice rate). */
 export interface AudioRampSlice {
   u0: number;
   u1: number;
@@ -505,9 +505,9 @@ export interface AudioRampSlice {
 }
 
 export interface AudioRampSliceOptions {
-  /** Dilim ici en buyuk hiz orani (varsayilan 1.03 = %3). */
+  /** Largest in-slice rate ratio (default 1.03 = 3%). */
   maxRateRatio?: number;
-  /** Dilim cikti suresi ust siniri ms (varsayilan 250). */
+  /** Slice output duration cap in ms (default 250). */
   maxSliceOutputMs?: number;
 }
 
@@ -517,8 +517,8 @@ export const DEFAULT_AUDIO_RAMP_SLICE_OPTIONS: Required<AudioRampSliceOptions> =
 };
 
 /**
- * `integrateSourceOffsetToClipLocalMs` ile ayni matematigin
- * klipsiz saf karsiligi (span + fallback + rampa uzerinden).
+ * The same math as `integrateSourceOffsetToClipLocalMs`, as a clipless pure
+ * equivalent (over span + fallback + ramp).
  */
 export function integrateRampSourceOffsetToLocalMs(
   sourceSpanMs: number,
@@ -553,8 +553,8 @@ export function integrateRampSourceOffsetToLocalMs(
 }
 
 /**
- * `invertClipLocalMsToSourceOffset` ile ayni matematigin
- * klipsiz saf karsiligi.
+ * The same math as `invertClipLocalMsToSourceOffset`, as a clipless pure
+ * equivalent.
  */
 export function invertRampLocalMsToSourceOffset(
   sourceSpanMs: number,
@@ -628,11 +628,11 @@ function subdivideLinearRampRange(
 }
 
 /**
- * rampanin normalize parcalarini ses dilimlerine boler.
- * Sabit hizli parca tek dilimdir; hizi degisen parca, dilim ici hiz orani
- * `maxRateRatio` altinda ve dilim cikti suresi `maxSliceOutputMs` altinda
- * kalacak sekilde alt dilimlere ayrilir. Her dilimin `rate` degeri
- * `du/dt` (integralden) oranindir; dilim sinirlari goruntudeki ayni ana duser.
+ * Splits the ramp's normalized segments into audio slices.
+ * A constant-rate segment is a single slice; a varying-rate segment is split
+ * into sub-slices that stay below the in-slice rate ratio `maxRateRatio` and
+ * the slice output duration `maxSliceOutputMs`. Each slice's `rate` is the
+ * `du/dt` ratio (from the integral); slice boundaries land on the same video instant.
  */
 export function getAudioRampSlices(
   sourceSpanMs: number,
@@ -658,12 +658,12 @@ export function getAudioRampSlices(
 }
 
 /**
- * kaynak alt araliginin `[uStartMs, uEndMs]` ses dilimleri
- * (pencereli render icin). Tam-aralik izgaraasina kilitlidir: once tum span
- * `getAudioRampSlices` ile dilimlenir, sonra okuma araligina kirpilir; kenar
- * parcalarin suresi integral farkiyla hesaplanir. Boylece pencerenin ic
- * dilimleri tam render ile birebir aynidir (WSOLA girdisi bit-duzeyinde
- * ayni), pencere diki kenar on-yuklemede (pre-roll) kalir ve kirpilir.
+ * Audio slices of the source sub-range `[uStartMs, uEndMs]`
+ * (for windowed rendering). Locked to the full-range grid: first the whole span
+ * is sliced with `getAudioRampSlices`, then trimmed to the read range; edge
+ * segment durations come from integral differences. The window's inner
+ * slices are therefore identical to a full render (WSOLA input identical
+ * at bit level); the window seam stays in the edge pre-roll and is trimmed.
  */
 export function getAudioRampSlicesInRange(
   sourceSpanMs: number,

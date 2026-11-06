@@ -8,13 +8,36 @@
 - Transcribe the **asset** (`vid_01`, `aud_01`), not a clip. Words are projected onto every clip and voiceover cue that uses that asset, and they stay correct after trims, speed changes (both `spine.speed` and `lane.update_cue(cue, rate=…)`) and cuts.
 - Transcripts and synthesized voiceovers are cached both in the project (`.cuthol/ledger.sqlite`) and in the user-level shared cache (`~/.cuthol/cache/ledger.sqlite` + `blobs/`, configurable via `CUTHOL_CACHE_DIR`, disabled via `CUTHOL_CACHE_DIR=0` or `CUTHOL_DISABLE_SHARED_CACHE=1`), so reusing the same media file or TTS text across projects hits the cache without calling cloud APIs.
 - Brand names and rare proper nouns are often misheard. Check them with `library.query(text=…)` before building captions or word-locked animations on them.
-- Providers: `deepgram` (default, needs `DEEPGRAM_API_KEY`) or `local` (needs a `<file>.transcript.json` sidecar or `CUTHOL_LOCAL_ASR_CMD`).
+- Providers: `deepgram` (default, needs `DEEPGRAM_API_KEY`), `local` (needs a `<file>.transcript.json` sidecar or `CUTHOL_LOCAL_ASR_CMD`), or `ext:<extension>` (an extension ASR provider). Resolution order and project defaults: see *Providers* below.
 
 ## Voiceover
 
-`speech.synthesize(text, voice?, speed?, place_on_lane="ln_vo", at | anchor+offset)` creates a `vo_XX` asset with exact word timings from the TTS itself (no ASR pass needed, spelling is preserved). Default provider `elevenlabs` (needs `ELEVENLABS_API_KEY`). `provider="local"` without `CUTHOL_LOCAL_TTS_CMD` gives placeholder tones (`is_placeholder_audio: true`) — fine for timing tests, not for delivery.
+`speech.synthesize(text, voice?, speed?, place_on_lane="ln_vo", at | anchor+offset)` creates a `vo_XX` asset with exact word timings from the TTS itself (no ASR pass needed, spelling is preserved). Default provider `elevenlabs` (needs `ELEVENLABS_API_KEY`). `provider="local"` without `CUTHOL_LOCAL_TTS_CMD` gives placeholder tones (`is_placeholder_audio: true`) — fine for timing tests, not for delivery. `provider="ext:<extension>"` uses an extension TTS provider; without alignment it reports `has_alignment: false` plus a warning instead of inventing timings.
 
 To use an existing narration file instead: `library.ingest` it, place it with `lane.add_cue(lane="ln_vo", kind="voiceover", asset=…, at=…, duration=<its length>)`, then `speech.transcribe` it. To speed up or slow down the voiceover inside Cuthol (without pre-converting in ffmpeg), call `lane.update_cue(cue="cue_01", rate=1.3)` (or pass `rate=1.3` to `lane.add_cue`); Cuthol updates the cue duration, runs `atempo` (pitch-preserved by default, `preserve_pitch=true`) in the shared audio graph, and scales all projected word timestamps in `C.global.words` / `C.word` and `speech.captions`. To cut a sentence or mistake out of the middle of a voiceover cue, call `lane.excise(cue="cue_01", ranges=["10s..14s"], coord="source")`: Cuthol splits the cue, closes the gap on the lane, shifts any cues anchored to `cue_01`, and shifts all projected word timings (`C.word`, `C.global.words`, `speech.captions`) after the cut.
+
+## Providers: selection, local models, media sources
+
+Each speech call resolves its provider in this order: `--provider` flag, then
+`CUTHOL_ASR_PROVIDER` / `CUTHOL_TTS_PROVIDER`, then the project default, then the
+built-in (`deepgram` / `elevenlabs`). `speech.providers` shows the stored defaults
+and the effective resolution; `speech.providers(asr="ext:my-asr")` stores a project
+default (journaled, undoable; pass `"builtin"` to clear one). Unknown ids fail with
+`[CUTHOL-G230]`. Transcripts and synthesized audio are cached per provider identity +
+version + options, so re-running is free and providers never share records.
+
+There are two ways to use local models: the `local` door (a sidecar transcript, or
+`CUTHOL_LOCAL_ASR_CMD` / `CUTHOL_LOCAL_TTS_CMD` shell commands — unchanged and fully
+supported) or an `ext:` provider extension (see the extensions guide, providers
+section, and `examples/extensions/asr-command`, `tts-command`).
+
+Music and sound effects can come from a provider shelf instead of only manual
+ingest: `library.search(provider="ext:media-folder", kind="music", query="calm",
+min="10s", max="60s")` lists candidates, and `library.fetch(provider=..., id=...)`
+ingests one through the normal path (`aud_XX`, probe, ledger) with its origin kept
+in the asset `source` (provider, id, title, license), shown by `library.query`
+(`asset_source`) and `brief --lens detail`. The `media-folder` example serves a
+local folder of tracks; a service-backed provider keeps the same contract.
 
 ## Cleaning up talking clips (single clip or entire spine)
 

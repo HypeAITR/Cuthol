@@ -144,7 +144,7 @@ export function runExtensionRecipe(options: {
       DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
         ext.name,
         options.recipeName || "recipe",
-        `'${ext.name}' eklentisinde tanımlı hiçbir tarif ('recipes') yok.`
+        `Extension '${ext.name}' defines no recipes ('recipes').`
       )
     );
   }
@@ -155,7 +155,7 @@ export function runExtensionRecipe(options: {
       DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
         ext.name,
         recName || "(belirtilmedi)",
-        `Tarif bulunamadı. Mevcut tarifler: ${recNames.join(", ")}.`
+        `Recipe not found. Available recipes: ${recNames.join(", ")}.`
       )
     );
   }
@@ -303,7 +303,7 @@ export function runExtensionRecipe(options: {
           DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
             ext.name,
             `recipe:${recName}#${stepId}`,
-            `Adım ${i + 1} (${step.tool}.${step.action ?? ""}) başarısız oldu: ${(proc.stderr || proc.stdout || "").trim()}`
+            `Step ${i + 1} (${step.tool}.${step.action ?? ""}) failed: ${(proc.stderr || proc.stdout || "").trim()}`
           )
         );
       }

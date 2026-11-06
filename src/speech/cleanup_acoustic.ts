@@ -552,7 +552,7 @@ export function verifyPauseCandidatesAcoustically(params: {
               silence_floor_dbfs: silenceFloorDbfs,
             },
             margin: dur - minUntranscribedMs,
-            note: `Duraksama adayı (${cand.rawStart}..${cand.rawEnd}ms) içinde transkripte girmemiş ${dur}ms ses (${seg.start_ms}..${seg.end_ms}ms, tepe ${maxDb} dBFS > eşik ${silenceFloorDbfs} dBFS) korundu; seslendirilmiş dolguysa manuel kesilebilir`,
+            note: `${dur}ms of untranscribed audio (${seg.start_ms}..${seg.end_ms}ms, peak ${maxDb} dBFS > floor ${silenceFloorDbfs} dBFS) inside pause candidate (${cand.rawStart}..${cand.rawEnd}ms) was kept; cut by hand if it is a voiced filler`,
           });
         }
       }
@@ -591,7 +591,7 @@ export function verifyPauseCandidatesAcoustically(params: {
             silence_floor_dbfs: silenceFloorDbfs,
           },
           margin: maxSilentMs - minPauseMs,
-          note: `Duraksama adayı (${cand.rawStart}..${cand.rawEnd}ms) akustik sessizlik eşiğine (${silenceFloorDbfs} dBFS) göre daraltıldığında kalan sessiz bölge (${maxSilentMs}ms) eşik değerin (${minPauseMs}ms) altında kaldığı için korundu`,
+          note: `Pause candidate (${cand.rawStart}..${cand.rawEnd}ms) kept because the silent region left (${maxSilentMs}ms) after narrowing to the acoustic silence floor (${silenceFloorDbfs} dBFS) fell below the threshold (${minPauseMs}ms)`,
         });
         continue;
       }
@@ -617,7 +617,7 @@ export function verifyPauseCandidatesAcoustically(params: {
               silence_floor_dbfs: silenceFloorDbfs,
             },
             margin: drDur - minPauseMs,
-            note: `Transkript dışı ses etrafından bölünen duraksama parçası (${dr.start_ms}..${dr.end_ms}ms, ${drDur}ms) eşik değerin (${minPauseMs}ms) altında kaldığı için bırakıldı`,
+            note: `Pause piece split around untranscribed audio (${dr.start_ms}..${dr.end_ms}ms, ${drDur}ms) dropped for falling below the threshold (${minPauseMs}ms)`,
           });
         }
       }

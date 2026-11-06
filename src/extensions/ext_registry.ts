@@ -76,7 +76,7 @@ export function loadExtensionFromDir(
     throw new CutholError(
       DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
         folderName,
-        `'${manifestPath}' dosyası bulunamadı.`
+        `File '${manifestPath}' not found.`
       )
     );
   }
@@ -87,7 +87,7 @@ export function loadExtensionFromDir(
     throw new CutholError(
       DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
         folderName,
-        `JSON sözdizimi hatası: ${err instanceof Error ? err.message : String(err)}`
+        `JSON syntax error: ${err instanceof Error ? err.message : String(err)}`
       )
     );
   }
@@ -103,7 +103,7 @@ export function loadExtensionFromDir(
       throw new CutholError(
         DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
           manifest.name,
-          `Manifestte belirtilen yardımcı JS dosyası ('${helperRelPath}') bulunamadı.`
+          `Helper JS file ('${helperRelPath}') declared in the manifest not found.`
         )
       );
     }
@@ -119,7 +119,7 @@ export function loadExtensionFromDir(
       throw new CutholError(
         DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
           manifest.name,
-          `Manifestte belirtilen varlık klasörü ('${assetsRelDir}') bulunamadı.`
+          `Assets folder ('${assetsRelDir}') declared in the manifest not found.`
         )
       );
     }
@@ -133,7 +133,7 @@ export function loadExtensionFromDir(
           throw new CutholError(
             DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
               manifest.name,
-              `'processors.${procName}.script' dosyası ('${proc.script}') bulunamadı.`
+              `File ('${proc.script}') for 'processors.${procName}.script' not found.`
             )
           );
         }
@@ -148,7 +148,7 @@ export function loadExtensionFromDir(
         throw new CutholError(
           DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
             manifest.name,
-            `'planners.${planName}.script' dosyası ('${planner.script}') bulunamadı.`
+            `File ('${planner.script}') for 'planners.${planName}.script' not found.`
           )
         );
       }
@@ -190,7 +190,7 @@ export function resolveExtension(
     throw new CutholError(
       DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
         cleanName || "extension",
-        `Geçersiz eklenti adı '${cleanName}'. Eklenti adları küçük harfle başlamalı ve yalnızca [a-z0-9_-] içermelidir.`
+        `Invalid extension name '${cleanName}'. Extension names must start lowercase and contain only [a-z0-9_-].`
       )
     );
   }
@@ -327,6 +327,9 @@ export function listExtensions(workspaceDir?: string | null): {
           recipes: Object.keys(ext.manifest.recipes ?? {}),
           ...(ext.manifest.fx ? { fx: Object.keys(ext.manifest.fx) } : {}),
           ...(ext.manifest.transitions ? { transitions: Object.keys(ext.manifest.transitions) } : {}),
+          ...(ext.manifest.providers && Object.keys(ext.manifest.providers).length > 0
+            ? { providers: Object.keys(ext.manifest.providers) }
+            : {}),
           guide: ext.guideRelPath,
         },
       });

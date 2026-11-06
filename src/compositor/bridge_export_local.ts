@@ -531,13 +531,13 @@ export function compileLocalAudioEnvelope(
   if (usesAudio) {
     if (failedAudioHandles.size > 0) {
       bridgeWarnings.push(
-        `Ses enerjisi (C.audio) için dalga formu analizi başarısız oldu (${Array.from(failedAudioHandles).join(", ")}) — C.audio 0 döner`
+        `Waveform analysis for audio energy (C.audio) failed (${Array.from(failedAudioHandles).join(", ")}) — C.audio returns 0`
       );
     } else if (!hasAudioEnvelope) {
       bridgeWarnings.push(
         activeWindowAudioHandles.size > 0
-          ? `Ses enerjisi (C.audio) için dalga formu verisi bulunamadı (${Array.from(activeWindowAudioHandles).join(", ")}) — C.audio 0 döner`
-          : `Kompozisyon penceresinde aktif ses kaynağı yok — C.audio 0 döner`
+          ? `No waveform data found for audio energy (C.audio) (${Array.from(activeWindowAudioHandles).join(", ")}) — C.audio returns 0`
+          : `No active audio source in the composition window — C.audio returns 0`
       );
     }
   }

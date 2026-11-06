@@ -282,7 +282,7 @@ export function duckMusicUnderDialogue(options: {
       reason_code: "APPLIED",
       measured: { speech_duration_ms: win.end_ms - win.start_ms, attenuation_db: duckDb },
       threshold: { merge_gap_ms: mergeGapThresholdMs },
-      note: `[${win.start_ms}..${win.end_ms}ms] aralığında diyalog aktif; müzik ${duckDb} dB kısıldı`,
+      note: `dialogue active in [${win.start_ms}..${win.end_ms}ms]; music dipped ${duckDb} dB`,
     });
   });
 
@@ -296,8 +296,8 @@ export function duckMusicUnderDialogue(options: {
       measured: { clip_duration_ms: skippedClip.duration_ms },
       note:
         modeUsed === "skipped"
-          ? `'${skippedClip.id}' (${skippedClip.asset_handle}) klibinde transkript yok; projede başka diyalog kaynağı olduğu için B-roll kabul edilip atlandı`
-          : `'${skippedClip.id}' klibinde transkript yok; akustik enerji/formant VAD kullanıldı`,
+          ? `clip '${skippedClip.id}' (${skippedClip.asset_handle}) has no transcript; treated as B-roll and skipped because the project has another dialogue source`
+          : `clip '${skippedClip.id}' has no transcript; acoustic energy/formant VAD used`,
       refs: [skippedClip.id, skippedClip.asset_handle],
     };
     duckDecisions.push(item);
@@ -345,13 +345,13 @@ export function duckMusicUnderDialogue(options: {
       },
     },
     rules: [
-      "R1: Transkriptli omurga klipleri ve 'ln_vo' seslendirme kelimeleri birincil diyalog tetikleyicisi olarak alınır",
-      "R2: Projede 'ln_vo' veya transkriptli klip varsa transkriptsiz omurga klipleri atlanır (NO_TRANSCRIPT_SKIPPED); hiçbiri yoksa akustik enerji/formant VAD kullanılır",
-      "R3: Aralarındaki boşluk <= merge_gap_ms olan konuşma pencereleri pompalanmayı önlemek için birleştirilir",
-      "R4: Her diyalog penceresine attack_ms iniş ve release_ms çıkış rampalarıyla duck_db zayıflatma uygulanır",
+      "R1: Transcribed spine clips and 'ln_vo' voiceover words are the primary dialogue triggers",
+      "R2: Untranscribed spine clips are skipped (NO_TRANSCRIPT_SKIPPED) when the project has 'ln_vo' or a transcribed clip; otherwise acoustic energy/formant VAD is used",
+      "R3: Speech windows with a gap <= merge_gap_ms are merged to avoid pumping",
+      "R4: Each dialogue window gets duck_db attenuation with an attack_ms down-ramp and a release_ms up-ramp",
     ],
     summary: {
-      text: `${rawWindows.length} ham konuşma aralığı -> ${mergedWindows.length} birleştirilmiş ducking penceresi (${totalDuckedMs}ms boyunca ${duckDb} dB); ${untranscribedSpineClips.length} transkriptsiz klip incelendi`,
+      text: `${rawWindows.length} raw speech spans -> ${mergedWindows.length} merged ducking windows (${duckDb} dB over ${totalDuckedMs}ms); ${untranscribedSpineClips.length} untranscribed clips examined`,
       candidates: duckDecisions.length,
       accepted: duckAcceptedCount,
       rejected: nearMisses.length,

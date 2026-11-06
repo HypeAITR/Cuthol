@@ -35,7 +35,7 @@ export function resolveValidatedParams(
         DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
           extName,
           targetLabel,
-          `Bilinmeyen parametre '${k}' (geçerli parametreler: ${Object.keys(defs).join(", ")}).`
+          `Unknown parameter '${k}' (valid parameters: ${Object.keys(defs).join(", ")}).`
         )
       );
     }
@@ -49,7 +49,7 @@ export function resolveValidatedParams(
           DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
             extName,
             targetLabel,
-            `Zorunlu parametre '${k}' eksik.`
+            `Required parameter '${k}' is missing.`
           )
         );
       }
@@ -62,7 +62,7 @@ export function resolveValidatedParams(
           DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
             extName,
             targetLabel,
-            `'${k}' parametresi sayı olmalıdır (verilen: ${JSON.stringify(val)}).`
+            `'${k}' must be a number (given: ${JSON.stringify(val)}).`
           )
         );
       }
@@ -71,7 +71,7 @@ export function resolveValidatedParams(
           DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
             extName,
             targetLabel,
-            `'${k}' parametresi (${n}) alt sınırın (${def.min}) altında.`
+            `'${k}' (${n}) is below the minimum (${def.min}).`
           )
         );
       }
@@ -80,7 +80,7 @@ export function resolveValidatedParams(
           DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
             extName,
             targetLabel,
-            `'${k}' parametresi (${n}) üst sınırın (${def.max}) üzerinde.`
+            `'${k}' (${n}) is above the maximum (${def.max}).`
           )
         );
       }
@@ -99,7 +99,7 @@ export function resolveValidatedParams(
         DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
           extName,
           targetLabel,
-          `'${k}' parametresi şu değerlerden biri olmalıdır: ${def.enum.join(", ")}.`
+          `'${k}' must be one of: ${def.enum.join(", ")}.`
         )
       );
     }
@@ -128,7 +128,7 @@ function interpolateFilterTemplate(
         DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
           extName,
           procName,
-          `Filtre şablonundaki '{{${key}}}' parametresi için değer verilmedi.`
+          `No value was given for the '{{${key}}}' parameter in the filter template.`
         )
       );
     }
@@ -137,7 +137,7 @@ function interpolateFilterTemplate(
       throw new CutholError(
         DIAGNOSTICS.EXTENSION_SECURITY_VIOLATION(
           extName,
-          `'${key}' filtre parametresi güvenlik açısından izin verilmeyen karakterler içeriyor.`
+          `Filter parameter '${key}' contains characters that are not allowed for security.`
         )
       );
     }
@@ -165,8 +165,8 @@ export function extensionTimeoutFailureDetail(
 ): string {
   const sec = timeoutSec === undefined ? (whenOmitted === "120" ? DEFAULT_CHILD_TIMEOUT_SEC : 0) : timeoutSec;
   const which =
-    timeoutSec === undefined ? `varsayılan sınır ${sec} sn` : `'timeout_sec' sınırı ${sec} sn`;
-  return `${subject} zaman aşımına uğradı (${which} aşıldı). Sınırı manifestteki 'timeout_sec' alanıyla değiştirin (tam sayı, saniye; 0 = sınır yok).`;
+    timeoutSec === undefined ? `default limit ${sec} s` : `'timeout_sec' limit ${sec} s`;
+  return `${subject} timed out (${which} exceeded). Change the limit with the manifest 'timeout_sec' field (integer, seconds; 0 = no limit).`;
 }
 
 export function isSpawnTimeout(result: { error?: Error | null }): boolean {
@@ -282,7 +282,7 @@ export function runExtensionProcessor(options: {
       DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
         ext.name,
         options.processorName || "processor",
-        `'${ext.name}' eklentisinde tanımlı hiçbir işlemci ('processors') yok.`
+        `Extension '${ext.name}' defines no processors ('processors').`
       )
     );
   }
@@ -294,7 +294,7 @@ export function runExtensionProcessor(options: {
       DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
         ext.name,
         procName || "(belirtilmedi)",
-        `İşlemci bulunamadı. Mevcut işlemciler: ${procNames.join(", ")}.`
+        `Processor not found. Available processors: ${procNames.join(", ")}.`
       )
     );
   }
@@ -466,8 +466,8 @@ export function runExtensionProcessor(options: {
             }
           }
           const detail = isSpawnTimeout(ffProc)
-            ? extensionTimeoutFailureDetail("ffmpeg işlemi", proc.timeout_sec, "none")
-            : `ffmpeg hatası: ${(ffProc.stderr || ffProc.stdout || "bilinmeyen hata").trim()}`;
+            ? extensionTimeoutFailureDetail("ffmpeg run", proc.timeout_sec, "none")
+            : `ffmpeg error: ${(ffProc.stderr || ffProc.stdout || "unknown error").trim()}`;
           throw new CutholError(
             DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(ext.name, procName, detail)
           );
@@ -525,7 +525,7 @@ export function runExtensionProcessor(options: {
             throw new CutholError(
               DIAGNOSTICS.EXTENSION_SECURITY_VIOLATION(
                 ext.name,
-                `İşlemci betiği eklenti klasörünün içine yazma girişiminde bulundu.`
+                `The processor script attempted to write inside the extension folder.`
               )
             );
           }
@@ -539,7 +539,7 @@ export function runExtensionProcessor(options: {
             throw new CutholError(
               DIAGNOSTICS.EXTENSION_SECURITY_VIOLATION(
                 ext.name,
-                `İşlemci betiği Cuthol'un verdiği çıktı yolu dışına ('${extraEntries.join(", ")}') dosya yazdı.`
+                `The processor script wrote a file outside the output path Cuthol gave it ('${extraEntries.join(", ")}').`
               )
             );
           }
@@ -549,7 +549,7 @@ export function runExtensionProcessor(options: {
               DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
                 ext.name,
                 procName,
-                extensionTimeoutFailureDetail("Node betiği", proc.timeout_sec, "120")
+                extensionTimeoutFailureDetail("Node script", proc.timeout_sec, "120")
               )
             );
           }
@@ -559,7 +559,7 @@ export function runExtensionProcessor(options: {
               DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
                 ext.name,
                 procName,
-                `Node betiği çıkış kodu ${nodeProc.status}: ${(nodeProc.stderr || nodeProc.stdout || "").trim()}`
+                `Node script exit code ${nodeProc.status}: ${(nodeProc.stderr || nodeProc.stdout || "").trim()}`
               )
             );
           }
@@ -569,7 +569,7 @@ export function runExtensionProcessor(options: {
               DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
                 ext.name,
                 procName,
-                `Node betiği beklenen çıktı dosyasını üretmedi.`
+                `The Node script did not produce the expected output file.`
               )
             );
           }
@@ -587,7 +587,7 @@ export function runExtensionProcessor(options: {
                 DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
                   ext.name,
                   procName,
-                  `Node betiği stdout üzerinde geçerli bir JSON döndürmedi: '${lastLine.slice(0, 120)}'`
+                  `The Node script did not return valid JSON on stdout: '${lastLine.slice(0, 120)}'`
                 )
               );
             }

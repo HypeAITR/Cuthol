@@ -14,22 +14,22 @@ export const CUBIC_BEZIER_FFMPEG_NEWTON_ITERS = 5;
 const BEZIER_X_SLOT = 2;
 const BEZIER_U_SLOT = 0;
 
-/** Non-throwing check: `null` when valid, otherwise a Turkish detail for G120. */
+/** Non-throwing check: `null` when valid, otherwise an English detail for G120. */
 export function cubicBezierIssue(bezier: unknown): string | null {
   if (bezier === undefined || bezier === null) {
-    return "easing 'cubic_bezier' ama 'bezier' alanı yok";
+    return "easing is 'cubic_bezier' but the 'bezier' field is missing";
   }
   if (!Array.isArray(bezier) || bezier.length !== 4) {
-    return "'bezier' 4 sayı olmalı ([x1, y1, x2, y2])";
+    return "'bezier' must be 4 numbers ([x1, y1, x2, y2])";
   }
   for (const n of bezier) {
     if (typeof n !== "number" || !Number.isFinite(n)) {
-      return "'bezier' 4 sayı olmalı ([x1, y1, x2, y2])";
+      return "'bezier' must be 4 numbers ([x1, y1, x2, y2])";
     }
   }
   const [x1, , x2] = bezier as [number, number, number, number];
   if (x1 < 0 || x1 > 1 || x2 < 0 || x2 > 1) {
-    return `x1 (${x1}) ve x2 (${x2}) 0..1 aralığında olmalı`;
+    return `x1 (${x1}) and x2 (${x2}) must be within 0..1`;
   }
   return null;
 }
@@ -112,14 +112,14 @@ export function parseEasingFlag(raw: string | undefined, options?: ParseEasingFl
   if (csv !== null) {
     const parts = csv.split(",").map((s) => Number(s.trim()));
     if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
-      throwG120("--easing", `'${v}' 4 sayı içermeli (ör. 'cubic-bezier(0.25,0.1,0.25,1)')`);
+      throwG120("--easing", `'${v}' must contain 4 numbers (e.g. 'cubic-bezier(0.25,0.1,0.25,1)')`);
     }
     const issue = cubicBezierIssue(parts);
     if (issue) throwG120("--easing", `'${v}': ${issue}`);
     return { easing: "cubic_bezier", bezier: parts as CubicBezierControlPoints };
   }
   if (/^cubic[-_]bezier$/i.test(v)) {
-    throwG120("--easing", "'cubic_bezier' kontrol noktaları olmadan verilemez");
+    throwG120("--easing", "'cubic_bezier' cannot be given without control points");
   }
   assertValidEasing(options?.subject ?? "--easing", v, undefined, {
     allowHold: options?.allowHold ?? true,

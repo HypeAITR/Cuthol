@@ -35,7 +35,7 @@ function parseFxAnimatable(
     throw new CutholError(
       DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
         extName,
-        `'fx.${fxName}.animatable' bir metin dizisi olmalıdır (zarflanabilir parametre adları).`
+        `'fx.${fxName}.animatable' must be an array of strings (envelopable parameter names).`
       )
     );
   }
@@ -48,7 +48,7 @@ function parseFxAnimatable(
       throw new CutholError(
         DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
           extName,
-          `'fx.${fxName}.animatable' içindeki '${name}' bildirilen bir parametre değil.`
+          `'${name}' in 'fx.${fxName}.animatable' is not a declared parameter.`
         )
       );
     }
@@ -56,7 +56,7 @@ function parseFxAnimatable(
       throw new CutholError(
         DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
           extName,
-          `'fx.${fxName}.animatable' içindeki '${name}' sayı türünde değil (zarflar sayı taşır).`
+          `'${name}' in 'fx.${fxName}.animatable' is not numeric (envelopes carry numbers).`
         )
       );
     }
@@ -78,7 +78,7 @@ function assertFxPlaceholdersDeclared(
       throw new CutholError(
         DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
           extName,
-          `'fx.${fxName}.video_filter' içindeki '{{${m[1]}}}' bildirilen bir parametre değil ('params' altında tanımlayın).`
+          `'{{${m[1]}}}' in 'fx.${fxName}.video_filter' is not a declared parameter (define it under 'params').`
         )
       );
     }
@@ -92,7 +92,7 @@ function assertFxTemplateSafe(template: string, extName: string, fxName: string)
     throw new CutholError(
       DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
         extName,
-        `'fx.${fxName}.video_filter' grafik ayırıcısı ('${bad[0]}') içeremez (tek zincirde derlenir).`
+        `'fx.${fxName}.video_filter' must not contain the graph separator ('${bad[0]}') (compiled as a single chain).`
       )
     );
   }
@@ -104,17 +104,17 @@ export function parseManifestFxSection(
 ): Record<string, ExtensionFxSpec> | undefined {
   if (raw === undefined) return undefined;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new CutholError(DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'fx' alanı bir nesne olmalıdır.`));
+    throw new CutholError(DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'fx' must be an object.`));
   }
   const out: Record<string, ExtensionFxSpec> = {};
   for (const [fxName, rawFx] of Object.entries(raw as Record<string, unknown>)) {
     if (!EFFECT_NAME_RE.test(fxName)) {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'fx.${fxName}' geçersiz ad (küçük harf, [a-z0-9_-]).`)
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'fx.${fxName}' is an invalid name (lowercase, [a-z0-9_-]).`)
       );
     }
     if (!rawFx || typeof rawFx !== "object" || Array.isArray(rawFx)) {
-      throw new CutholError(DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'fx.${fxName}' bir nesne olmalıdır.`));
+      throw new CutholError(DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'fx.${fxName}' must be an object.`));
     }
     const obj = rawFx as Record<string, unknown>;
     for (const k of Object.keys(obj)) {
@@ -122,14 +122,14 @@ export function parseManifestFxSection(
         throw new CutholError(
           DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
             extName,
-            `'fx.${fxName}' içinde bilinmeyen alan '${k}' (izin verilenler: ${[...ALLOWED_FX_KEYS].join(", ")}).`
+            `'fx.${fxName}' has an unknown field '${k}' (allowed: ${[...ALLOWED_FX_KEYS].join(", ")}).`
           )
         );
       }
     }
     if (typeof obj.video_filter !== "string" || !obj.video_filter.trim()) {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'fx.${fxName}.video_filter' alanı zorunludur (ffmpeg süzgeci).`)
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'fx.${fxName}.video_filter' is required (an ffmpeg filter).`)
       );
     }
     const params = validateParamsMap(obj.params, extName, `fx.${fxName}`);

@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0.0",
+  "name": "media-folder",
+  "version": "1.0.0",
+  "description": "Reference media provider: serves music/sfx files from a local folder (filename + sidecar JSON tags/license). No network access.",
+  "network": false,
+  "providers": {
+    "media": {
+      "description": "Searchable local music/sfx shelf.",
+      "script": "media.js",
+      "config": {
+        "directory": "tracks",
+        "default_kind": "music"
+      }
+    }
+  }
+}

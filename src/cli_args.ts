@@ -166,6 +166,11 @@ export const KNOWN_CLI_FLAGS = new Set([
   "encoder",
   "overlay-res",
   "across",
+  "query",
+  "min",
+  "max",
+  "asr",
+  "tts",
 ]);
 
 function levenshtein(a: string, b: string): number {
@@ -223,7 +228,7 @@ export function parsePropsJsonFlag(raw: string, commandName: string): Record<str
     DIAGNOSTICS.UNKNOWN_FLAG(
       `--props ${raw}`,
       commandName,
-      `cuthol ${commandName.replace(".", " ")} --props '{"headline":"Başlık"}'`
+      `cuthol ${commandName.replace(".", " ")} --props '{"headline":"Headline"}'`
     )
   );
 }
@@ -269,9 +274,9 @@ export function strFlag(flags: Record<string, string | boolean>, name: string, f
   if (val === true && name !== "scaffold" && !BOOLEAN_FLAGS.has(name)) {
     throw new CutholError(
       DIAGNOSTICS.UNKNOWN_FLAG(
-        `--${name} (eksik değer / missing value)`,
+        `--${name} (missing value)`,
         "cli",
-        `--${name} <değer>`
+        `--${name} <value>`
       )
     );
   }
@@ -287,9 +292,9 @@ export function numFlag(flags: Record<string, string | boolean>, name: string, f
   if (val === true && !BOOLEAN_FLAGS.has(name)) {
     throw new CutholError(
       DIAGNOSTICS.UNKNOWN_FLAG(
-        `--${name} (eksik sayısal değer / missing numeric value)`,
+        `--${name} (missing numeric value)`,
         "cli",
-        `--${name} <sayı>`
+        `--${name} <number>`
       )
     );
   }
@@ -306,7 +311,7 @@ export function boolFlag(flags: Record<string, string | boolean>, name: string, 
   return fallback;
 }
 
-const EXCISE_RANGES_SUGGEST = "aralıkları virgülle ayırın: --ranges 2s..3s,6s..7s";
+const EXCISE_RANGES_SUGGEST = "separate ranges with commas: --ranges 2s..3s,6s..7s";
 
 interface RestBudget {
   /** Trailing positionals after the group and action. */
@@ -337,6 +342,8 @@ const REST_BUDGETS: Record<string, RestBudget> = {
   "library.detach-audio": { max: 1, occupiedBy: ["handle"] },
   "library.query": { max: 1, occupiedBy: ["handle"] },
   "library.subject": { max: 1, occupiedBy: ["handle"] },
+  "library.search": { max: 0 },
+  "library.fetch": { max: 0 },
 
   "spine.append": { max: 1, occupiedBy: ["asset"] },
   "spine.split": { max: 1, occupiedBy: ["clip"] },
@@ -374,6 +381,7 @@ const REST_BUDGETS: Record<string, RestBudget> = {
   "speech.synthesize": { max: 1, occupiedBy: ["text"] },
   "speech.cleanup": { max: 1, occupiedBy: ["clip", "cue", "cues"] },
   "speech.verify-cleanup": { max: 1, occupiedBy: ["clip", "clips"], occupiedWhenTrue: ["all-spine"] },
+  "speech.providers": { max: 0 },
 
   "mix.polish-voice": { max: 1, occupiedBy: ["clips", "clip"] },
   "mix.beat-align": { max: 1, occupiedBy: ["bgm-handle"] },

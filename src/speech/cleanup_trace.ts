@@ -83,7 +83,7 @@ export function buildCleanupTrace(params: {
             ...(typeof c.silence_floor_dbfs === "number" ? { silence_floor_dbfs: c.silence_floor_dbfs } : {}),
           },
           threshold: { min_remainder_clip_ms: minRemainderTimelineMs },
-          note: `${c.clip_id}: ${minRemainderTimelineMs}ms altındaki sessiz artık klip (${c.cut_duration_ms}ms) otomatik kaldırıldı`,
+          note: `${c.clip_id}: silent leftover clip (${c.cut_duration_ms}ms) below ${minRemainderTimelineMs}ms removed automatically`,
         };
       }
       if (c.split_around_untranscribed_audio) {
@@ -127,7 +127,7 @@ export function buildCleanupTrace(params: {
             min_untranscribed_audio_ms: OPEN_STANDARDS.DIALOGUE_CLEANUP.MIN_UNTRANSCRIBED_SPEECH_MS,
           },
           refs: c.overlapping_words,
-          note: `${c.kind}: ${c.label} (transkript dışı ses [${burstSpans}] korunarak [${c.raw_source_start_ms}..${c.raw_source_end_ms}]ms sessizliğine bölündü/kısaltıldı, ${c.cut_duration_ms}ms kesildi)`,
+          note: `${c.kind}: ${c.label} (split/shortened to the [${c.raw_source_start_ms}..${c.raw_source_end_ms}]ms silence keeping untranscribed audio [${burstSpans}], ${c.cut_duration_ms}ms cut)`,
         };
       }
       if (c.trimmed_to_word_gap) {
@@ -164,7 +164,7 @@ export function buildCleanupTrace(params: {
           measured: measuredObj,
           threshold: { min_pause_ms: minPauseMs, pad_ms: padMs },
           refs: c.overlapping_words,
-          note: `${c.kind}: ${c.label} (orijinal [${origStart}..${origEnd}]ms kelime/akustik sınırına göre [${c.raw_source_start_ms}..${c.raw_source_end_ms}]ms boşluğuna kırpıldı, pad sonrası ${c.cut_duration_ms}ms kesildi)`,
+          note: `${c.kind}: ${c.label} (original [${origStart}..${origEnd}]ms trimmed to the [${c.raw_source_start_ms}..${c.raw_source_end_ms}]ms gap by word/acoustic edge, ${c.cut_duration_ms}ms cut after pad)`,
         };
       }
       const measuredObj: Record<string, number | string> = {
@@ -195,7 +195,7 @@ export function buildCleanupTrace(params: {
         reason_code: reasonCode,
         measured: measuredObj,
         threshold: { min_pause_ms: minPauseMs, pad_ms: padMs },
-        note: `${c.kind}: ${c.label} (${c.cut_duration_ms}ms kesildi${c.bridged_sliver_ms ? `, ${c.bridged_sliver_ms}ms kısa artık komşu kesimle birleştirildi` : ""})`,
+        note: `${c.kind}: ${c.label} (${c.cut_duration_ms}ms cut${c.bridged_sliver_ms ? `, ${c.bridged_sliver_ms}ms short leftover merged with the neighboring cut` : ""})`,
       };
     }
   );
@@ -231,15 +231,15 @@ export function buildCleanupTrace(params: {
       },
     },
     rules: [
-      "R1: Duraksama >= min_pause_ms ise iki uçtan pad_ms yaka payı bırakılarak ve silence_floor_dbfs altındaki sessiz pencerelere oturtularak kesilir",
-      "R2: Duraksama < min_pause_ms (veya akustik daraltma sonrası < min_pause_ms) ise doğal prozodi kabul edilip korunur (TOO_SHORT / ACOUSTIC_GAP_TOO_SHORT)",
-      "R3: Konuşulan bir ASR kelimesiyle çakışan duraksama adayı kelimeler arasındaki boşluğa kırpılır (TRIMMED_TO_WORD_GAP); kırpılmış boşluk < min_pause_ms kalırsa reddedilir (OVERLAPS_WORD)",
-      "R4: Duraksama içindeki transkript dışı uzun sesler (> 120ms) kesilmez (UNTRANSCRIBED_AUDIO); kesim etrafından ikiye bölünür veya kısaltılır (SPLIT_AROUND_UNTRANSCRIBED_AUDIO)",
-      "R5: Saf dolgu sesleri (ıı, ee, uh, um) ve duraksamayla çevrili bağlamsal dolgular kesilir; akıcı bağlamsal dolgular (review_candidates) ile kelime grubu tekrarları ve cümle yeniden başlamaları (repetition_candidates) otomatik kesilmez, kaynak-tabanlı kalıcı kimliklerle listelenir ve yalnız ajan cut_candidates ile seçtiğinde akustik kenar kurallarıyla kesilir",
-      "R6: Kesimler arasında veya klip uçlarında < 150ms artık parça kalacaksa konuşma içermiyorsa komşu kesimle birleştirilir (APPLIED_WITH_SLIVER_MERGE), konuşma içeriyorsa duraksama kesimi daraltılır veya reddedilir (AVOID_SHORT_REMNANT_CLIP)",
+      "R1: A pause >= min_pause_ms is cut with a pad_ms margin at both ends, seated onto silent windows below silence_floor_dbfs",
+      "R2: A pause < min_pause_ms (or < min_pause_ms after acoustic narrowing) is treated as natural prosody and kept (TOO_SHORT / ACOUSTIC_GAP_TOO_SHORT)",
+      "R3: A pause candidate overlapping a spoken ASR word is trimmed to the gap between words (TRIMMED_TO_WORD_GAP); rejected if the trimmed gap stays < min_pause_ms (OVERLAPS_WORD)",
+      "R4: Long untranscribed sounds (> 120ms) inside a pause are never cut (UNTRANSCRIBED_AUDIO); the cut is split around them or shortened (SPLIT_AROUND_UNTRANSCRIBED_AUDIO)",
+      "R5: Pure filler sounds (ıı, ee, uh, um) and contextual fillers surrounded by pauses are cut; fluent contextual fillers (review_candidates), word-group repetitions and sentence restarts (repetition_candidates) are never cut automatically, listed with source-based stable ids, and cut with acoustic edge rules only when the agent selects them via cut_candidates",
+      "R6: If a < 150ms leftover would remain between cuts or at clip ends, it is merged with the neighboring cut when it holds no speech (APPLIED_WITH_SLIVER_MERGE); when it holds speech the pause cut is narrowed or rejected (AVOID_SHORT_REMNANT_CLIP)",
     ],
     summary: {
-      text: `${targetClips.length} klip üzerinde ${allDecisions.length} aday incelendi -> ${allPlannedCuts.length} kesim (${totalSavedSeqMs}ms kısaldı), ${allRejectedNearMisses.length} aday korundu${allReviewCandidates.length > 0 ? `, ${allReviewCandidates.length} bağlamsal dolgu adayı` : ""}${allRepetitionCandidates.length > 0 ? `, ${allRepetitionCandidates.length} tekrar/yeniden başlama adayı` : ""}${distantRepetitionCount > 0 ? `, ${distantRepetitionCount} uzak tekrar adayı` : ""}${preservedUntranscribedCount > 0 ? `, ${preservedUntranscribedCount} korunan dökümsüz ses` : ""}${tailWithoutAudioCount > 0 ? `, ${tailWithoutAudioCount} görüntü kuyruğu adayı` : ""}`,
+      text: `${targetClips.length} clips, ${allDecisions.length} candidates examined -> ${allPlannedCuts.length} cuts (${totalSavedSeqMs}ms shorter), ${allRejectedNearMisses.length} candidates kept${allReviewCandidates.length > 0 ? `, ${allReviewCandidates.length} contextual filler candidates` : ""}${allRepetitionCandidates.length > 0 ? `, ${allRepetitionCandidates.length} repetition/restart candidates` : ""}${distantRepetitionCount > 0 ? `, ${distantRepetitionCount} distant repetition candidates` : ""}${preservedUntranscribedCount > 0 ? `, ${preservedUntranscribedCount} preserved untranscribed sounds` : ""}${tailWithoutAudioCount > 0 ? `, ${tailWithoutAudioCount} picture-tail candidates` : ""}`,
       candidates: allDecisions.length,
       accepted: allPlannedCuts.length,
       rejected: allRejectedNearMisses.length,

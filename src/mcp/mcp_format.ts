@@ -464,6 +464,26 @@ function summarizeReframeClipPlan(p: Record<string, unknown>): Record<string, un
   };
 }
 
+/** Compact media-source output: a candidate table for `library.search`, the new asset for `library.fetch`. */
+function formatMediaSourceResult(env: Record<string, unknown>): string | null {
+  const secs = (ms: unknown): string => (typeof ms === "number" ? `${(ms / 1000).toFixed(1)}s` : "?");
+  if (Array.isArray(env.candidates)) {
+    const cands = env.candidates as Array<Record<string, unknown>>;
+    const lines = [`${cands.length} candidate(s) from ${String(env.provider)} for "${String(env.query)}" (${String(env.kind)}):`];
+    for (const c of cands) {
+      const tags = Array.isArray(c.tags) && c.tags.length > 0 ? ` [${(c.tags as unknown[]).join(", ")}]` : "";
+      lines.push(`  ${String(c.id)}  ${secs(c.duration_ms)}  "${String(c.title)}"  license=${c.license ?? "unknown"}${tags}`);
+    }
+    return lines.join("\n");
+  }
+  const asset = env.asset as Record<string, unknown> | undefined;
+  if (asset && typeof asset === "object") {
+    const src = (env.source ?? asset.source ?? {}) as Record<string, unknown>;
+    return `${String(asset.handle ?? asset.id ?? "asset")} from ${String(env.provider)} id=${String(src.id ?? "?")} "${String(src.title ?? "")}" license=${String(src.license ?? "unknown")}${env.cached === true ? " (already in library)" : ""}`;
+  }
+  return null;
+}
+
 function formatCoordsGeometryTable(env: Record<string, unknown>): string | null {
   if (!Array.isArray(env.elements)) return null;
   const elements = env.elements as Array<Record<string, unknown>>;
@@ -671,7 +691,7 @@ function compactPayload(
         payload.truncated = true;
         payload.truncated_by = "max_tokens";
         payload.next_cursor = nextCursor;
-        payload.hint = `Sayfa MCP sınırına göre ${items.length} öğeye daraltıldı. Devamı için cursor="${nextCursor}" kullanın.`;
+        payload.hint = `Page narrowed to ${items.length} items for the MCP limit. Use cursor="${nextCursor}" to continue.`;
         translated = translateHints(payload) as Record<string, unknown>;
         text = JSON.stringify(translated);
       }
@@ -884,11 +904,11 @@ export function formatEnvelopeCompact(options: FormatEnvelopeCompactOptions): {
     const diag = env.diagnostic as DiagnosticLike | undefined;
     const err = env.error as { code?: string; message?: string; suggestion?: string } | string | undefined;
     if (diag) {
-      lines.push(`[${diag.code}] ${diag.what}${diag.suggestion ? ` | Öneri: ${translateCliHint(diag.suggestion)}` : ""}`);
+      lines.push(`[${diag.code}] ${diag.what}${diag.suggestion ? ` | Suggestion: ${translateCliHint(diag.suggestion)}` : ""}`);
     } else if (typeof err === "string") {
       lines.push(translateCliHint(err));
     } else if (err) {
-      lines.push(`[${err.code ?? "ERROR"}] ${err.message ?? ""}${err.suggestion ? ` | Öneri: ${translateCliHint(err.suggestion)}` : ""}`);
+      lines.push(`[${err.code ?? "ERROR"}] ${err.message ?? ""}${err.suggestion ? ` | Suggestion: ${translateCliHint(err.suggestion)}` : ""}`);
     } else if (Array.isArray(env.contract_findings) && env.contract_findings.length > 0) {
       for (const cf of (env.contract_findings as string[]).slice(0, 6)) {
         lines.push(`[CUTHOL-G105] ${cf}`);
@@ -986,7 +1006,7 @@ export function formatEnvelopeCompact(options: FormatEnvelopeCompactOptions): {
     const sevLabel =
       d.severity === "ERROR" ? "ERROR" : d.severity === "INFO" ? "INFO" : "WARN";
     lines.push(
-      `${sevLabel} [${d.code}] ${d.what}${d.suggestion ? ` | Öneri: ${translateCliHint(d.suggestion)}` : ""}`
+      `${sevLabel} [${d.code}] ${d.what}${d.suggestion ? ` | Suggestion: ${translateCliHint(d.suggestion)}` : ""}`
     );
   }
   if (diags.length > 12) lines.push(`… ${diags.length - 12} more diagnostic(s); run verify.`);
@@ -1006,6 +1026,10 @@ export function formatEnvelopeCompact(options: FormatEnvelopeCompactOptions): {
   if (spec.tool === "composition" && spec.action === "coords" && env.mode === "geometry") {
     const geometry = formatCoordsGeometryTable(env);
     if (geometry) lines.push(geometry);
+  }
+  if (spec.tool === "library" && (spec.action === "search" || spec.action === "fetch")) {
+    const media = formatMediaSourceResult(env);
+    if (media) lines.push(media);
   }
 
   if (ok && spec.tool === "render") {

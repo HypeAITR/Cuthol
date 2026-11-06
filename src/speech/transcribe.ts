@@ -24,6 +24,9 @@ import {
   transcribeWithDeepgram,
   transcribeWithLocalProvider,
 } from "./providers.js";
+import { providerCacheTag, resolveExtensionProvider } from "../extensions/ext_providers.js";
+import { transcribeWithExtensionProvider } from "./provider_ext.js";
+import { extensionNameOf, resolveAsrProvider } from "./provider_select.js";
 
 export interface TranscribeResult {
   handle: string;
@@ -37,7 +40,7 @@ export async function transcribeLibraryAsset(options: {
   workspaceDir: string;
   handle: string;
   language?: string;
-  provider?: AsrProviderId;
+  provider?: string;
   keyterms?: string[];
 }): Promise<TranscribeResult> {
   const { paths, sequence } = loadSequence(options.workspaceDir);
@@ -51,17 +54,34 @@ export async function transcribeLibraryAsset(options: {
   }
 
   const lang = (options.language ?? "tr").toLowerCase();
-  const provider: AsrProviderId = options.provider ?? "deepgram";
-  const cacheLangKey = `${provider}:${lang}`;
+  const resolvedProvider = resolveAsrProvider({
+    workspaceDir: options.workspaceDir,
+    explicit: options.provider,
+  });
+  const provider: AsrProviderId = resolvedProvider.id;
+  const extProviderName = extensionNameOf(provider);
+  // Extension transcripts are keyed by provider identity + version + content hash, so the
+  // same file transcribed by different providers keeps separate cache records.
+  const providerKeyPrefix =
+    extProviderName !== null
+      ? providerCacheTag(
+          resolveExtensionProvider({
+            extensionName: extProviderName,
+            kind: "asr",
+            workspaceDir: options.workspaceDir,
+          }).extension
+        )
+      : provider;
+  const cacheLangKey = `${providerKeyPrefix}:${lang}`;
 
   const ledger = new MediaLedger(paths.ledgerFile);
 
   try {
     const lookupKeys =
-      options.provider !== undefined
-        ? lang === "auto"
-          ? [cacheLangKey, "auto", "latest", lang]
-          : [cacheLangKey, lang]
+      // Explicit or configured providers read only their own cache record, so different
+      // providers never share transcripts; the untouched built-in default keeps the legacy lookup.
+      resolvedProvider.source !== "builtin"
+        ? [cacheLangKey]
         : lang === "auto"
           ? [cacheLangKey, "auto", "latest", "tr", "en", "deepgram:tr", "deepgram:en", "local:tr", "local:en"]
           : [cacheLangKey, lang, `deepgram:${lang}`, `local:${lang}`, "auto", "latest"];
@@ -96,7 +116,18 @@ export async function transcribeLibraryAsset(options: {
 
       const absMediaPath = resolveLibraryItemPath(paths.rootDir, item);
 
-      if (provider === "local") {
+      if (extProviderName !== null) {
+        doc = (
+          await transcribeWithExtensionProvider({
+            workspaceDir: options.workspaceDir,
+            extensionName: extProviderName,
+            audioFilePath: absMediaPath,
+            language: lang,
+            durationMs: item.probe.duration_ms,
+            keyterms: options.keyterms,
+          })
+        ).doc;
+      } else if (provider === "local") {
         doc = await transcribeWithLocalProvider({
           audioFilePath: absMediaPath,
           language: lang,
@@ -277,7 +308,7 @@ export async function transcribeLibraryAsset(options: {
       const detectedLang = doc.language?.toLowerCase();
       if (detectedLang && detectedLang !== lang) {
         ledger.setTranscript(item.digest_sha256, detectedLang, doc);
-        ledger.setTranscript(item.digest_sha256, `${provider}:${detectedLang}`, doc);
+        ledger.setTranscript(item.digest_sha256, `${providerKeyPrefix}:${detectedLang}`, doc);
       }
     }
 

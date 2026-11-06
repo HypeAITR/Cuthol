@@ -339,7 +339,7 @@ function estimateTempoAndPhaseGrid(params: {
         subharmonic_2_3_bpm: 0,
         confidence: 0,
         resolution: "no_periodic_pulse",
-        note: "Periyodik müzik vuruşu tespit edilmedi (düz sinyal veya seyrek tekil darbe); ızgara üretilmedi.",
+        note: "No periodic music beat detected (flat signal or sparse single hits); no grid generated.",
       },
     };
   }
@@ -461,16 +461,16 @@ function estimateTempoAndPhaseGrid(params: {
   const acSub23 = acAtLag((60_000 / sub23Bpm) / hopMs);
 
   let resolutionKind: TempoResolutionInfo["resolution"] = "in_range";
-  let note = `Tempo ${bestBpm} BPM (periyot ${periodMs.toFixed(1)} ms, faz ${bestPhaseMs} ms) tercih edilen [${preferredRange[0]}..${preferredRange[1]}] BPM aralığında kararlı.`;
+  let note = `Tempo ${bestBpm} BPM (period ${periodMs.toFixed(1)} ms, phase ${bestPhaseMs} ms) stable in the preferred [${preferredRange[0]}..${preferredRange[1]}] BPM range.`;
   if (Math.abs(rawBestBpm - halfBpm) <= 2.0) {
     resolutionKind = "doubled_from_half";
-    note = `Yarım tempo adayı (${rawBestBpm} BPM) algısal oktav önceliğiyle ${bestBpm} BPM ana temposuna çözümlendi.`;
+    note = `Half-tempo candidate (${rawBestBpm} BPM) resolved to the ${bestBpm} BPM main tempo by perceptual octave priority.`;
   } else if (Math.abs(rawBestBpm - doubleBpm) <= 3.0) {
     resolutionKind = "halved_from_double";
-    note = `Çift tempo adayı (${rawBestBpm} BPM) algısal oktav önceliğiyle ${bestBpm} BPM ana temposuna çözümlendi.`;
+    note = `Double-tempo candidate (${rawBestBpm} BPM) resolved to the ${bestBpm} BPM main tempo by perceptual octave priority.`;
   } else if (acSub23 > ac1Best * 0.95) {
     resolutionKind = "resolved_from_subharmonic";
-    note = `2/3 noktalı-dörtlük alt-harmonik (${sub23Bpm} BPM, tresillo/senkop) ve yarı-tempo (${halfBpm} BPM) adayları metrik bar/sekizlik uyumuyla ${bestBpm} BPM ana temposuna çözümlendi.`;
+    note = `2/3 dotted-quarter subharmonic (${sub23Bpm} BPM, tresillo/syncopation) and half-tempo (${halfBpm} BPM) candidates resolved to the ${bestBpm} BPM main tempo by metric bar/eighth-note fit.`;
   }
 
   return {

@@ -82,9 +82,9 @@ export function buildSpineClipTimingFilters(params: {
   const rawSrcSpanSec = Math.max(0, (clip.source_out_ms - clip.source_in_ms) / 1000);
   const scaledSrcSpanSec = rawSrcSpanSec / effectiveRate;
   const clipDurSec = clip.duration_ms / 1000;
-  // Rampalı klip yavaş biterse son kaynak karesiyle aralık sonu arasındaki boşluk
-  // çıkışta büyür; kuyruk dolgusunu en yavaş hızla hesapla ki son kare eksilmesin.
-  // Rampasız klipte tailRate === effectiveRate, çıktı bayt bayt aynı kalır.
+  // When a ramped clip ends slowly, the gap between the last source frame and the range end
+  // grows in the output; compute the tail padding at the slowest rate so the last frame is not lost.
+  // In an unramped clip tailRate === effectiveRate, so the output stays byte-identical.
   let tailRate = effectiveRate;
   if (hasRamp && !isStill) {
     const spanMs = Math.max(1, clip.source_out_ms - clip.source_in_ms);

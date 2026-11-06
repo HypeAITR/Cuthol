@@ -97,7 +97,7 @@ function resolveExtTransition(
     throw new CutholError(
       DIAGNOSTICS.EXTENSION_TRANSITION_UNAVAILABLE(
         kind,
-        `'ext:<eklenti>/<ad>' biçiminde değil (küçük harf, [a-z0-9_-]).`,
+        `not in 'ext:<extension>/<name>' form (lowercase, [a-z0-9_-]).`,
         clipId
       )
     );
@@ -110,8 +110,8 @@ function resolveExtTransition(
       DIAGNOSTICS.EXTENSION_TRANSITION_UNAVAILABLE(
         kind,
         loadErr
-          ? `'${ref.extension}' eklentisi yüklenemedi: ${loadErr}`
-          : `'${ref.extension}' eklentisi projede etkin değil ya da '${ref.name}' geçişini tanımlamıyor.`,
+          ? `extension '${ref.extension}' failed to load: ${loadErr}`
+          : `extension '${ref.extension}' is not enabled in the project, or does not define the '${ref.name}' transition.`,
         clipId
       )
     );

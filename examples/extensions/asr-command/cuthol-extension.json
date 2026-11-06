@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0.0",
+  "name": "asr-command",
+  "version": "1.0.0",
+  "description": "Generic bridge: runs any local speech-recognition command and maps its JSON output to the Cuthol ASR provider contract.",
+  "network": false,
+  "providers": {
+    "asr": {
+      "description": "Local ASR via a configurable command line.",
+      "script": "asr.js",
+      "config": {
+        "command": "my-asr --json {audio} --language {language}",
+        "words_path": "words",
+        "word_field": "word",
+        "start_field": "start_ms",
+        "end_field": "end_ms",
+        "confidence_field": "confidence",
+        "time_unit": "ms",
+        "text_field": "text",
+        "language_field": "language"
+      }
+    }
+  }
+}

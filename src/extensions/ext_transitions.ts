@@ -72,7 +72,7 @@ function checkTemplatePlaceholders(
     throw new CutholError(
       DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
         extName,
-        `'${label}' içindeki '{{${name}}}' bilinmiyor (bu alanda geçerli değişkenler: ${[...allowedVars].join(", ")}; parametreler: ${Object.keys(params).join(", ") || "yok"}).`
+        `'{{${name}}}' in '${label}' is unknown (valid variables here: ${[...allowedVars].join(", ")}; parameters: ${Object.keys(params).join(", ") || "none"}).`
       )
     );
   }
@@ -88,7 +88,7 @@ function parseTemplateField(
   if (v === undefined) return undefined;
   if (typeof v !== "string" || !v.trim()) {
     throw new CutholError(
-      DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'transitions.${trName}.${key}' boş olmayan bir metin olmalıdır.`)
+      DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'transitions.${trName}.${key}' must be non-empty text.`)
     );
   }
   return v.trim();
@@ -100,18 +100,18 @@ export function parseManifestTransitionsSection(
 ): Record<string, ExtensionTransitionSpec> | undefined {
   if (raw === undefined) return undefined;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new CutholError(DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'transitions' alanı bir nesne olmalıdır.`));
+    throw new CutholError(DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'transitions' must be an object.`));
   }
   const out: Record<string, ExtensionTransitionSpec> = {};
   for (const [trName, rawTr] of Object.entries(raw as Record<string, unknown>)) {
     if (!EFFECT_NAME_RE.test(trName)) {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'transitions.${trName}' geçersiz ad (küçük harf, [a-z0-9_-]).`)
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'transitions.${trName}' is an invalid name (lowercase, [a-z0-9_-]).`)
       );
     }
     if (!rawTr || typeof rawTr !== "object" || Array.isArray(rawTr)) {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'transitions.${trName}' bir nesne olmalıdır.`)
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'transitions.${trName}' must be an object.`)
       );
     }
     const obj = rawTr as Record<string, unknown>;
@@ -120,14 +120,14 @@ export function parseManifestTransitionsSection(
         throw new CutholError(
           DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
             extName,
-            `'transitions.${trName}' içinde bilinmeyen alan '${k}' (izin verilenler: ${[...ALLOWED_TRANSITION_KEYS].join(", ")}).`
+            `'transitions.${trName}' has an unknown field '${k}' (allowed: ${[...ALLOWED_TRANSITION_KEYS].join(", ")}).`
           )
         );
       }
     }
     if (obj.hold_outgoing !== undefined && typeof obj.hold_outgoing !== "boolean") {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'transitions.${trName}.hold_outgoing' boolean (true/false) olmalıdır.`)
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'transitions.${trName}.hold_outgoing' must be a boolean (true/false).`)
       );
     }
     const params = validateParamsMap(obj.params, extName, `transitions.${trName}`);
@@ -186,7 +186,7 @@ export function resolveTransitionParams(
       throw paramFailure(
         kind,
         clipId,
-        `Bilinmeyen parametre '${k}'${valid.length > 0 ? ` (geçerli parametreler: ${valid.join(", ")})` : " (bu geçiş parametre almıyor)"}.`
+        `Unknown parameter '${k}'${valid.length > 0 ? ` (valid parameters: ${valid.join(", ")})` : " (this transition takes no parameters)"}.`
       );
     }
   }
@@ -194,34 +194,34 @@ export function resolveTransitionParams(
   for (const [k, def] of Object.entries(defs)) {
     const val = raw[k] !== undefined ? raw[k] : def.default;
     if (val === undefined || val === null) {
-      if (def.required) throw paramFailure(kind, clipId, `Zorunlu parametre '${k}' eksik.`);
+      if (def.required) throw paramFailure(kind, clipId, `Required parameter '${k}' is missing.`);
       continue;
     }
     if (def.type === "number") {
       const n = typeof val === "number" ? val : Number(val);
       if (!Number.isFinite(n)) {
-        throw paramFailure(kind, clipId, `'${k}' parametresi sayı olmalıdır (verilen: ${JSON.stringify(val)}).`);
+        throw paramFailure(kind, clipId, `'${k}' must be a number (given: ${JSON.stringify(val)}).`);
       }
       if (def.min !== undefined && n < def.min) {
-        throw paramFailure(kind, clipId, `'${k}' parametresi (${n}) alt sınırın (${def.min}) altında.`);
+        throw paramFailure(kind, clipId, `'${k}' (${n}) is below the minimum (${def.min}).`);
       }
       if (def.max !== undefined && n > def.max) {
-        throw paramFailure(kind, clipId, `'${k}' parametresi (${n}) üst sınırın (${def.max}) üzerinde.`);
+        throw paramFailure(kind, clipId, `'${k}' (${n}) is above the maximum (${def.max}).`);
       }
       out[k] = n;
     } else if (def.type === "boolean") {
       if (typeof val === "boolean") out[k] = val;
       else if (["true", "1", "yes"].includes(String(val).toLowerCase())) out[k] = true;
       else if (["false", "0", "no"].includes(String(val).toLowerCase())) out[k] = false;
-      else throw paramFailure(kind, clipId, `'${k}' parametresi boolean olmalıdır (verilen: ${JSON.stringify(val)}).`);
+      else throw paramFailure(kind, clipId, `'${k}' must be a boolean (given: ${JSON.stringify(val)}).`);
     } else {
       if (typeof val !== "string" && typeof val !== "number" && typeof val !== "boolean") {
-        throw paramFailure(kind, clipId, `'${k}' parametresi metin olmalıdır (verilen: ${JSON.stringify(val)}).`);
+        throw paramFailure(kind, clipId, `'${k}' must be text (given: ${JSON.stringify(val)}).`);
       }
       out[k] = String(val);
     }
     if (def.enum && !def.enum.includes(out[k] as string | number)) {
-      throw paramFailure(kind, clipId, `'${k}' parametresi şu değerlerden biri olmalıdır: ${def.enum.join(", ")}.`);
+      throw paramFailure(kind, clipId, `'${k}' must be one of: ${def.enum.join(", ")}.`);
     }
   }
   return out;
@@ -249,10 +249,10 @@ export function substituteTransitionTemplate(
     if (name in params) {
       const rendered = formatTransitionParamValue(params[name]);
       if (/[;&|`$\r\n]/.test(rendered)) {
-        throw paramFailure(kind, clipId, `'${name}' parametre değeri süzgeçte kullanılamayacak karakterler içeriyor.`);
+        throw paramFailure(kind, clipId, `'${name}' parameter value contains characters that cannot be used in a filter.`);
       }
       return rendered;
     }
-    throw paramFailure(kind, clipId, `Şablondaki '{{${name}}}' için ne değişken ne parametre değeri var.`);
+    throw paramFailure(kind, clipId, `Neither a variable nor a parameter value exists for '{{${name}}}' in the template.`);
   });
 }

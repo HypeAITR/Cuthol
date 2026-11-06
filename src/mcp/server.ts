@@ -74,7 +74,7 @@ Workflow:
 Rules:
 - Times are '1500ms', '1.5s' or '00:01.500'. Lane x/y are % offsets from the centre of the stage.
 - Every edit returns the new revision, what changed and what an undo would revert. Undo with expect_rev; use dry_run when unsure.
-- Errors explain the fix ("Öneri"). Do not repeat an identical failing call; change the arguments.
+- Errors explain the fix ("Suggestion"). Do not repeat an identical failing call; change the arguments.
 - For your own animations: composition.scaffold preset=blank, write index.html (your file tools or composition.write) using window.__cuthol (C.word, C.beats, C.beatGrid, C.audio, C.cuts, C.drive, C.value), mount with lane.add_composition, then composition.preview. Read guide(topic='compositions') first.
 - For reusable custom helpers, brand kits, media processors or multi-step recipes: use the extension tool (list/create/show/enable/disable/promote/remove/run) and read guide(topic='extensions') or guide(topic='ext:<name>').
 - Read guide(topic=...) for details: overview, editing, speech_mix, compositions, verify_monitor, extensions, mcp.`;
@@ -479,7 +479,7 @@ export class CutholMcpServer {
         result.content[0]?.type === "text"
       ) {
         const note = recreated
-          ? `proje yeniden oluşturuldu (r${known.revision} → r${beforeStamp.revision}); önceki sonuçlar bu projeye ait değil`
+          ? `project was recreated (r${known.revision} -> r${beforeStamp.revision}); earlier results do not belong to this project`
           : `NOTE the project changed outside this session (r${known.revision} -> r${beforeStamp.revision}); re-read it with brief before relying on earlier results.`;
         result.content[0].text = `${note}\n${result.content[0].text}`;
       }

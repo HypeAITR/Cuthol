@@ -3,7 +3,7 @@
  *
  * Every error and warning emitted by Cuthol CLI or MCP tools MUST originate from this file
  * and follow the uniform structure:
- *   `[CUTHOL-<CODE>] <What Happened> | Öneri: <Next Action Hint for the Agent>`
+ *   `[CUTHOL-<CODE>] <What Happened> | Suggestion: <Next Action Hint for the Agent>`
  */
 
 export type DiagnosticSeverity = "ERROR" | "WARN" | "INFO";
@@ -34,7 +34,7 @@ export function createDiagnostic(
   suggestion: string,
   subject_id?: string
 ): CutholDiagnostic {
-  const formatted = `[${code}] ${what} | Öneri: ${suggestion}`;
+  const formatted = `[${code}] ${what} | Suggestion: ${suggestion}`;
   return { code, gate, severity, what, suggestion, subject_id, formatted };
 }
 
@@ -57,8 +57,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G210",
       "G2_ASSETS",
       "INFO",
-      `Proje klasöründe Cuthol dışından değişiklik var: ${summary}`,
-      `Önce 'cuthol workspace changes show' ile farkı görün, sonra 'cuthol workspace changes adopt' (benimse, geri alınabilir) ya da 'cuthol workspace changes revert' (Cuthol'daki son hâle döndür) çalıştırın.`
+      `External changes detected in the project folder (made outside Cuthol): ${summary}`,
+      `First inspect the diff with 'cuthol workspace changes show', then run 'cuthol workspace changes adopt' (adopt, undoable) or 'cuthol workspace changes revert' (back to Cuthol's last state).`
     ),
 
   EXTERNAL_CHANGE_WOULD_BE_OVERWRITTEN: (target: string, detail: string) =>
@@ -66,8 +66,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G211",
       "G2_ASSETS",
       "ERROR",
-      `'${target}' Cuthol dışından değiştirilmiş; bu işlem üzerine yazacaktı ve durduruldu (${detail}). Düzenlemeniz kaybolmasın diye dosya değişmedi.`,
-      `Önce 'cuthol workspace changes show' ile farkı görün, sonra 'cuthol workspace changes adopt' ya da 'cuthol workspace changes revert' çalıştırıp işlemi tekrarlayın.`
+      `'${target}' was changed outside Cuthol; this operation would have overwritten it and was stopped (${detail}). The file was left unchanged so your edit is not lost.`,
+      `First inspect the diff with 'cuthol workspace changes show', then run 'cuthol workspace changes adopt' or 'cuthol workspace changes revert' and retry the operation.`
     ),
 
   // --- System & Workspace (SYS) ---
@@ -76,8 +76,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-SYS01",
       "SYS",
       "ERROR",
-      `'${dir}' dizininde başlatılmış bir Cuthol çalışma alanı ('cuthol.sequence.json') bulunamadı.`,
-      `Önce 'cuthol workspace init "${dir}"' komutuyla çalışma alanını oluşturun.`
+      `No initialized Cuthol workspace ('cuthol.sequence.json') found in '${dir}'.`,
+      `Create the workspace first with 'cuthol workspace init "${dir}"'.`
     ),
 
   INVALID_TIME_LITERAL: (raw: string) =>
@@ -85,8 +85,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-SYS02",
       "SYS",
       "ERROR",
-      `'${raw}' geçerli bir zaman ifadesi değil.`,
-      `Açık birimli ('1250ms', '1.25s', '0.5min') veya 'MM:SS.mmm' biçiminde zaman değeri verin.`
+      `'${raw}' is not a valid time expression.`,
+      `Pass a time value with an explicit unit ('1250ms', '1.25s', '0.5min') or in 'MM:SS.mmm' form.`
     ),
 
   INVALID_COLOR: (raw: string) =>
@@ -94,8 +94,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-SYS07",
       "SYS",
       "ERROR",
-      `'${raw}' geçerli bir renk değil.`,
-      `Rengi 6 haneli onaltılık '#RRGGBB' biçiminde verin (ör. '#F7C531').`
+      `'${raw}' is not a valid color.`,
+      `Pass the color as 6-digit hex '#RRGGBB' (e.g. '#F7C531').`
     ),
 
   JOURNAL_REVISION_UNAVAILABLE: (direction: "undo" | "redo") =>
@@ -103,8 +103,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-SYS03",
       "SYS",
       "ERROR",
-      `İşlem günlüğünde '${direction}' yönünde gidilebilecek başka bir revizyon yok.`,
-      `'cuthol workspace journal list' komutuyla mevcut revizyon geçmişini kontrol edin.`
+      `No further revision to go to in the '${direction}' direction in the journal.`,
+      `Check the revision history with 'cuthol workspace journal list'.`
     ),
 
   EXTERNAL_TOOL_FAILED: (tool: string, detail: string) =>
@@ -112,8 +112,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-SYS04",
       "SYS",
       "ERROR",
-      `'${tool}' alt süreci hata ile sonlandı: ${detail}`,
-      `Girdi dosyasının bozuk olmadığını ve '${tool}' aracının sistem PATH'inde bulunduğunu doğrulayın.`
+      `'${tool}' subprocess failed: ${detail}`,
+      `Verify the input file is not corrupt and '${tool}' is on the system PATH.`
     ),
 
   MISSING_API_KEY: (envVarName: string, serviceName: string) =>
@@ -121,8 +121,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-SYS05",
       "SYS",
       "ERROR",
-      `${serviceName} servisi için '${envVarName}' ortam değişkeni tanımlı değil.`,
-      `Çalışma dizinindeki '.env' dosyasına '${envVarName}=...' anahtarını ekleyin.`
+      `Environment variable '${envVarName}' is not set for the ${serviceName} service.`,
+      `Add the '${envVarName}=...' key to the '.env' file in the working directory.`
     ),
 
   TRANSCRIPT_NOT_FOUND: (handle: string) =>
@@ -130,8 +130,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-SYS06",
       "SYS",
       "ERROR",
-      `'${handle}' kaynağı için önbellekte konuşma dökümü (transkript) bulunamadı.`,
-      `Önce 'cuthol speech transcribe --handle ${handle}' komutunu çalıştırın.`
+      `No cached transcript found for source '${handle}'.`,
+      `Run 'cuthol speech transcribe --handle ${handle}' first.`
     ),
 
   // --- Gate 1: Schema & Handle Integrity (G1_SCHEMA) ---
@@ -140,8 +140,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G101",
       "G1_SCHEMA",
       "ERROR",
-      `'${handle}' tutamacı aktif sekans içinde bulunamadı.`,
-      `'cuthol brief --lens overview' komutuyla mevcut medya, klip ve şerit tutamaçlarını listeleyin.`,
+      `Handle '${handle}' not found in the active sequence.`,
+      `List the available media, clip and lane handles with 'cuthol brief --lens overview'.`,
       handle
     ),
 
@@ -150,8 +150,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G102",
       "G1_SCHEMA",
       "ERROR",
-      `'${handle}' tutamacı sekans içinde birden fazla öğede tanımlanmış.`,
-      `Her medya ('vid_*', 'aud_*'), omurga klibi ('sp_*') ve şerit öğesi ('cue_*') benzersiz bir tutamaca sahip olmalıdır.`,
+      `Handle '${handle}' is defined on more than one item in the sequence.`,
+      `Every media item ('vid_*', 'aud_*'), spine clip ('sp_*') and lane cue ('cue_*') must have a unique handle.`,
       handle
     ),
 
@@ -160,8 +160,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G103",
       "G1_SCHEMA",
       "ERROR",
-      `'${ownerId}' öğesi kütüphanede bulunmayan '${assetHandle}' kaynağına başvuruyor.`,
-      `Önce 'cuthol library ingest' ile medyayı ekleyin veya geçerli bir kütüphane tutamacı kullanın.`,
+      `Item '${ownerId}' refers to source '${assetHandle}', which is not in the library.`,
+      `Add the media first with 'cuthol library ingest', or use a valid library handle.`,
       ownerId
     ),
 
@@ -170,8 +170,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G104",
       "G1_SCHEMA",
       "ERROR",
-      `'${cueId}' şerit öğesi var olmayan '${anchorRef}' omurga klibine çapalanmış.`,
-      `Çapayı mevcut bir 'sp_*' klibine yönlendirin veya mutlak 'at_ms' zamanına dönüştürün.`,
+      `Lane cue '${cueId}' is anchored to spine clip '${anchorRef}', which does not exist.`,
+      `Point the anchor at an existing 'sp_*' clip, or convert it to an absolute 'at_ms' time.`,
       cueId
     ),
 
@@ -180,8 +180,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G105",
       "G1_SCHEMA",
       "ERROR",
-      `'${cueId}' HyperFrames kompozisyonu sözleşme denetiminden geçemedi: ${detail}`,
-      `Kompozisyon HTML dosyasındaki 'data-composition-id', 'window.__timelines' ve determinizm kurallarını düzeltin.`,
+      `HyperFrames composition '${cueId}' failed the contract check: ${detail}`,
+      `Fix 'data-composition-id', 'window.__timelines' and the determinism rules in the composition HTML file.`,
       cueId
     ),
 
@@ -191,8 +191,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G201",
       "G2_ASSETS",
       "ERROR",
-      `'${handle}' kaynağına ait '${uri}' dosyası diskte bulunamadı.`,
-      `Dosya yolunu düzeltin veya 'cuthol library ingest' ile dosyayı yeniden içeri aktarın.`,
+      `File '${uri}' for source '${handle}' not found on disk.`,
+      `Fix the file path, or re-ingest the file with 'cuthol library ingest'.`,
       handle
     ),
 
@@ -201,8 +201,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G202",
       "G2_ASSETS",
       "ERROR",
-      `'${clipId}' klibinin kaynak bitiş noktası (${outMs}ms), medyanın fiziksel süresini (${assetDurationMs}ms) aşıyor.`,
-      `'source_out_ms' değerini ${assetDurationMs}ms veya altına çekin.`,
+      `Clip '${clipId}' source out-point (${outMs}ms) exceeds the media's physical duration (${assetDurationMs}ms).`,
+      `Bring 'source_out_ms' down to ${assetDurationMs}ms or less.`,
       clipId
     ),
 
@@ -211,8 +211,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G203",
       "G2_ASSETS",
       "ERROR",
-      `'${handle}' kaynağında ses akışı (audio stream) bulunmuyor.`,
-      `Ses analizi veya ses ayırma işlemlerini yalnızca 'has_audio: true' olan kaynaklar üzerinde çalıştırın.`,
+      `Source '${handle}' has no audio stream.`,
+      `Run audio analysis or audio separation only on sources with 'has_audio: true'.`,
       handle
     ),
 
@@ -226,14 +226,14 @@ export const DIAGNOSTICS = {
     const rateDetail =
       rFrameRate && avgFrameRate
         ? `, avg=${avgFps} fps [${avgFrameRate}], r_frame_rate=${rFrameRate}`
-        : `, ort. ${avgFps} fps`;
+        : `, avg ${avgFps} fps`;
     const frameStepMs = Math.round((1000 / Math.max(1, stageFps)) * 10) / 10;
     return createDiagnostic(
       "CUTHOL-G207",
       "G2_ASSETS",
       "INFO",
-      `'${handle}' kaynağı değişken kare hızlı (VFR${rateDetail}); Cuthol derleme sırasında görüntüyü sahne kare hızına (${stageFps} fps CFR, 'settb=AVTB,fps=${stageFps}:eof_action=pass') ve sesi 'aresample=async=1:first_pts=0' ile dönüştürür. Kaynakta ani kare hızı düşüşleri varsa o anlarda kare çoğaltma/atlama ve kesim sınırlarında ±${frameStepMs}ms (1 kare) yuvarlama görülebilir.`,
-      `Sabit kare hızına dönüştürme otomatik uygulanır; kritik kesim veya ekran kaydı geçişlerini 'cuthol monitor frame' ile kontrol edin.`,
+      `Source '${handle}' is variable frame rate (VFR${rateDetail}); during compilation Cuthol converts video to the stage frame rate (${stageFps} fps CFR, 'settb=AVTB,fps=${stageFps}:eof_action=pass') and audio with 'aresample=async=1:first_pts=0'. If the source has sudden frame-rate drops, expect frame duplication/drops there and ±${frameStepMs}ms (1 frame) rounding at cut boundaries.`,
+      `Constant-frame-rate conversion is applied automatically; check critical cuts or screen-recording transitions with 'cuthol monitor frame'.`,
       handle
     );
   },
@@ -250,8 +250,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G208",
       "G2_ASSETS",
       "INFO",
-      `'${handle}' kaynağı BT.2020 renk uzayında etiketlenmiş (color_space=${colorSpace}${trcDetail}${primDetail}); Cuthol YCbCr->BT.709 dönüşümünde 'in_color_matrix=bt2020:out_color_matrix=bt709' matrisini kullanır, ancak HDR gama/primaries ton eşlemesi (tone-mapping) uygulamaz.`,
-      `Kaynak SDR BT.2020 ise matris dönüşümü yeterlidir; HDR (PQ/HLG) kaynaklarda gerekirse harici SDR ton eşlemesi uygulayın veya 'cuthol monitor frame' ile renkleri kontrol edin.`,
+      `Source '${handle}' is tagged BT.2020 (color_space=${colorSpace}${trcDetail}${primDetail}); Cuthol uses the 'in_color_matrix=bt2020:out_color_matrix=bt709' matrix for the YCbCr->BT.709 conversion, but applies no HDR gamma/primaries tone mapping.`,
+      `For SDR BT.2020 sources the matrix conversion is enough; for HDR (PQ/HLG) sources apply external SDR tone mapping if needed, or check colors with 'cuthol monitor frame'.`,
       handle
     );
   },
@@ -261,8 +261,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G209",
       "G2_ASSETS",
       "WARN",
-      `İşlemci çıktısında video akışı ${Math.round(videoMs)} ms, ses akışı ${Math.round(audioMs)} ms; fark bir kareden (${Math.max(1, Math.round(frameMs))} ms) büyük.`,
-      `Süreyi değiştiren video filtresinde sesi çıkarmak için işlemciye "audio": "drop" ekleyin ya da süreleri eşitleyen bir audio_filter yazın.`,
+      `In the processor output the video stream is ${Math.round(videoMs)} ms and audio is ${Math.round(audioMs)} ms; the gap is larger than one frame (${Math.max(1, Math.round(frameMs))} ms).`,
+      `Add "audio": "drop" to the processor to drop audio on a duration-changing video filter, or write an audio_filter that equalizes the durations.`,
       handle
     ),
 
@@ -272,8 +272,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G301",
       "G3_TIMING",
       "ERROR",
-      `'${itemId}' öğesinin süresi (${durationMs}ms), sahne kare hızındaki minimum 2 kare sınırının (${minMs}ms) altında.`,
-      `Öğeyi silin veya süresini en az ${minMs}ms olacak şekilde uzatın.`,
+      `Item '${itemId}' duration (${durationMs}ms) is below the 2-frame minimum (${minMs}ms) at the stage frame rate.`,
+      `Delete the item or extend its duration to at least ${minMs}ms.`,
       itemId
     ),
 
@@ -282,8 +282,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G302",
       "G3_TIMING",
       "ERROR",
-      `Manyetik omurgadaki '${clipId}' klibi ${expectedStartMs}ms yerine ${actualStartMs}ms noktasında başlıyor (boşluk veya çakışma var).`,
-      `Omurga sürekliliğini onarmak için 'cuthol spine' komutlarını kullanın.`,
+      `Clip '${clipId}' on the magnetic spine starts at ${actualStartMs}ms instead of ${expectedStartMs}ms (gap or overlap).`,
+      `Use the 'cuthol spine' commands to repair spine continuity.`,
       clipId
     ),
 
@@ -292,8 +292,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G303",
       "G3_TIMING",
       "ERROR",
-      `'${clipId}' çıkış geçişi (${transMs}ms), komşu kliplerin izin verdiği maksimum süreyi (${maxAllowedMs}ms) aşıyor.`,
-      `Geçiş süresini ${maxAllowedMs}ms veya altına düşürün.`,
+      `Out-transition of '${clipId}' (${transMs}ms) exceeds the maximum allowed by the neighboring clips (${maxAllowedMs}ms).`,
+      `Lower the transition duration to ${maxAllowedMs}ms or less.`,
       clipId
     ),
 
@@ -302,8 +302,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G304",
       "G3_TIMING",
       "ERROR",
-      `'${clipId}' klibi için verilen oynatma hızı (${rate}x) geçerli sınırların (0.1x .. 16.0x) dışında.`,
-      `'--rate' değerini 0.1 ile 16.0 arasında belirleyin.`,
+      `Playback rate (${rate}x) for clip '${clipId}' is outside the valid range (0.1x .. 16.0x).`,
+      `Set '--rate' between 0.1 and 16.0.`,
       clipId
     ),
 
@@ -312,8 +312,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G305",
       "G3_TIMING",
       "ERROR",
-      `'${ownerId}' üzerindeki '${param}' anahtar kare noktası (${offsetMs}ms), öğe süresinin (0..${durationMs}ms) dışında.`,
-      `Anahtar kare zamanlarını 0ms ile ${durationMs}ms aralığında tanımlayın.`,
+      `Keyframe of '${param}' on '${ownerId}' (${offsetMs}ms) is outside the item duration (0..${durationMs}ms).`,
+      `Define keyframe times within 0ms..${durationMs}ms.`,
       ownerId
     ),
 
@@ -322,8 +322,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G306",
       "G3_TIMING",
       "WARN",
-      `'${cueId}' şerit öğesinin bitişi (${cueEndMs}ms), ana omurga süresini (${spineEndMs}ms) ${cueEndMs - spineEndMs}ms aşıyor (${spineEndMs}..${cueEndMs}ms aralığında omurga görüntüsü yok).`,
-      `Omurgaya yeni klip ekleyin/uzatın veya '${cueId}' öğesini ${spineEndMs}ms sınırına kırpın.`,
+      `Lane cue '${cueId}' ends at ${cueEndMs}ms, ${cueEndMs - spineEndMs}ms past the spine duration (${spineEndMs}ms) (no spine picture in ${spineEndMs}..${cueEndMs}ms).`,
+      `Append/extend spine clips, or trim '${cueId}' to the ${spineEndMs}ms boundary.`,
       cueId
     ),
 
@@ -332,8 +332,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G307",
       "G3_TIMING",
       severity,
-      `Kurgu boş: omurgada klip yok ve sessize alınmamış hiçbir şeritte cue yok (süre 0ms).`,
-      `Görüntülü kurgu için 'spine append' ile klip ekleyin; yalnız grafikten oluşan video için 'lane add-composition' ile kompozisyon (ve 'lane add-cue' ile ses) ekleyin. Omurga boşsa süre en geç biten cue'dan gelir.`
+      `Empty edit: no clips on the spine and no cues on any unmuted lane (duration 0ms).`,
+      `For a footage edit add clips with 'spine append'; for a graphics-only video add a composition with 'lane add-composition' (and audio with 'lane add-cue'). With an empty spine the duration comes from the latest-ending cue.`
     ),
 
   BACKDROP_ONLY_SPAN: (startMs: number, endMs: number) =>
@@ -341,8 +341,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G308",
       "G3_TIMING",
       "WARN",
-      `Omurga boş ve ${startMs}..${endMs}ms aralığında (${endMs - startMs}ms) ekranda hiçbir görsel cue yok; bu sürede yalnız sahne zemini görünür.`,
-      `Aralığı bir kompozisyon/başlık/görsel cue ile doldurun ya da bitişik cue'yu uzatın; boş zemin kasıtlıysa bu uyarı bilgi amaçlıdır.`
+      `Spine is empty and no visual cue is on screen in ${startMs}..${endMs}ms (${endMs - startMs}ms); only the stage backdrop shows during this span.`,
+      `Fill the span with a composition/title/visual cue, or extend the adjacent cue; if the empty backdrop is intentional, this warning is informational.`
     ),
 
   SHORT_SPINE_CLIP: (clipId: string, durationMs: number, recommendedMinMs: number) =>
@@ -350,8 +350,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G309",
       "G3_TIMING",
       "WARN",
-      `'${clipId}' omurga klibinin süresi (${durationMs}ms) en fazla ${recommendedMinMs}ms; kesimler arasında artık parça kalmış olabilir.`,
-      `Artık bir parça ise 'cuthol spine remove --clips ${clipId}' ile silin veya komşu kesimle birleştirin.`,
+      `Spine clip '${clipId}' is ${durationMs}ms, at most ${recommendedMinMs}ms; a leftover sliver may remain between cuts.`,
+      `If it is a leftover, delete it with 'cuthol spine remove --clips ${clipId}' or merge it with the neighboring cut.`,
       clipId
     ),
 
@@ -360,8 +360,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G312",
       "G3_TIMING",
       "INFO",
-      `'${clipId}' omurga klibi (${durationMs}ms) kısa konuşma parçası, yeniden başlama kalıntısı olabilir.`,
-      `Süre 150 ms ile ${maxMs} ms arasında ve kayıt eşiğinin üstünde ses var. Yeniden başlama kalıntısıysa 'cuthol spine remove --clips ${clipId}' ile silin; kasıtlıysa bu bilgi yok sayılır.`,
+      `Spine clip '${clipId}' (${durationMs}ms) is a short speech fragment, possibly a restart leftover.`,
+      `Duration is between 150 ms and ${maxMs} ms with audio above the silence floor. If it is a restart leftover, delete it with 'cuthol spine remove --clips ${clipId}'; if intentional, ignore this note.`,
       clipId
     ),
 
@@ -371,8 +371,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G401",
       "G4_STAGE",
       "WARN",
-      `'${cueId}' öğesi '${edge}' güvenli alan sınırını ${Math.round(overflowPx)}px aşıyor (EBU R95 / 9:16 UI marjı).`,
-      `Öğenin konumunu merkeze yaklaştırın veya genişlik/yazı boyutunu küçültün.`,
+      `Item '${cueId}' crosses the '${edge}' safe-area boundary by ${Math.round(overflowPx)}px (EBU R95 / 9:16 UI margin).`,
+      `Move the item closer to the center, or reduce its width/font size.`,
       cueId
     ),
 
@@ -381,8 +381,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G402",
       "G4_STAGE",
       "WARN",
-      `'${cueId}' altyazısının okuma hızı (${cps.toFixed(1)} krk/sn), önerilen üst sınırı (${maxCps} krk/sn — Netflix Timed Text / TR uyarlaması) aşıyor.`,
-      `Altyazı metnini iki parçaya bölün veya ekranda kalma süresini uzatın.`,
+      `Caption '${cueId}' reading speed (${cps.toFixed(1)} cps) exceeds the recommended ceiling (${maxCps} cps — Netflix Timed Text / TR adaptation).`,
+      `Split the caption text in two, or extend its on-screen duration.`,
       cueId
     ),
 
@@ -391,8 +391,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G403",
       "G4_STAGE",
       "WARN",
-      `'${textCueId}' metin öğesi, daha yüksek z_index değerine sahip '${occluderCueId}' katmanı tarafından kapatılıyor.`,
-      `Metin şeridinin 'z_index' değerini yükseltin veya üstteki katmanın konumunu kaydırın.`,
+      `Text item '${textCueId}' is covered by layer '${occluderCueId}' with a higher z_index.`,
+      `Raise the text lane's 'z_index', or shift the position of the covering layer.`,
       textCueId
     ),
 
@@ -401,8 +401,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G406",
       "G4_STAGE",
       "WARN",
-      `'${cueId}' kompozisyonu '${detectedFeatures.join(", ")}' içeriyor ancak 'overlay_alpha' (Mod A) modunda çalışıyor; bu efektler alttaki video piksellerini göremez.`,
-      `Efektin alttaki video piksellerini işlemesi için '--mode scene_host' bayrağını açıkça belirtin.`,
+      `Composition '${cueId}' contains '${detectedFeatures.join(", ")}' but runs in 'overlay_alpha' (Mode A); these effects cannot see the video pixels underneath.`,
+      `Pass '--mode scene_host' explicitly so the effect processes the video pixels underneath.`,
       cueId
     ),
 
@@ -417,10 +417,10 @@ export const DIAGNOSTICS = {
       "CUTHOL-G407",
       "G4_STAGE",
       severity,
-      `'${cueId}' kompozisyonunda HyperFrames lint bulgusu (${ruleCode}): ${message}`,
+      `HyperFrames lint finding in composition '${cueId}' (${ruleCode}): ${message}`,
       fixHint && fixHint.trim()
         ? fixHint.trim()
-        : `Kompozisyon HTML/GSAP kodunu '${ruleCode}' kuralına göre düzeltin.`,
+        : `Fix the composition HTML/GSAP code per rule '${ruleCode}'.`,
       cueId
     ),
 
@@ -429,8 +429,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G409",
       "G4_STAGE",
       "WARN",
-      `'${itemId}' üzerindeki '${field}' bu sürümde render'a uygulanmıyor.`,
-      `Bu alanı varsayılanında bırakın. Omurga kliplerinde sabit ve zarflı parlaklık/kontrast/doygunluk, renk sıcaklığı ve LUT render'a girer; hareket bulanıklığı, maske ve şerit cue'larındaki renk zarfları girmez.`,
+      `'${field}' on '${itemId}' is not applied to the render in this version.`,
+      `Leave this field at its default. On spine clips, static and enveloped brightness/contrast/saturation, color temperature and LUT reach the render; motion blur, masks and color envelopes on lane cues do not.`,
       itemId
     ),
 
@@ -440,8 +440,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G501",
       "G5_SIGNAL",
       "WARN",
-      `'${itemId}' ses sinyalinin gerçek tepe noktası (${peakDbtp.toFixed(1)} dBTP), ITU-R BS.1770-4 tavanını (${ceilingDbtp.toFixed(1)} dBTP) aşıyor.`,
-      `'cuthol mix normalize --target-lufs -14' çalıştırın veya klip kazancını ('gain_db') düşürün.`,
+      `True peak of audio signal '${itemId}' (${peakDbtp.toFixed(1)} dBTP) exceeds the ITU-R BS.1770-4 ceiling (${ceilingDbtp.toFixed(1)} dBTP).`,
+      `Run 'cuthol mix normalize --target-lufs -14', or lower the clip gain ('gain_db').`,
       itemId
     ),
 
@@ -450,8 +450,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G502",
       "G5_SIGNAL",
       "WARN",
-      `${timestampMs}ms zaman damgasındaki örneklenen kare neredeyse tamamen karanlık/boş veya düz zemin renginde (luma ort=${lumaMean.toFixed(1)}, std=${lumaStd.toFixed(2)}).`,
-      `'cuthol monitor frame --at ${timestampMs}ms' ile kareyi kontrol edin; kasıtlı kararma (fade) değilse kaynak aralığını düzeltin.`
+      `Sampled frame at ${timestampMs}ms is almost fully dark/blank or flat backdrop color (luma mean=${lumaMean.toFixed(1)}, std=${lumaStd.toFixed(2)}).`,
+      `Check the frame with 'cuthol monitor frame --at ${timestampMs}ms'; if it is not an intentional fade, fix the source range.`
     ),
 
   RENDER_EDGE_STRIP: (edges: string[], width: number, height: number) =>
@@ -459,8 +459,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G506",
       "G5_SIGNAL",
       "WARN",
-      `Render çıktısının ${edges.join(" ve ")} kenarında 8 piksellik siyah bir şerit var (${width}x${height}); içerik kenara kadar uzanmıyor.`,
-      `Bu genellikle bir ffmpeg sürümünün 16'nın katı olmayan genişliklerde (ör. 1080) planar RGB'den yuv420p'ye dönüşümde son sütunları sıfırlamasından kaynaklanır. ffmpeg/HyperFrames sürümünü kontrol edin ve render'ı tekrar alın; sorun sürerse sahne genişliğini 16'nın katına ayarlayın.`
+      `There is an 8px black strip on the ${edges.join(" and ")} edge of the render output (${width}x${height}); the content does not reach the edge.`,
+      `This is usually caused by an ffmpeg build zeroing the last columns when converting planar RGB to yuv420p at widths that are not multiples of 16 (e.g. 1080). Check the ffmpeg/HyperFrames version and re-render; if the problem persists, set the stage width to a multiple of 16.`
     ),
 
   RENDER_BLANK_FRAMES_DETECTED: (
@@ -476,11 +476,11 @@ export const DIAGNOSTICS = {
       "G5_SIGNAL",
       "WARN",
       events.every((e) => e.clip_id)
-        ? `Render çıktısında aktif omurga klibi sırasında ${events.length} noktada (${totalFrames} kare) düz/zemin renginde boş kare tespit edildi: ${timeList}.`
-        : `Render çıktısında görsel cue olmayan (yalnız sahne zemini görünen) ${events.length} aralıkta (${totalFrames} kare) boş kare var: ${timeList}.`,
+        ? `Blank flat/backdrop-colored frames detected in the render output at ${events.length} point(s) (${totalFrames} frames) during an active spine clip: ${timeList}.`
+        : `Blank frames in the render output in ${events.length} span(s) (${totalFrames} frames) with no visual cue (only the stage backdrop visible): ${timeList}.`,
       events.every((e) => e.clip_id)
-        ? `'cuthol monitor frame --at ${firstMs}ms' ile kesim noktasını kontrol edin; kasıtlı kararma (fade) değilse kaynak klip aralığını veya geçiş sınırlarını düzeltin.`
-        : `'cuthol monitor frame --at ${firstMs}ms' ile kontrol edin; aralığı bir kompozisyon/görsel cue ile doldurun ya da bitişik cue'yu uzatın.`
+        ? `Check the cut point with 'cuthol monitor frame --at ${firstMs}ms'; if it is not an intentional fade, fix the source clip range or the transition boundaries.`
+        : `Check with 'cuthol monitor frame --at ${firstMs}ms'; fill the span with a composition/visual cue, or extend the adjacent cue.`
     );
   },
 
@@ -489,8 +489,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G503",
       "G5_SIGNAL",
       "ERROR",
-      `'${compositionDir}' HyperFrames kompozisyonu render edilemedi; render durduruldu (yerine hiçbir yedek görüntü konmaz): ${reason}`,
-      `Kompozisyonu 'composition preview' ile açıp hatayı görün, HTML/GSAP kodunu 'npx hyperframes check' ile kontrol edin; tarayıcı (Chrome/Edge) erişimini 'npx hyperframes doctor' ile doğrulayın.`,
+      `HyperFrames composition '${compositionDir}' failed to render; the render was stopped (no fallback image is substituted): ${reason}`,
+      `Open the composition with 'composition preview' to see the error, check the HTML/GSAP code with 'npx hyperframes check'; verify browser (Chrome/Edge) access with 'npx hyperframes doctor'.`,
       compositionDir
     ),
 
@@ -500,9 +500,9 @@ export const DIAGNOSTICS = {
       "G5_SIGNAL",
       "WARN",
       mode === "skipped"
-        ? `Omurgadaki '${clipIds.join(", ")}' kliplerinde konuşma dökümü (transkript) bulunmadığı için ducking yalnızca transkriptli klipler ve 'ln_vo' seslendirmelerine göre uygulandı.`
-        : `Omurgadaki '${clipIds.join(", ")}' kliplerinde konuşma dökümü (transkript) bulunmadığı için ducking sinyal tabanlı akustik enerji (VAD) üzerinden hesaplandı.`,
-      `Kelime hassasiyetinde ducking için konuşma içeren kliplerde önce 'cuthol speech transcribe --handle <vid_XX>' çalıştırın.`
+        ? `Spine clips '${clipIds.join(", ")}' have no transcript, so ducking was applied from transcribed clips and 'ln_vo' voiceovers only.`
+        : `Spine clips '${clipIds.join(", ")}' have no transcript, so ducking was computed from signal-based acoustic energy (VAD).`,
+      `For word-accurate ducking, run 'cuthol speech transcribe --handle <vid_XX>' first on clips containing speech.`
     ),
 
   OPAQUE_OVERLAY_LEAK: (cueId: string, opaqueRatio: number, cornerAlphaMax: number) =>
@@ -510,8 +510,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G505",
       "G5_SIGNAL",
       "WARN",
-      `'${cueId}' şeffaf (transparent) overlay kompozisyonunda arka plan sızıntısı tespit edildi (tam opak oran=%${(opaqueRatio * 100).toFixed(1)}, köşe alfa=${cornerAlphaMax}/255).`,
-      `Kompozisyon HTML/CSS içinde 'body, #root { background: transparent; }' olduğundan ve '[data-cuthol-preview]' elemanının kalmadığından emin olun.`,
+      `Background leak detected in transparent overlay composition '${cueId}' (fully-opaque ratio=${(opaqueRatio * 100).toFixed(1)}%, corner alpha=${cornerAlphaMax}/255).`,
+      `Make sure the composition HTML/CSS has 'body, #root { background: transparent; }' and no '[data-cuthol-preview]' element remains.`,
       cueId
     ),
 
@@ -520,8 +520,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G507",
       "G5_SIGNAL",
       "WARN",
-      `'${cueId}' kompozisyonu 'C.audio' kullanıyor ancak penceresinde ses enerjisi zarfı üretilemedi (${detail}); 'C.audio' her karede 0 döner.`,
-      `Kompozisyon penceresinde aktif bir ses kaynağı (omurga, seslendirme, efekt veya müzik) bulunduğundan ve medya dosyasının okunabilir olduğundan emin olun ('cuthol library waveform --handle <aud_XX|vid_XX>').`,
+      `Composition '${cueId}' uses 'C.audio' but no audio-energy envelope could be produced in its window (${detail}); 'C.audio' returns 0 every frame.`,
+      `Make sure an active audio source (spine, voiceover, effect or music) is in the composition window and the media file is readable ('cuthol library waveform --handle <aud_XX|vid_XX>').`,
       cueId
     ),
 
@@ -537,7 +537,7 @@ export const DIAGNOSTICS = {
     const summary = issues
       .map(
         (x) =>
-          `${x.item_id}@${Math.round(x.check_at_ms)}ms (${x.detail}, ofset=${x.measured_offset_ms >= 0 ? "+" : ""}${x.measured_offset_ms.toFixed(1)}ms, benzerlik=${x.similarity.toFixed(2)})`
+          `${x.item_id}@${Math.round(x.check_at_ms)}ms (${x.detail}, offset=${x.measured_offset_ms >= 0 ? "+" : ""}${x.measured_offset_ms.toFixed(1)}ms, similarity=${x.similarity.toFixed(2)})`
       )
       .join("; ");
     const firstId = issues[0]?.item_id;
@@ -545,8 +545,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G508",
       "G5_SIGNAL",
       "WARN",
-      `Render sonrası ses sağlık kontrolünde ${issues.length} noktada ses kayması veya sinyal kaybı tespit edildi: ${summary}.`,
-      `İlgili ses öğesinin ('${firstId ?? "cue/klip"}') bölüm sınırı geçişini, başlangıç zamanını ve ses zincirini kontrol edip render'ı yenileyin.`,
+      `Post-render audio health check found audio drift or signal loss at ${issues.length} point(s): ${summary}.`,
+      `Check the segment-boundary transition, start time and audio chain of the affected audio item ('${firstId ?? "cue/clip"}') and re-render.`,
       firstId
     );
   },
@@ -556,8 +556,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G109",
       "G1_SCHEMA",
       "ERROR",
-      `Beklenen revizyon (r${expectedRev}) ile aktif sekans revizyonu (r${actualRev}) uyuşmuyor.`,
-      `'cuthol brief --lens overview' veya 'cuthol workspace journal list' ile güncel revizyonu kontrol edip '--expect-rev ${actualRev}' kullanın.`
+      `Expected revision (r${expectedRev}) does not match the active sequence revision (r${actualRev}).`,
+      `Check the current revision with 'cuthol brief --lens overview' or 'cuthol workspace journal list' and use '--expect-rev ${actualRev}'.`
     ),
 
   UNKNOWN_FLAG: (flag: string, command: string, suggestionFix: string) =>
@@ -565,8 +565,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G110",
       "G1_SCHEMA",
       "ERROR",
-      `'${command}' komutunda bilinmeyen veya çakışan bayrak: '${flag}'.`,
-      `Şu komutu kullanın: ${suggestionFix}`
+      `Unknown or conflicting flag '${flag}' in command '${command}'.`,
+      `Use this command: ${suggestionFix}`
     ),
 
   PROTECTED_TARGET: (targetIds: string[], operation: string) =>
@@ -574,8 +574,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G111",
       "G1_SCHEMA",
       "ERROR",
-      `'${operation}' işlemi kilitli/korumalı varlıkları ('${targetIds.join(", ")}') silecek veya değiştirecek.`,
-      `Önce '--dry-run' ile planı inceleyin; gerçekten silmek/değiştirmek istiyorsanız '--allow-protected ${targetIds.join(",")}' bayrağını ekleyin.`
+      `Operation '${operation}' would delete or modify locked/protected items ('${targetIds.join(", ")}').`,
+      `Inspect the plan first with '--dry-run'; if you really want to delete/modify them, add '--allow-protected ${targetIds.join(",")}'.`
     ),
 
   INVALID_EXTENSION_MANIFEST: (extNameOrPath: string, detail: string) =>
@@ -583,8 +583,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G112",
       "G1_SCHEMA",
       "ERROR",
-      `'${extNameOrPath}' eklentisinin manifest dosyası ('cuthol-extension.json') geçersiz: ${detail}`,
-      `Manifest şemasını ('name', 'version', 'description' ve isteğe bağlı 'network', 'helper', 'assets', 'processors', 'recipes', 'guide') kontrol edin; kılavuz için 'cuthol guide --topic extensions' çalıştırın.`,
+      `Manifest file ('cuthol-extension.json') of extension '${extNameOrPath}' is invalid: ${detail}`,
+      `Check the manifest schema ('name', 'version', 'description' and optional 'network', 'helper', 'assets', 'processors', 'recipes', 'guide'); run 'cuthol guide --topic extensions' for the guide.`,
       extNameOrPath
     ),
 
@@ -593,8 +593,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G113",
       "G1_SCHEMA",
       "ERROR",
-      `'${name}' eklentisi '${dirPath}' konumunda zaten mevcut.`,
-      `Farklı bir ad seçin, mevcut eklentiyi düzenleyin veya önce 'cuthol extension remove --name ${name}' ile silin.`,
+      `Extension '${name}' already exists at '${dirPath}'.`,
+      `Pick a different name, edit the existing extension, or delete it first with 'cuthol extension remove --name ${name}'.`,
       name
     ),
 
@@ -603,8 +603,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G204",
       "G2_ASSETS",
       "ERROR",
-      `'${name}' eklentisi ne proje eklenti klasöründe ne de kalıcı eklenti klasöründe bulundu (aranan: ${searchedPaths.join(", ") || "yok"}).`,
-      `'cuthol extension list' ile mevcut eklentileri görün veya 'cuthol extension create --name ${name}' ile oluşturun.`,
+      `Extension '${name}' found in neither the project extensions folder nor the persistent extensions folder (searched: ${searchedPaths.join(", ") || "none"}).`,
+      `List existing extensions with 'cuthol extension list', or create it with 'cuthol extension create --name ${name}'.`,
       name
     ),
 
@@ -622,9 +622,9 @@ export const DIAGNOSTICS = {
       "G2_ASSETS",
       severity,
       detail
-        ? `Projede etkin olan '${name}' eklentisi veya kompozisyondaki kopyası kaynağından farklı (${detail}; sekansta kayıtlı: v${expectedVersion} ${expectedHash}, diskte güncel: v${actualVersion} ${actualHash}); render eski kopyayla çıkmaması için durdurulur.`
-        : `Projede etkin olan '${name}' eklentisi diskte değişmiş (sekansta kayıtlı: v${expectedVersion} ${expectedHash}, diskte güncel: v${actualVersion} ${actualHash}); render eski kopyayla çıkmaması için durdurulur.`,
-      `Değişikliği onaylayıp yeni içerik özetine (hash) geçmek ve kompozisyonları senkronlamak için 'cuthol extension enable --name ${name}' çalıştırın.`,
+        ? `Extension '${name}' enabled in the project, or its copy in the composition, differs from its source (${detail}; pinned in sequence: v${expectedVersion} ${expectedHash}, current on disk: v${actualVersion} ${actualHash}); the render is stopped so it does not go out with the stale copy.`
+        : `Extension '${name}' enabled in the project changed on disk (pinned in sequence: v${expectedVersion} ${expectedHash}, current on disk: v${actualVersion} ${actualHash}); the render is stopped so it does not go out with the stale copy.`,
+      `Run 'cuthol extension enable --name ${name}' to accept the change, move to the new content hash and sync the compositions.`,
       name
     ),
 
@@ -633,8 +633,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G206",
       "G2_ASSETS",
       "ERROR",
-      `'${name}' eklentisi güvenlik sınırını ihlal etti: ${detail}`,
-      `Eklenti yalnızca kendi klasörü içindeki dosyaları okuyabilir ve yalnızca Cuthol'un verdiği çıktı yoluna veya CUTHOL_EXT_TMP klasörüne yazabilir.`,
+      `Extension '${name}' violated the security boundary: ${detail}`,
+      `An extension may only read files inside its own folder, and only write to the output path given by Cuthol or to CUTHOL_EXT_TMP.`,
       name
     ),
 
@@ -643,8 +643,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-SYS08",
       "SYS",
       "ERROR",
-      `'${name}' eklentisinin '${target}' çalıştırması başarısız oldu: ${detail}`,
-      `Eklenti betiğini/filtresini ve girdi parametrelerini ('cuthol extension show --name ${name}') kontrol edin.`,
+      `Run of '${target}' by extension '${name}' failed: ${detail}`,
+      `Check the extension script/filter and the input parameters ('cuthol extension show --name ${name}').`,
       name
     ),
 
@@ -656,14 +656,14 @@ export const DIAGNOSTICS = {
     errnoCode?: string
   ) => {
     const clipInfo =
-      typeof clipCount === "number" ? `, klip sayısı: ${clipCount}` : "";
+      typeof clipCount === "number" ? `, clip count: ${clipCount}` : "";
     const codeInfo = errnoCode ? ` (${errnoCode})` : "";
     return createDiagnostic(
       "CUTHOL-SYS09",
       "SYS",
       "ERROR",
-      `'${tool}' alt süreci başlatılamadı${codeInfo}: komut satırı çok uzun (${commandLength} karakter, işletim sistemi sınırı: ${limitChars} karakter${clipInfo}).`,
-      `Filtre grafiğini dosyadan ('-/filter_complex <dosya>') geçirin veya çok klipli sekansı zaman parçalı (segmented) derleme yoluyla işleyin.`
+      `Could not start the '${tool}' subprocess${codeInfo}: command line too long (${commandLength} chars, OS limit: ${limitChars} chars${clipInfo}).`,
+      `Pass the filter graph from a file ('-/filter_complex <file>'), or process the multi-clip sequence via time-segmented compilation.`
     );
   },
 
@@ -676,14 +676,14 @@ export const DIAGNOSTICS = {
   }) => {
     const stalledSec = (Math.max(0, options.stalledMs) / 1000).toFixed(1);
     const threshSec = (Math.max(0, options.thresholdMs) / 1000).toFixed(1);
-    const lastProg = options.lastProgress?.trim() || "hiç ilerleme/çıktı üretilmedi";
+    const lastProg = options.lastProgress?.trim() || "no progress/output produced";
     const cmdSum = options.commandSummary?.trim() || options.step;
     return createDiagnostic(
       "CUTHOL-SYS10",
       "SYS",
       "ERROR",
-      `'${options.step}' alt süreci ilerleme durduğu için sonlandırıldı (${stalledSec}sn boyunca ilerleme yok, eşik=${threshSec}sn; son ilerleme: ${lastProg}; komut: ${cmdSum}).`,
-      `Donanım kodlayıcı (NVENC/AMF/QSV/VAAPI/VideoToolbox) veya tarayıcı alt süreci kilitlenmiş olabilir; işlemi tekrar deneyin, GPU kodlamayı devre dışı bırakmak için 'CUTHOL_ENCODER=x264' kullanın veya ilerleme eşiğini 'CUTHOL_STALL_TIMEOUT_SEC' ile ayarlayın.`
+      `Subprocess '${options.step}' was terminated because progress stalled (no progress for ${stalledSec}s, threshold=${threshSec}s; last progress: ${lastProg}; command: ${cmdSum}).`,
+      `The hardware encoder (NVENC/AMF/QSV/VAAPI/VideoToolbox) or a browser subprocess may be stuck; retry the operation, use 'CUTHOL_ENCODER=x264' to disable GPU encoding, or set the progress threshold with 'CUTHOL_STALL_TIMEOUT_SEC'.`
     );
   },
 
@@ -692,8 +692,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G311",
       "G3_TIMING",
       "ERROR",
-      `'${piece}' bir kesim aralığı değil; her parça 'başlangıç..bitiş' biçiminde olmalı.`,
-      `Bozuk parçayı '2s..3s' biçiminde yazın. Birden çok aralığı virgülle ayırın: '--ranges 2s..3s,6s..7s'.`
+      `'${piece}' is not a cut range; every piece must be in 'start..end' form.`,
+      `Write the broken piece as '2s..3s'. Separate multiple ranges with commas: '--ranges 2s..3s,6s..7s'.`
     ),
 
   UNITLESS_TIME_AS_MS: () =>
@@ -701,8 +701,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G114",
       "G1_SCHEMA",
       "WARN",
-      "Birimsiz değerler milisaniye sayıldı; saniye mi demek istediniz? (ör. 21.1s)",
-      "Zaman değerlerine birim ekleyin (ör. '21.1s' veya '00:21.1'). Birimsiz sayılar milisaniye olarak kalır."
+      "Unitless values were read as milliseconds; did you mean seconds? (e.g. 21.1s)",
+      "Add units to time values (e.g. '21.1s' or '00:21.1'). Unitless numbers stay milliseconds."
     ),
 
   QUERY_PAGE_TOKEN_TRUNCATED: (returned: number, nextCursor: string) =>
@@ -710,8 +710,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G115",
       "G1_SCHEMA",
       "WARN",
-      `Sayfa token bütçesinde kesildi, ${returned} öğe döndü; devam için next_cursor=${nextCursor} kullanın`,
-      `Kaldığınız yerden devam etmek için '--cursor ${nextCursor}' kullanın veya '--max-tokens' bütçesini yükseltin.`
+      `Page cut at the token budget, returned ${returned} items; use next_cursor=${nextCursor} to continue`,
+      `Use '--cursor ${nextCursor}' to continue where you left off, or raise the '--max-tokens' budget.`
     ),
 
   INVALID_CUE_EXCISE_KIND: (cueId: string, kind: string) =>
@@ -719,8 +719,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G310",
       "G3_TIMING",
       "ERROR",
-      `'${cueId}' öğesi ('${kind}') doğrusal kaynak medya akışına sahip olmadığı için 'lane excise' ile içinden aralık çıkarılamaz.`,
-      `'lane excise' yalnızca ses ('voiceover', 'music', 'sfx') ve video ('broll') medya cue'larında çalışır. Kompozisyon, başlık, altyazı veya durağan görsellerin süresini değiştirmek için 'cuthol lane update-cue --cue ${cueId} --duration <süre>' veya silmek için 'cuthol lane remove-cue --cues ${cueId}' kullanın.`,
+      `Item '${cueId}' ('${kind}') has no linear source media stream, so no range can be excised from it with 'lane excise'.`,
+      `'lane excise' only works on audio ('voiceover', 'music', 'sfx') and video ('broll') media cues. To change the duration of compositions, titles, captions or stills use 'cuthol lane update-cue --cue ${cueId} --duration <duration>', or 'cuthol lane remove-cue --cues ${cueId}' to delete.`,
       cueId
     ),
 
@@ -729,8 +729,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G313",
       "G3_TIMING",
       "ERROR",
-      `'${cueId}' ('${kind}') bir ses cue'su değil; konuşma temizliği yalnız ses dosyası taşıyan 'voiceover', 'music' ve 'sfx' cue'larında çalışır.`,
-      `Ses kaydını 'cuthol lane add-cue --lane ln_vo --kind voiceover --asset <aud_XX>' ile yerleştirin. Omurgadaki görüntüyü temizlemek için 'cuthol speech cleanup --clip <sp_XX>' kullanın. Kompozisyon, başlık, altyazı, b-roll ve durağan görsel bu komutla kesilmez.`,
+      `'${cueId}' ('${kind}') is not an audio cue; speech cleanup only runs on 'voiceover', 'music' and 'sfx' cues carrying an audio file.`,
+      `Place the recording with 'cuthol lane add-cue --lane ln_vo --kind voiceover --asset <aud_XX>'. To clean footage on the spine use 'cuthol speech cleanup --clip <sp_XX>'. Compositions, titles, captions, b-roll and stills are not cut by this command.`,
       cueId
     ),
 
@@ -739,8 +739,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G314",
       "G3_TIMING",
       "ERROR",
-      "Konuşma temizliği aynı çağrıda hem omurga klibi hem ses cue'su alamaz.",
-      `Ses cue'su için 'cuthol speech cleanup --cue <cue_XX>' (veya '--cues a,b'), omurga için 'cuthol speech cleanup --clip <sp_XX>' kullanın.`
+      "Speech cleanup cannot take both a spine clip and an audio cue in the same call.",
+      `Use 'cuthol speech cleanup --cue <cue_XX>' (or '--cues a,b') for an audio cue, 'cuthol speech cleanup --clip <sp_XX>' for the spine.`
     ),
 
   CLEANUP_BAD_ACROSS: (value: string) =>
@@ -748,8 +748,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G315",
       "G3_TIMING",
       "ERROR",
-      `'${value}' geçerli bir kayma kapsamı değil.`,
-      `Ses cue'su temizliğinde '--across' değeri 'lane' (varsayılan), 'all_lanes', 'all', 'spine' veya 'none' olmalıdır. Bu, 'lane excise --across' ile aynı anlamdadır.`
+      `'${value}' is not a valid shift scope.`,
+      `In audio-cue cleanup '--across' must be 'lane' (default), 'all_lanes', 'all', 'spine' or 'none'. This means the same as 'lane excise --across'.`
     ),
 
 
@@ -759,8 +759,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G116",
       "G1_SCHEMA",
       "ERROR",
-      `'--ramp' geçersiz: ${detail}`,
-      `Doğru biçim: '--ramp "0s:1,1s:1,2.5s:4"' (kaynak ofseti:hız çiftleri; ofsetler kesin artan, hız 0.1..16, ofsetler klibin 0..kaynak aralığında, en az 2 nokta). Kaldırmak için '--ramp none'. Örnek: 'cuthol spine speed --clip sp_01 --ramp "0s:1,2s:4"'. '--rate' ile bir arada verilmez.`
+      `'--ramp' is invalid: ${detail}`,
+      `Correct form: '--ramp "0s:1,1s:1,2.5s:4"' (source offset:rate pairs; offsets strictly increasing, rate 0.1..16, offsets within the clip's 0..source range, at least 2 points). '--ramp none' removes it. Example: 'cuthol spine speed --clip sp_01 --ramp "0s:1,2s:4"'. Cannot be combined with '--rate'.`
     ),
 
   SPEED_RAMP_AUDIO_APPROX: (clipId: string, minRate: number, maxRate: number) =>
@@ -768,8 +768,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G410",
       "G4_STAGE",
       "WARN",
-      `'${clipId}' hız rampasında 0.5..2.0 aralığı dışında hız var (${minRate.toFixed(2)}..${maxRate.toFixed(2)}); ses rampayı izler ama uç hızlarda kalite düşer (zincirli atempo ya da büyük perde kayması).`,
-      `Taslak render çıktısında sesi dinleyin; konuşmalı klipte rampa uçlarını 0.5..2.0 aralığında tutun: 'cuthol spine speed --clip ${clipId} --ramp "0s:1,..."'.`,
+      `Speed ramp on '${clipId}' has rates outside 0.5..2.0 (${minRate.toFixed(2)}..${maxRate.toFixed(2)}); audio follows the ramp but quality drops at extreme rates (chained atempo or large pitch shift).`,
+      `Listen to the audio in the draft render; on clips with speech keep the ramp ends within 0.5..2.0: 'cuthol spine speed --clip ${clipId} --ramp "0s:1,..."'.`,
       clipId
     ),
 
@@ -778,8 +778,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G117",
       "G4_STAGE",
       "WARN",
-      `'${clipId}' hız rampasındaki ${offsetMs}ms ofseti kaynak aralığını (0..${spanMs}ms) aşıyor; ${spanMs}ms değerine sabitlendi.`,
-      `Rampa ofsetlerini 0..${spanMs}ms aralığına çekin: 'cuthol spine speed --clip ${clipId} --ramp "0s:1,..."'.`,
+      `Offset ${offsetMs}ms in the speed ramp of '${clipId}' exceeds the source range (0..${spanMs}ms); clamped to ${spanMs}ms.`,
+      `Bring the ramp offsets into 0..${spanMs}ms: 'cuthol spine speed --clip ${clipId} --ramp "0s:1,..."'.`,
       clipId
     ),
 
@@ -791,9 +791,9 @@ export const DIAGNOSTICS = {
       "CUTHOL-G118",
       "G1_SCHEMA",
       "ERROR",
-      `'${clipId}' klibindeki '${fxId}' efekti ('${kind}') geçersiz: ${detail}`,
+      `Effect '${fxId}' ('${kind}') on clip '${clipId}' is invalid: ${detail}`,
       suggestion ??
-        `'cuthol spine fx remove --clip ${clipId} --fx ${fxId}' ile kaldırın ya da 'cuthol spine fx set --clip ${clipId} --fx ${fxId} --param ad=değer' ile düzeltin.`,
+        `Remove it with 'cuthol spine fx remove --clip ${clipId} --fx ${fxId}', or fix it with 'cuthol spine fx set --clip ${clipId} --fx ${fxId} --param name=value'.`,
       clipId
     ),
 
@@ -802,8 +802,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G119",
       "G1_SCHEMA",
       "ERROR",
-      `'${clipId}' klibindeki '${parameter}' zarfı uygulanamıyor: ${reason}`,
-      `Zarfı kaldırın ya da zarflanabilir bir parametreye taşıyın ('cuthol spine envelope --clip ${clipId} --param <ad> --points <...>'); hangi parametrelerin zarflanabildiğini eklenti bildirir ('animatable').`,
+      `Envelope '${parameter}' on clip '${clipId}' cannot be applied: ${reason}`,
+      `Remove the envelope or move it to an envelopable parameter ('cuthol spine envelope --clip ${clipId} --param <name> --points <...>'); the extension declares which parameters are envelopable ('animatable').`,
       clipId
     ),
 
@@ -819,8 +819,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G411",
       "G4_STAGE",
       "WARN",
-      `'${clipId}' klibindeki '${fxId}' efekti (${ref}) sabitlenenden farklı bir eklentiyle derleniyor (sekansta: ${pinnedLabel}, diskte: ${actualLabel}).`,
-      `Değişikliği onaylayıp yeni sürüme geçmek için 'cuthol extension enable --name ${extName}' çalıştırın.`,
+      `Effect '${fxId}' (${ref}) on clip '${clipId}' is compiling against a different extension than pinned (in sequence: ${pinnedLabel}, on disk: ${actualLabel}).`,
+      `Run 'cuthol extension enable --name ${extName}' to accept the change and move to the new version.`,
       clipId
     ),
 
@@ -832,8 +832,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G120",
       "G1_SCHEMA",
       "ERROR",
-      `'${subject}' için easing adı '${name}' geçersiz.`,
-      `Geçerli easing adları: 'linear', 'ease_in', 'ease_out', 'ease_in_out', 'hold', 'cubic_bezier'. Eğri için '--easing "cubic-bezier(x1,y1,x2,y2)"' kullanın (x1 ve x2 0..1 aralığında; ör. 'cubic-bezier(0.25,0.1,0.25,1)').`,
+      `Easing name '${name}' for '${subject}' is invalid.`,
+      `Valid easing names: 'linear', 'ease_in', 'ease_out', 'ease_in_out', 'hold', 'cubic_bezier'. For a curve use '--easing "cubic-bezier(x1,y1,x2,y2)"' (x1 and x2 within 0..1; e.g. 'cubic-bezier(0.25,0.1,0.25,1)').`,
       subject
     ),
 
@@ -842,8 +842,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G120",
       "G1_SCHEMA",
       "ERROR",
-      `'${subject}' klibinin çıkış geçişinde 'hold' easing kullanılamaz: adım eğrisi geçişi görünmeden bitirir (ilerleme 0'da takılıp sonda 1'e sıçrar).`,
-      `Geçişte 'linear', 'ease_in', 'ease_out', 'ease_in_out' ya da 'cubic_bezier' kullanın (ör. 'cuthol spine transition --clip ${subject} --easing ease_in_out').`,
+      `'hold' easing cannot be used in the out-transition of clip '${subject}': the step curve ends the transition unseen (progress stalls at 0, then jumps to 1 at the end).`,
+      `Use 'linear', 'ease_in', 'ease_out', 'ease_in_out' or 'cubic_bezier' for the transition (e.g. 'cuthol spine transition --clip ${subject} --easing ease_in_out').`,
       subject
     ),
 
@@ -852,8 +852,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G120",
       "G1_SCHEMA",
       "ERROR",
-      `'${subject}' cubic-bezier eğrisi geçersiz: ${detail}.`,
-      `Eğriyi '--easing "cubic-bezier(x1,y1,x2,y2)"' biçiminde verin; x1 ve x2 0..1 aralığında olmalı (ör. 'cubic-bezier(0.25,0.1,0.25,1)').`,
+      `cubic-bezier curve for '${subject}' is invalid: ${detail}.`,
+      `Pass the curve as '--easing "cubic-bezier(x1,y1,x2,y2)"'; x1 and x2 must be within 0..1 (e.g. 'cubic-bezier(0.25,0.1,0.25,1)').`,
       subject
     ),
 
@@ -865,8 +865,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G121",
       "G1_SCHEMA",
       "ERROR",
-      `'${cueId}' şerit cue'sunda 'edge=${edge}' bu sürümde desteklenmiyor; aynalı/uzatılmış kenar dolgusu yalnız spine kliplerinde çalışır, bu ayar yoksayılır.`,
-      `Şerit cue'sundan 'edge' alanını kaldırın; dolguyu alttaki spine klibine 'cuthol spine transform --clip <sp_XX> --edge ${edge}' ile verin.`,
+      `'edge=${edge}' on lane cue '${cueId}' is not supported in this version; mirrored/extended edge fill only works on spine clips, so this setting is ignored.`,
+      `Remove the 'edge' field from the lane cue; apply the fill to the spine clip underneath with 'cuthol spine transform --clip <sp_XX> --edge ${edge}'.`,
       cueId
     ),
 
@@ -875,8 +875,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G412",
       "G4_STAGE",
       "WARN",
-      `'${clipId}' klibi sahneyi zaten tamamen kaplıyor ve hareket etmiyor; verilen kenar modu (edge) görüntüde hiçbir şeyi değiştirmez.`,
-      `Etkisiz ayarı 'cuthol spine transform --clip ${clipId} --edge transparent' ile kaldırın ya da klibi küçültüp/kaydırıp dolguyu görünür kılın.`,
+      `Clip '${clipId}' already covers the stage fully and does not move; the given edge mode changes nothing in the picture.`,
+      `Remove the ineffective setting with 'cuthol spine transform --clip ${clipId} --edge transparent', or shrink/shift the clip to make the fill visible.`,
       clipId
     ),
 
@@ -888,8 +888,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G122",
       "G1_SCHEMA",
       "ERROR",
-      `'${kind}' eklenti geçişi kullanılamıyor: ${detail}`,
-      `'cuthol extension list' ile eklentinin kurulu olduğunu, 'cuthol extension show --name <ad>' ile 'transitions' bölümünde bu geçişin tanımlı olduğunu doğrulayın; eklenti projede etkin değilse 'cuthol extension enable --name <ad>' çalıştırın.`,
+      `Extension transition '${kind}' is unavailable: ${detail}`,
+      `Verify the extension is installed with 'cuthol extension list' and the transition is defined in the 'transitions' section with 'cuthol extension show --name <name>'; if the extension is not enabled in the project, run 'cuthol extension enable --name <name>'.`,
       subjectId
     ),
 
@@ -898,8 +898,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G122",
       "G1_SCHEMA",
       "ERROR",
-      `'${kind}' eklenti geçişinde '${easing}' easing bu sürümde desteklenmiyor.`,
-      `Geçişte 'linear', 'ease_in', 'ease_out' veya 'ease_in_out' kullanın (ör. 'cuthol spine transition --clip <sp_XX> --kind ${kind} --easing ease_in_out').`,
+      `Easing '${easing}' is not supported in extension transition '${kind}' in this version.`,
+      `Use 'linear', 'ease_in', 'ease_out' or 'ease_in_out' for the transition (e.g. 'cuthol spine transition --clip <sp_XX> --kind ${kind} --easing ease_in_out').`,
       subjectId
     ),
 
@@ -908,8 +908,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G123",
       "G1_SCHEMA",
       "ERROR",
-      `'${clipId}' klibindeki '${kind}' geçişinin parametreleri geçersiz: ${detail}`,
-      `Parametreleri eklenti manifestindeki 'transitions' tanımına göre düzeltin ('cuthol extension show --name <ad>'); örneğin 'cuthol spine transition --clip ${clipId} --kind ${kind} --param ad=değer'.`,
+      `Parameters of transition '${kind}' on clip '${clipId}' are invalid: ${detail}`,
+      `Fix the parameters per the 'transitions' definition in the extension manifest ('cuthol extension show --name <name>'); e.g. 'cuthol spine transition --clip ${clipId} --kind ${kind} --param name=value'.`,
       clipId
     ),
 
@@ -925,8 +925,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G413",
       "G4_STAGE",
       "WARN",
-      `Geçişini kullandığınız '${name}' eklentisi diskte değişmiş (sekansta kayıtlı: v${expectedVersion} ${expectedHash}, diskte güncel: v${actualVersion} ${actualHash}); render güncel eklentiyle çıkar.`,
-      `Değişikliği onaylayıp yeni içerik özetine geçmek için 'cuthol extension enable --name ${name}' çalıştırın.`,
+      `Extension '${name}' whose transition you use changed on disk (pinned in sequence: v${expectedVersion} ${expectedHash}, current on disk: v${actualVersion} ${actualHash}); the render goes out with the current extension.`,
+      `Run 'cuthol extension enable --name ${name}' to accept the change and move to the new content hash.`,
       subjectId
     ),
 
@@ -938,8 +938,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G124",
       "G1_SCHEMA",
       "ERROR",
-      `'${clipId}' klibinin renk sıcaklığı (${String(kelvin)} K) desteklenen aralığın (1000..40000 K) dışında.`,
-      `'cuthol spine grade --clip ${clipId} --temperature 6500' ile nötr değere (6500 K, süzgeç yok) dönün.`,
+      `Color temperature of clip '${clipId}' (${String(kelvin)} K) is outside the supported range (1000..40000 K).`,
+      `Return to the neutral value (6500 K, no filter) with 'cuthol spine grade --clip ${clipId} --temperature 6500'.`,
       clipId
     ),
 
@@ -948,8 +948,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G414",
       "G4_STAGE",
       "ERROR",
-      `'${clipId}' klibinin LUT dosyası ('${lutUri}') kullanılamıyor: ${detail}.`,
-      `LUT dosyasını proje klasörü altına '.cube' ya da '.3dl' olarak koyup 'cuthol spine grade --clip ${clipId} --lut <yol>' ile yeniden bağlayın; kaldırmak için '--lut none' kullanın.`,
+      `LUT file ('${lutUri}') of clip '${clipId}' is unusable: ${detail}.`,
+      `Place the LUT file under the project folder as '.cube' or '.3dl' and re-attach it with 'cuthol spine grade --clip ${clipId} --lut <path>'; use '--lut none' to remove it.`,
       clipId
     ),
 
@@ -965,8 +965,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G415",
       "G4_STAGE",
       "WARN",
-      `'${subject}' overlay'inde sessiz boşluk: '${elementId}' öğesinin${compositionId && compositionId !== elementId ? ` ('${compositionId}' alt kompozisyonu)` : ""} betiği hata verdi (${error}); HyperFrames bu öğeyi boş zaman çizelgesiyle geçti, parçası görüntüde yok.`,
-      `'${compositionId ?? elementId}' betiğindeki hatayı düzeltin, sonra 'cuthol render' ile overlay'i yeniden çekin (dosya değişikliği yeniden çekimi tetikler).`,
+      `Silent gap in overlay '${subject}': the script of element '${elementId}'${compositionId && compositionId !== elementId ? ` ('${compositionId}' sub-composition)` : ""} threw (${error}); HyperFrames skipped this element with an empty timeline, its part is missing from the picture.`,
+      `Fix the error in the '${compositionId ?? elementId}' script, then re-render the overlay with 'cuthol render' (a file change triggers the re-render).`,
       subject
     ),
 
@@ -975,8 +975,8 @@ export const DIAGNOSTICS = {
       "CUTHOL-G416",
       "G4_STAGE",
       "WARN",
-      `'${cueId}' kompozisyon cue'sunda çalan ses (${detail}) Cuthol miksine girmiyor: overlay'ler yalnız görüntü olarak çekilir, kompozisyon içi ses dışarıda kalır.`,
-      `Sesi 'ln_sfx' ya da 'ln_bgm' şeridine cue olarak yerleştirin ('cuthol lane add-cue --lane ln_sfx --kind sfx --asset <tutamac> ...'), kompozisyon içindeki ses öğesini kaldırın ya da sessize alın.`,
+      `Audio playing in composition cue '${cueId}' (${detail}) does not enter the Cuthol mix: overlays are rendered as video only, in-composition audio stays out.`,
+      `Place the audio as a cue on the 'ln_sfx' or 'ln_bgm' lane ('cuthol lane add-cue --lane ln_sfx --kind sfx --asset <handle> ...'), and remove or mute the in-composition audio element.`,
       cueId
     ),
 
@@ -1033,6 +1033,73 @@ export const DIAGNOSTICS = {
     ),
 
   // CUTHOL-G420..CUTHOL-G427 retired with the layout warning system; never reused (may appear in old projects/logs).
+
+  // --- Media and speech providers (selection, extension providers, media sources): codes CUTHOL-G230 .. CUTHOL-G249 ---
+
+  PROVIDER_UNKNOWN: (kind: string, id: string, valid: string) =>
+    createDiagnostic(
+      "CUTHOL-G230",
+      "G1_SCHEMA",
+      "ERROR",
+      `Unknown ${kind} provider '${id}'.`,
+      `Use one of: ${valid}.`
+    ),
+
+  PROVIDER_CAPABILITY_MISSING: (extName: string, kind: string, available: string) =>
+    createDiagnostic(
+      "CUTHOL-G231",
+      "G2_ASSETS",
+      "ERROR",
+      `Extension '${extName}' does not provide a '${kind}' provider (it provides: ${available || "nothing"}).`,
+      `Check the extension manifest 'providers' section with 'cuthol extension show --name ${extName}'.`
+    ),
+
+  PROVIDER_ENV_MISSING: (extName: string, kind: string, missingVars: string[]) =>
+    createDiagnostic(
+      "CUTHOL-G232",
+      "SYS",
+      "ERROR",
+      `Extension provider '${extName}' (${kind}) needs ${missingVars.length === 1 ? "environment variable" : "environment variables"} ${missingVars.map((v) => `'${v}'`).join(", ")}, which ${missingVars.length === 1 ? "is" : "are"} not set.`,
+      `Set ${missingVars.length === 1 ? "it" : "them"} in your shell environment or in the project '.env' file ('${missingVars[0]}=...'), then retry. Values are read from the environment only and are never written to the sequence, journal, cache, or logs.`
+    ),
+
+  PROVIDER_BAD_OUTPUT: (extName: string, kind: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G233",
+      "SYS",
+      "ERROR",
+      `Extension provider '${extName}' (${kind}) returned invalid output: ${detail}`,
+      `Fix the provider script to return the documented JSON contract (see 'extensions' guide, providers section).`
+    ),
+
+  PROVIDER_EXECUTION_FAILED: (extName: string, kind: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G234",
+      "SYS",
+      "ERROR",
+      `Extension provider '${extName}' (${kind}) failed: ${detail}`,
+      `Check the provider script and its configuration with 'cuthol extension show --name ${extName}'.`
+    ),
+
+  PROVIDER_TTS_NO_ALIGNMENT: (extName: string) =>
+    createDiagnostic(
+      "CUTHOL-G235",
+      "SYS",
+      "WARN",
+      `Extension TTS provider '${extName}' returned audio without word or character alignment, so no word timings are available.`,
+      `Captions, cleanup, and word-locked animation cannot use this voiceover. Use a provider with alignment, or transcribe the voiceover with 'cuthol speech transcribe'.`
+    ),
+
+  MEDIA_FETCH_NOT_FOUND: (extName: string, id: string) =>
+    createDiagnostic(
+      "CUTHOL-G236",
+      "G2_ASSETS",
+      "ERROR",
+      `Media provider '${extName}' has no candidate with id '${id}'.`,
+      `List candidates with 'cuthol library search --provider ext:${extName} --kind music|sfx --query "<text>"'.`
+    ),
+
+  // --- end of provider block ---
 
   // ---------------------------------------------------------------------------------------------------
 } as const;
@@ -1106,7 +1173,7 @@ export function createSubprocessFailureDiagnostic(options: {
       step: options.tool,
       stalledMs: options.proc.stalledMs ?? options.proc.stallThresholdMs ?? 0,
       thresholdMs: options.proc.stallThresholdMs ?? options.proc.stalledMs ?? 0,
-      lastProgress: options.proc.lastProgress ?? "hiç ilerleme/çıktı üretilmedi",
+      lastProgress: options.proc.lastProgress ?? "no progress/output produced",
       commandSummary:
         options.proc.commandSummary ?? summarizeCommandForDiagnostic(executable, args),
     });
@@ -1147,20 +1214,20 @@ export function createSubprocessFailureDiagnostic(options: {
 
   if (err) {
     const clipInfo =
-      typeof options.clipCount === "number" ? `, klip sayısı=${options.clipCount}` : "";
-    const detail = `Alt süreç başlatılamadı (${errCode || err.name}: ${err.message}; komut=${ executable }, komut_uzunluğu=${commandLength}/${limitChars} krk${clipInfo})${stderrStr.trim() ? ` — ${stderrStr.trim().slice(-360)}` : ""}`;
+      typeof options.clipCount === "number" ? `, clip_count=${options.clipCount}` : "";
+    const detail = `Subprocess failed to start (${errCode || err.name}: ${err.message}; command=${ executable }, command_length=${commandLength}/${limitChars} chars${clipInfo})${stderrStr.trim() ? ` — ${stderrStr.trim().slice(-360)}` : ""}`;
     return DIAGNOSTICS.EXTERNAL_TOOL_FAILED(options.tool, detail);
   }
 
   const outTail = (stderrStr || stdoutStr || "").trim().slice(-600);
   const statusInfo =
     options.proc.status !== null && options.proc.status !== undefined
-      ? `çıkış kodu=${options.proc.status}`
+      ? `exit_code=${options.proc.status}`
       : options.proc.signal
-        ? `sinyal=${options.proc.signal}`
-        : "durum=null";
+        ? `signal=${options.proc.signal}`
+        : "status=null";
   const detail = outTail
     ? `${outTail} (${statusInfo})`
-    : `${options.fallbackDetail ?? "alt süreç başarısız oldu"} (${statusInfo}, komut_uzunluğu=${commandLength} krk)`;
+    : `${options.fallbackDetail ?? "subprocess failed"} (${statusInfo}, command_length=${commandLength} chars)`;
   return DIAGNOSTICS.EXTERNAL_TOOL_FAILED(options.tool, detail);
 }

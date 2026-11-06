@@ -65,6 +65,28 @@ export interface ExtensionPlannerSpec {
   timeout_sec?: number;
 }
 
+export type ExtensionProviderKind = "asr" | "tts" | "media";
+
+export interface ExtensionProviderSpec {
+  description?: string;
+  /** Relative path to the Node script inside the extension directory (required). */
+  script: string;
+  /** Static per-extension configuration passed to every provider invocation. */
+  config?: Record<string, unknown>;
+  /**
+   * Environment variable names the provider needs (e.g. `["SOME_API_KEY"]`).
+   * Values are read from the process environment or the project `.env` at call time,
+   * passed to the provider child process only, and never written anywhere.
+   */
+  env?: string[];
+}
+
+export interface ExtensionProvidersSection {
+  asr?: ExtensionProviderSpec;
+  tts?: ExtensionProviderSpec;
+  media?: ExtensionProviderSpec;
+}
+
 export interface ExtensionManifest {
   schema_version?: "1.0.0";
   name: string;
@@ -76,6 +98,8 @@ export interface ExtensionManifest {
   processors?: Record<string, ExtensionProcessorSpec>;
   planners?: Record<string, ExtensionPlannerSpec>;
   recipes?: Record<string, ExtensionRecipeSpec>;
+  /** Speech and media providers (`asr`, `tts`, `media`) served by this extension. */
+  providers?: ExtensionProvidersSection;
   /** Per-clip effects for `spine fx` (extensions/ext_fx.ts). */
   fx?: Record<string, ExtensionFxSpec>;
   /** Spine transition kinds (extensions/ext_transitions.ts). */
@@ -119,6 +143,8 @@ export interface ExtensionListItem {
     processors: string[];
     planners: string[];
     recipes: string[];
+    /** Present only when the extension has a `providers` section. */
+    providers?: string[];
     /** Present only when the extension has an `fx` section. */
     fx?: string[];
     /** Present only when the extension has a `transitions` section. */
@@ -136,6 +162,7 @@ const ALLOWED_MANIFEST_KEYS = new Set([
   "helper",
   "assets",
   "processors",
+  "providers",
   "planners",
   "recipes",
   "fx",
@@ -170,6 +197,10 @@ const ALLOWED_PARAM_KEYS = new Set([
   "enum",
 ]);
 
+const ALLOWED_PROVIDER_KINDS = new Set(["asr", "tts", "media"]);
+
+const ALLOWED_PROVIDER_KEYS = new Set(["description", "script", "config", "env"]);
+
 const ALLOWED_RECIPE_KEYS = new Set(["description", "params", "steps"]);
 
 const ALLOWED_STEP_KEYS = new Set(["id", "tool", "action", "args"]);
@@ -195,7 +226,7 @@ export function assertStayInsideDir(parentDir: string, targetPath: string, extNa
     throw new CutholError(
       DIAGNOSTICS.EXTENSION_SECURITY_VIOLATION(
         extName,
-        `'${targetPath}' yolu eklenti klasörü ('${absParent}') dışına çıkıyor.`
+        `'${targetPath}' escapes the extension folder ('${absParent}').`
       )
     );
   }
@@ -233,7 +264,7 @@ export function assertScriptRespectsNetworkPolicy(
       throw new CutholError(
         DIAGNOSTICS.EXTENSION_SECURITY_VIOLATION(
           ext.name,
-          `Eklenti manifestinde 'network: true' bildirmediği halde ağ erişimi ('${pat.label}') kullanıyor.`
+          `uses network access ('${pat.label}') without declaring 'network: true' in its manifest.`
         )
       );
     }
@@ -250,7 +281,7 @@ function parseAssetKind(value: unknown, procName: string, extName: string): Asse
   throw new CutholError(
     DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
       extName,
-      `'processors.${procName}.asset_kind' geçersiz (${JSON.stringify(value)}). Geçerli türler: ${ASSET_KINDS.join(", ")}.`
+      `'processors.${procName}.asset_kind' is invalid (${JSON.stringify(value)}). Valid kinds: ${ASSET_KINDS.join(", ")}.`
     )
   );
 }
@@ -261,7 +292,7 @@ function parseProcessorAudio(value: unknown, kind: string, procName: string, ext
     throw new CutholError(
       DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
         extName,
-        `'processors.${procName}.audio' yalnız 'kind: "ffmpeg"' işlemcilerinde kullanılabilir ('copy' veya 'drop').`
+        `'processors.${procName}.audio' can only be used on 'kind: "ffmpeg"' processors ('copy' or 'drop').`
       )
     );
   }
@@ -269,7 +300,7 @@ function parseProcessorAudio(value: unknown, kind: string, procName: string, ext
     throw new CutholError(
       DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
         extName,
-        `'processors.${procName}.audio' değeri 'copy' veya 'drop' olmalıdır (verilen: ${JSON.stringify(value)}).`
+        `'processors.${procName}.audio' must be 'copy' or 'drop' (got: ${JSON.stringify(value)}).`
       )
     );
   }
@@ -282,7 +313,7 @@ function parseTimeoutSec(value: unknown, owner: string, extName: string): number
     throw new CutholError(
       DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
         extName,
-        `'${owner}.timeout_sec' 0 veya daha büyük bir tam sayı olmalıdır (0 = sınır yok).`
+        `'${owner}.timeout_sec' must be an integer >= 0 (0 = no limit).`
       )
     );
   }
@@ -299,7 +330,7 @@ export function validateParamsMap(
     throw new CutholError(
       DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
         extLabel,
-        `'${ownerLabel}.params' bir nesne olmalıdır.`
+        `'${ownerLabel}.params' must be an object.`
       )
     );
   }
@@ -309,7 +340,7 @@ export function validateParamsMap(
       throw new CutholError(
         DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
           extLabel,
-          `'${ownerLabel}.params.${pName}' geçersiz parametre adı.`
+          `'${ownerLabel}.params.${pName}' is an invalid parameter name.`
         )
       );
     }
@@ -317,7 +348,7 @@ export function validateParamsMap(
       throw new CutholError(
         DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
           extLabel,
-          `'${ownerLabel}.params.${pName}' bir şema nesnesi olmalıdır.`
+          `'${ownerLabel}.params.${pName}' must be a schema object.`
         )
       );
     }
@@ -327,7 +358,7 @@ export function validateParamsMap(
         throw new CutholError(
           DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
             extLabel,
-            `'${ownerLabel}.params.${pName}' içinde bilinmeyen alan '${k}'.`
+            `'${ownerLabel}.params.${pName}' has an unknown field '${k}'.`
           )
         );
       }
@@ -337,7 +368,7 @@ export function validateParamsMap(
       throw new CutholError(
         DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
           extLabel,
-          `'${ownerLabel}.params.${pName}.type' değeri 'number', 'string' veya 'boolean' olmalıdır.`
+          `'${ownerLabel}.params.${pName}.type' must be 'number', 'string', or 'boolean'.`
         )
       );
     }
@@ -355,6 +386,112 @@ export function validateParamsMap(
 }
 
 /**
+ * Environment variable name validation for `providers.*.env` declarations.
+ */
+
+const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+
+export function parseManifestProvidersSection(
+  rawProviders: unknown,
+  extName: string
+): ExtensionProvidersSection | undefined {
+  if (rawProviders === undefined) return undefined;
+  if (!rawProviders || typeof rawProviders !== "object" || Array.isArray(rawProviders)) {
+    throw new CutholError(
+      DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'providers' must be an object.`)
+    );
+  }
+  const obj = rawProviders as Record<string, unknown>;
+  if (Object.keys(obj).length === 0) {
+    throw new CutholError(
+      DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
+        extName,
+        `'providers' must define at least one of 'asr', 'tts', or 'media'.`
+      )
+    );
+  }
+  const out: ExtensionProvidersSection = {};
+  for (const [kind, rawSpec] of Object.entries(obj)) {
+    if (!ALLOWED_PROVIDER_KINDS.has(kind)) {
+      throw new CutholError(
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
+          extName,
+          `Unknown providers kind '${kind}' (allowed: ${[...ALLOWED_PROVIDER_KINDS].join(", ")}).`
+        )
+      );
+    }
+    if (!rawSpec || typeof rawSpec !== "object" || Array.isArray(rawSpec)) {
+      throw new CutholError(
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(extName, `'providers.${kind}' must be an object.`)
+      );
+    }
+    const spec = rawSpec as Record<string, unknown>;
+    for (const k of Object.keys(spec)) {
+      if (!ALLOWED_PROVIDER_KEYS.has(k)) {
+        throw new CutholError(
+          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
+            extName,
+            `'providers.${kind}' has an unknown field '${k}' (allowed: ${[...ALLOWED_PROVIDER_KEYS].join(", ")}).`
+          )
+        );
+      }
+    }
+    const script = typeof spec.script === "string" ? spec.script.trim() : "";
+    if (!isSafeRelativeSubpath(script) || !/\.(c|m)?js$/i.test(script)) {
+      throw new CutholError(
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
+          extName,
+          `'providers.${kind}.script' must be a relative '.js' file inside the extension folder.`
+        )
+      );
+    }
+    let config: Record<string, unknown> | undefined;
+    if (spec.config !== undefined) {
+      if (!spec.config || typeof spec.config !== "object" || Array.isArray(spec.config)) {
+        throw new CutholError(
+          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
+            extName,
+            `'providers.${kind}.config' must be an object.`
+          )
+        );
+      }
+      config = spec.config as Record<string, unknown>;
+    }
+    let env: string[] | undefined;
+    if (spec.env !== undefined) {
+      if (!Array.isArray(spec.env)) {
+        throw new CutholError(
+          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
+            extName,
+            `'providers.${kind}.env' must be an array of environment variable names (e.g. ["SOME_API_KEY"]).`
+          )
+        );
+      }
+      env = [];
+      for (let i = 0; i < spec.env.length; i++) {
+        const v = spec.env[i];
+        if (typeof v !== "string" || !ENV_VAR_NAME_RE.test(v.trim())) {
+          throw new CutholError(
+            DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
+              extName,
+              `'providers.${kind}.env[${i}]' is not a valid environment variable name (${JSON.stringify(v)}).`
+            )
+          );
+        }
+        env.push(v.trim());
+      }
+    }
+    (out as Record<string, ExtensionProviderSpec>)[kind] = {
+      ...(typeof spec.description === "string" ? { description: spec.description } : {}),
+      script,
+      ...(config !== undefined ? { config } : {}),
+      ...(env !== undefined ? { env } : {}),
+    };
+  }
+  return out;
+}
+
+/**
  * Validates `cuthol-extension.json` against the closed extension manifest schema.
  */
 export function validateExtensionManifest(
@@ -365,7 +502,7 @@ export function validateExtensionManifest(
   const label = expectedFolderName || sourcePathForError || "extension";
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new CutholError(
-      DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(label, "Manifest kök değeri bir JSON nesnesi olmalıdır.")
+      DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(label, "The manifest root value must be a JSON object.")
     );
   }
   const obj = raw as Record<string, unknown>;
@@ -375,7 +512,7 @@ export function validateExtensionManifest(
       throw new CutholError(
         DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
           label,
-          `Bilinmeyen manifest alanı '${key}' (izin verilenler: ${[...ALLOWED_MANIFEST_KEYS].join(", ")}).`
+          `Unknown manifest field '${key}' (allowed: ${[...ALLOWED_MANIFEST_KEYS].join(", ")}).`
         )
       );
     }
@@ -385,7 +522,7 @@ export function validateExtensionManifest(
     throw new CutholError(
       DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
         label,
-        `'name' alanı zorunludur ve '${EXTENSION_NAME_RE.source}' desenine uymalıdır (küçük harf, rakam, '-' veya '_').`
+        `'name' is required and must match '${EXTENSION_NAME_RE.source}' (lowercase, digits, '-' or '_').`
       )
     );
   }
@@ -394,26 +531,26 @@ export function validateExtensionManifest(
     throw new CutholError(
       DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
         label,
-        `Manifest 'name' alanı ('${name}') eklenti klasör adıyla ('${expectedFolderName}') eşleşmiyor.`
+        `Manifest 'name' ('${name}') does not match the extension folder name ('${expectedFolderName}').`
       )
     );
   }
 
   if (typeof obj.version !== "string" || !obj.version.trim()) {
     throw new CutholError(
-      DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'version' alanı boş olmayan bir metin olmalıdır (ör. "1.0.0").`)
+      DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'version' must be a non-empty string (e.g. "1.0.0").`)
     );
   }
 
   if (typeof obj.description !== "string" || !obj.description.trim()) {
     throw new CutholError(
-      DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'description' alanı boş olmayan bir açıklama metni olmalıdır.`)
+      DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'description' must be a non-empty description string.`)
     );
   }
 
   if (obj.network !== undefined && typeof obj.network !== "boolean") {
     throw new CutholError(
-      DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'network' alanı boolean (true/false) olmalıdır.`)
+      DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'network' must be a boolean (true/false).`)
     );
   }
 
@@ -428,21 +565,21 @@ export function validateExtensionManifest(
       const extraKeys = Object.keys(hObj).filter((k) => k !== "entry");
       if (extraKeys.length > 0) {
         throw new CutholError(
-          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'helper' içinde bilinmeyen alan: ${extraKeys.join(", ")}.`)
+          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'helper' has unknown fields: ${extraKeys.join(", ")}.`)
         );
       }
       entry = typeof hObj.entry === "string" ? hObj.entry.trim() : "";
       helperSpec = { entry };
     } else {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'helper' alanı bir JS dosya yolu veya '{ "entry": "helper.js" }' olmalıdır.`)
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'helper' must be a JS file path or '{ "entry": "helper.js" }'.`)
       );
     }
     if (!isSafeRelativeSubpath(entry) || !entry.endsWith(".js")) {
       throw new CutholError(
         DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
           name,
-          `'helper' dosya yolu ('${entry}') eklenti içinde göreli bir '.js' dosyası olmalıdır.`
+          `'helper' file path ('${entry}') must be a relative '.js' file inside the extension.`
         )
       );
     }
@@ -459,21 +596,21 @@ export function validateExtensionManifest(
       const extraKeys = Object.keys(aObj).filter((k) => k !== "dir");
       if (extraKeys.length > 0) {
         throw new CutholError(
-          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'assets' içinde bilinmeyen alan: ${extraKeys.join(", ")}.`)
+          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'assets' has unknown fields: ${extraKeys.join(", ")}.`)
         );
       }
       dir = typeof aObj.dir === "string" ? aObj.dir.trim() : "";
       assetsSpec = { dir };
     } else {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'assets' alanı göreli bir klasör adı (ör. "assets") olmalıdır.`)
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'assets' must be a relative folder name (e.g. "assets").`)
       );
     }
     if (!isSafeRelativeSubpath(dir)) {
       throw new CutholError(
         DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
           name,
-          `'assets' klasör yolu ('${dir}') eklenti içinde güvenli göreli bir yol olmalıdır.`
+          `'assets' folder path ('${dir}') must be a safe relative path inside the extension.`
         )
       );
     }
@@ -483,19 +620,19 @@ export function validateExtensionManifest(
   if (obj.processors !== undefined) {
     if (!obj.processors || typeof obj.processors !== "object" || Array.isArray(obj.processors)) {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'processors' alanı bir nesne olmalıdır.`)
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'processors' must be an object.`)
       );
     }
     processorsSpec = {};
     for (const [procName, rawProc] of Object.entries(obj.processors as Record<string, unknown>)) {
       if (!EXTENSION_NAME_RE.test(procName)) {
         throw new CutholError(
-          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `Geçersiz işlemci adı '${procName}'.`)
+          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `Invalid processor name '${procName}'.`)
         );
       }
       if (!rawProc || typeof rawProc !== "object" || Array.isArray(rawProc)) {
         throw new CutholError(
-          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'processors.${procName}' bir nesne olmalıdır.`)
+          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'processors.${procName}' must be an object.`)
         );
       }
       const pObj = rawProc as Record<string, unknown>;
@@ -504,7 +641,7 @@ export function validateExtensionManifest(
           throw new CutholError(
             DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
               name,
-              `'processors.${procName}' içinde bilinmeyen alan '${k}' (izin verilenler: ${[...ALLOWED_PROCESSOR_KEYS].join(", ")}).`
+              `'processors.${procName}' has an unknown field '${k}' (allowed: ${[...ALLOWED_PROCESSOR_KEYS].join(", ")}).`
             )
           );
         }
@@ -513,7 +650,7 @@ export function validateExtensionManifest(
         throw new CutholError(
           DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
             name,
-            `'processors.${procName}.kind' değeri 'ffmpeg' veya 'node' olmalıdır.`
+            `'processors.${procName}.kind' must be 'ffmpeg' or 'node'.`
           )
         );
       }
@@ -528,7 +665,7 @@ export function validateExtensionManifest(
           throw new CutholError(
             DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
               name,
-              `'processors.${procName}' (kind=ffmpeg) için 'filter', 'audio_filter', 'video_filter' veya 'ffmpeg_args' alanlarından en az biri gereklidir.`
+              `'processors.${procName}' (kind=ffmpeg) needs at least one of 'filter', 'audio_filter', 'video_filter', or 'ffmpeg_args'.`
             )
           );
         }
@@ -538,7 +675,7 @@ export function validateExtensionManifest(
           throw new CutholError(
             DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
               name,
-              `'processors.${procName}.script' eklenti klasörü içinde göreli bir '.js' dosyası olmalıdır.`
+              `'processors.${procName}.script' must be a relative '.js' file inside the extension folder.`
             )
           );
         }
@@ -569,19 +706,19 @@ export function validateExtensionManifest(
   if (obj.planners !== undefined) {
     if (!obj.planners || typeof obj.planners !== "object" || Array.isArray(obj.planners)) {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'planners' alanı bir nesne olmalıdır.`)
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'planners' must be an object.`)
       );
     }
     plannersSpec = {};
     for (const [planName, rawPlan] of Object.entries(obj.planners as Record<string, unknown>)) {
       if (!EXTENSION_NAME_RE.test(planName)) {
         throw new CutholError(
-          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `Geçersiz planlayıcı adı '${planName}'.`)
+          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `Invalid planner name '${planName}'.`)
         );
       }
       if (!rawPlan || typeof rawPlan !== "object" || Array.isArray(rawPlan)) {
         throw new CutholError(
-          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'planners.${planName}' bir nesne olmalıdır.`)
+          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'planners.${planName}' must be an object.`)
         );
       }
       const plObj = rawPlan as Record<string, unknown>;
@@ -590,7 +727,7 @@ export function validateExtensionManifest(
           throw new CutholError(
             DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
               name,
-              `'planners.${planName}' içinde bilinmeyen alan '${k}' (izin verilenler: ${[...ALLOWED_PLANNER_KEYS].join(", ")}).`
+              `'planners.${planName}' has an unknown field '${k}' (allowed: ${[...ALLOWED_PLANNER_KEYS].join(", ")}).`
             )
           );
         }
@@ -599,7 +736,7 @@ export function validateExtensionManifest(
         throw new CutholError(
           DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
             name,
-            `'planners.${planName}.kind' değeri 'node' veya 'planner' olmalıdır.`
+            `'planners.${planName}.kind' must be 'node' or 'planner'.`
           )
         );
       }
@@ -608,7 +745,7 @@ export function validateExtensionManifest(
         throw new CutholError(
           DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
             name,
-            `'planners.${planName}.script' eklenti klasörü içinde göreli bir '.js' dosyası olmalıdır.`
+            `'planners.${planName}.script' must be a relative '.js' file inside the extension folder.`
           )
         );
       }
@@ -628,19 +765,19 @@ export function validateExtensionManifest(
   if (obj.recipes !== undefined) {
     if (!obj.recipes || typeof obj.recipes !== "object" || Array.isArray(obj.recipes)) {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'recipes' alanı bir nesne olmalıdır.`)
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'recipes' must be an object.`)
       );
     }
     recipesSpec = {};
     for (const [recName, rawRec] of Object.entries(obj.recipes as Record<string, unknown>)) {
       if (!EXTENSION_NAME_RE.test(recName)) {
         throw new CutholError(
-          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `Geçersiz tarif adı '${recName}'.`)
+          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `Invalid recipe name '${recName}'.`)
         );
       }
       if (!rawRec || typeof rawRec !== "object" || Array.isArray(rawRec)) {
         throw new CutholError(
-          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'recipes.${recName}' bir nesne olmalıdır.`)
+          DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(name, `'recipes.${recName}' must be an object.`)
         );
       }
       const rObj = rawRec as Record<string, unknown>;
@@ -649,7 +786,7 @@ export function validateExtensionManifest(
           throw new CutholError(
             DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
               name,
-              `'recipes.${recName}' içinde bilinmeyen alan '${k}'.`
+              `'recipes.${recName}' has an unknown field '${k}'.`
             )
           );
         }
@@ -658,7 +795,7 @@ export function validateExtensionManifest(
         throw new CutholError(
           DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
             name,
-            `'recipes.${recName}.steps' boş olmayan bir adım dizisi olmalıdır.`
+            `'recipes.${recName}.steps' must be a non-empty step array.`
           )
         );
       }
@@ -670,7 +807,7 @@ export function validateExtensionManifest(
           throw new CutholError(
             DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
               name,
-              `'recipes.${recName}.steps[${i}]' bir nesne olmalıdır.`
+              `'recipes.${recName}.steps[${i}]' must be an object.`
             )
           );
         }
@@ -680,7 +817,7 @@ export function validateExtensionManifest(
             throw new CutholError(
               DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
                 name,
-                `'recipes.${recName}.steps[${i}]' içinde bilinmeyen alan '${k}'.`
+                `'recipes.${recName}.steps[${i}]' has an unknown field '${k}'.`
               )
             );
           }
@@ -689,7 +826,7 @@ export function validateExtensionManifest(
           throw new CutholError(
             DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
               name,
-              `'recipes.${recName}.steps[${i}].tool' alanı zorunludur.`
+              `'recipes.${recName}.steps[${i}].tool' is required.`
             )
           );
         }
@@ -697,7 +834,7 @@ export function validateExtensionManifest(
           throw new CutholError(
             DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
               name,
-              `'recipes.${recName}.steps[${i}].args' bir nesne olmalıdır.`
+              `'recipes.${recName}.steps[${i}].args' must be an object.`
             )
           );
         }
@@ -716,6 +853,8 @@ export function validateExtensionManifest(
     }
   }
 
+  const providersSpec = parseManifestProvidersSection(obj.providers, name);
+
   const fxSpec = parseManifestFxSection(obj.fx, name);
   const transitionsSpec = parseManifestTransitionsSection(obj.transitions, name);
 
@@ -725,7 +864,7 @@ export function validateExtensionManifest(
       throw new CutholError(
         DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
           name,
-          `'guide' alanı eklenti klasörü içinde göreli bir dosya yolu (ör. "README.md") olmalıdır.`
+          `'guide' must be a relative file path inside the extension folder (e.g. "README.md").`
         )
       );
     }
@@ -743,6 +882,7 @@ export function validateExtensionManifest(
     ...(processorsSpec !== undefined ? { processors: processorsSpec } : {}),
     ...(plannersSpec !== undefined ? { planners: plannersSpec } : {}),
     ...(recipesSpec !== undefined ? { recipes: recipesSpec } : {}),
+    ...(providersSpec !== undefined ? { providers: providersSpec } : {}),
     ...(fxSpec !== undefined ? { fx: fxSpec } : {}),
     ...(transitionsSpec !== undefined ? { transitions: transitionsSpec } : {}),
     ...(guideSpec !== undefined ? { guide: guideSpec } : {}),

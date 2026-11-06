@@ -445,12 +445,12 @@ export function generateSequenceCaptions(options: {
       max_cps: { value: maxCps, default: maxCps, unit: "char/s", source: "default" },
     },
     rules: [
-      "R1: Kesilen (excised) kelimeler atlanır; aktif kelimeler speed_ramp integraliyle sekans saatine (sequence_ms) izdüşürülür",
-      "R2: Noktalama sonlarında, >= 350ms boşluklarda veya max_words_per_group / max_chars_per_line sınırında yeni altyazı grubuna bölünür",
-      "R3: CPS <= max_cps okumayı sağlamak için komşu altyazıya kadar olan boşluk kullanılır",
+      "R1: Excised words are skipped; active words are projected onto the sequence clock (sequence_ms) via the speed_ramp integral",
+      "R2: Split into a new caption group at punctuation ends, >= 350ms gaps, or the max_words_per_group / max_chars_per_line limit",
+      "R3: The gap up to the neighboring caption is used to keep CPS <= max_cps readable",
     ],
     summary: {
-      text: `${validWords.length} aktif kelime -> ${createdCues.length} altyazı öğesi (ort. ${meanCps} CPS); ${skippedExcisedCount} kesilmiş kelime atlandı`,
+      text: `${validWords.length} active words -> ${createdCues.length} caption items (avg ${meanCps} CPS); ${skippedExcisedCount} excised words skipped`,
       candidates: createdCues.length,
       accepted: createdCues.length,
       rejected: 0,

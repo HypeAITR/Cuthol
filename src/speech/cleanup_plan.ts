@@ -164,7 +164,7 @@ export function collectClipRawCandidates(params: {
         measured: { gap_ms: effectiveDurMs },
         threshold: { min_pause_ms: minPauseMs },
         margin: effectiveDurMs - minPauseMs,
-        note: `Duraksama (${effectiveDurMs}ms) eşik değerin (${minPauseMs}ms) altında olduğu için korundu`,
+        note: `Pause (${effectiveDurMs}ms) kept for being below the threshold (${minPauseMs}ms)`,
       });
       continue;
     }
@@ -238,7 +238,7 @@ export function collectClipRawCandidates(params: {
             threshold: { min_pause_ms: minPauseMs, max_word_overlap_ms: 0 },
             margin: maxRemainingGapMs - minPauseMs,
             refs: wordLabels,
-            note: `Duraksama adayı (${origStart}..${origEnd}ms) konuşulan ASR kelimesiyle (${overlappingWords.map((w) => `'${w.punctuated_word || w.word}' [${w.source_start_ms}..${w.source_end_ms}ms]`).join(", ")}) çakıştı; kırpma sonrası kalan boşluk (${maxRemainingGapMs}ms) eşik değerin (${minPauseMs}ms) altında kaldığı için reddedildi`,
+            note: `Pause candidate (${origStart}..${origEnd}ms) overlapped a spoken ASR word (${overlappingWords.map((w) => `'${w.punctuated_word || w.word}' [${w.source_start_ms}..${w.source_end_ms}ms]`).join(", ")}); rejected because the gap left after trimming (${maxRemainingGapMs}ms) fell below the threshold (${minPauseMs}ms)`,
           });
           continue;
         }
@@ -402,7 +402,7 @@ export function applyCollarAndBoundaryRemnantGuard(params: {
           measured: { gap_ms: effectiveDurMs, remaining_after_pad_ms: paddedEnd - paddedStart },
           threshold: { min_pause_ms: minPauseMs, pad_ms: padMs, min_cut_ms: 80 },
           margin: paddedEnd - paddedStart - 80,
-          note: `Yaka payı (${padMs}ms) sonrası kalan kesim süresi (${paddedEnd - paddedStart}ms) 80ms alt sınırının altında kaldığı için korundu`,
+          note: `Kept because the cut duration left (${paddedEnd - paddedStart}ms) after the pad (${padMs}ms) fell below the 80ms lower bound`,
         });
         continue;
       }
@@ -438,7 +438,7 @@ export function applyCollarAndBoundaryRemnantGuard(params: {
             measured: { leading_remnant_ms: leadingTimelineMs, cut_ms: paddedEnd - paddedStart },
             threshold: { min_remainder_clip_ms: minRemainderTimelineMs },
             margin: leadingTimelineMs - minRemainderTimelineMs,
-            note: `Kesim uygulandığında klip başında ${leadingTimelineMs}ms (< ${minRemainderTimelineMs}ms) konuşmalı artık parça kalacağı için korundu`,
+            note: `Kept because applying the cut would leave a ${leadingTimelineMs}ms (< ${minRemainderTimelineMs}ms) spoken leftover at the clip head`,
           });
           continue;
         }
@@ -470,7 +470,7 @@ export function applyCollarAndBoundaryRemnantGuard(params: {
             measured: { trailing_remnant_ms: trailingTimelineMs, cut_ms: paddedEnd - paddedStart },
             threshold: { min_remainder_clip_ms: minRemainderTimelineMs },
             margin: trailingTimelineMs - minRemainderTimelineMs,
-            note: `Kesim uygulandığında klip sonunda ${trailingTimelineMs}ms (< ${minRemainderTimelineMs}ms) konuşmalı artık parça kalacağı için korundu`,
+            note: `Kept because applying the cut would leave a ${trailingTimelineMs}ms (< ${minRemainderTimelineMs}ms) spoken leftover at the clip tail`,
           });
           continue;
         }
@@ -707,7 +707,7 @@ export function bridgeInterCutSliversAndSummarizeClip(params: {
           measured: { gap_between_cuts_ms: gapTimelineMs, cut_ms: next.cut_duration_ms },
           threshold: { min_remainder_clip_ms: minRemainderTimelineMs },
           margin: gapTimelineMs - minRemainderTimelineMs,
-          note: `İki kesim arasında ${gapTimelineMs}ms (< ${minRemainderTimelineMs}ms) konuşmalı artık klip kalmaması için duraksama kesimi iptal edildi`,
+          note: `Pause cut cancelled so no ${gapTimelineMs}ms (< ${minRemainderTimelineMs}ms) spoken leftover clip remains between two cuts`,
         });
         plannedCuts.splice(i + 1, 1);
         i--;
@@ -762,7 +762,7 @@ export function bridgeInterCutSliversAndSummarizeClip(params: {
         reason_code: "ALL_CUTS_DROPPED_MIN_CLIP_GUARD",
         measured: { cut_ms: c.cut_duration_ms },
         threshold: { min_clip_timeline_ms: minSubClipTimelineMs },
-        note: `Kesim uygulandığında geçerli uzunlukta (>= ${minSubClipTimelineMs}ms) hiçbir alt klip kalmayacağı için iptal edildi`,
+        note: `Cancelled because applying the cut would leave no sub-clip of valid length (>= ${minSubClipTimelineMs}ms)`,
       });
     }
     plannedCuts.length = 0;

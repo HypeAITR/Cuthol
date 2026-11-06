@@ -66,12 +66,12 @@ When a task needs a reusable niche helper across scenes or projects — such as 
 1. **Look before you claim.** A command returning OK only means it ran. Inspect `monitor.frame` / `monitor.sheet` images (and `composition.preview` for overlays) before saying something works.
 2. **Read every result.** Each edit returns the new revision, `Changed:` (what happened) and `Undo:` (what an undo would revert), plus warnings (`WARN [CUTHOL-G…]`). Warnings are real problems unless you chose them deliberately.
 3. **Undo safely.** Check the undo line first, pass `expect_rev`, use `dry_run=true` when unsure, and `lane.lock` lanes you must not lose (e.g. finished titles).
-4. **Never repeat a failing call unchanged.** Errors carry `Öneri:` (the fix). The MCP server refuses the third identical failure.
+4. **Never repeat a failing call unchanged.** Errors carry `Suggestion:` (the fix). The MCP server refuses the third identical failure.
 5. **Anchor what belongs to a clip.** Titles/b-roll that describe a shot should be anchored to that clip, so later trims don't desync them.
 6. **Prefer digests and queries.** Analyzers return short digests; read details with `library.query(handle, kind, range|text, format?)` instead of `verbose` (pass `format="compact"` on transcripts to get hundreds of `i:word@sec` tokens in a single call).
 7. **Overlays are code.** Write HyperFrames HTML with `window.__cuthol`; never use green-screen keying. Default mode `overlay_alpha` keeps real transparency.
 8. **Speech services cost money.** Transcripts and voiceovers are cached by SHA-256 both inside the project (`.cuthol/ledger.sqlite`) and in the user-level shared cache (`~/.cuthol/cache`, redirected via `CUTHOL_CACHE_DIR`, disabled via `CUTHOL_CACHE_DIR=0` or `CUTHOL_DISABLE_SHARED_CACHE=1`); don't re-transcribe edited copies needlessly. `provider="local"` TTS without a configured command produces placeholder tones, not speech.
-9. **Adopt outside edits deliberately.** Composition files and hand edits to `cuthol.sequence.json` are not revisions until journaled. If a result starts with `NOTE Proje değişikliği…` (or `brief`/`workspace.open` show the top line), first run `workspace(action="changes_show")`, then ask the user (or follow their standing instruction) to `changes_adopt` or `changes_revert`. A `CUTHOL-G211` refusal means the same: show, adopt or revert, then retry.
+9. **Adopt outside edits deliberately.** Composition files and hand edits to `cuthol.sequence.json` are not revisions until journaled. If a result starts with `NOTE External project change…` (or `brief`/`workspace.open` show the top line), first run `workspace(action="changes_show")`, then ask the user (or follow their standing instruction) to `changes_adopt` or `changes_revert`. A `CUTHOL-G211` refusal means the same: show, adopt or revert, then retry.
 
 ## References
 

@@ -52,13 +52,13 @@ What to check, concretely:
 | G307 | G3 WARN | The sequence is empty (no spine clips, no cues on unmuted lanes). `render` refuses it with the same code as an error. |
 | G308 | G3 WARN | Spine is empty and no visual cue is on screen between the given times: only the stage backdrop shows → add or extend a visual cue. |
 | G309 | G3 WARN | Spine clip duration is `<= 150 ms` (a leftover fragment between cuts) → `spine remove` that clip or merge it into a neighbour. |
-| G312 | G3 INFO | Spine clip longer than 150 ms and shorter than 300 ms with audio above the silence floor. The message says this may be a short restart leftover ("kısa konuşma parçası, yeniden başlama kalıntısı olabilir"). The check uses a cleanup acoustic profile only when one is already cached for the asset and stays silent otherwise. |
+| G312 | G3 INFO | Spine clip longer than 150 ms and shorter than 300 ms with audio above the silence floor. The message says this ("… is a short speech fragment, possibly a restart leftover"). The check uses a cleanup acoustic profile only when one is already cached for the asset and stays silent otherwise. |
 | G311 | G3 ERROR | An `excise` range is not `start..end`. The message names the broken piece → write `--ranges 2s..3s,6s..7s`. |
 | G401 | G4 WARN | Outside the title-safe area by N px → move / shrink / `max_width`. |
 | G402 | G4 WARN | Caption reading speed too high → fewer words per caption. |
 | G403 | G4 WARN | Text covered by a higher layer. |
 | G406 | G4 WARN | Overlay uses backdrop-filter / blend modes in overlay mode → `mode="scene_host"`. |
-| G407 | G4 WARN / INFO | HyperFrames lint finding inside a mounted composition (e.g. `gsap_non_transform_motion` tweening `left`/`width`, `duplicate_media_discovery_risk`; cached by composition content hash, size/sub-composition split hints are ignored). `duplicate_media_discovery_risk` is downgraded to `INFO` when it only affects `<img>` tags and stays `WARN` for `<video>`/`<audio>` → apply the finding's `Öneri` fix hint. |
+| G407 | G4 WARN / INFO | HyperFrames lint finding inside a mounted composition (e.g. `gsap_non_transform_motion` tweening `left`/`width`, `duplicate_media_discovery_risk`; cached by composition content hash, size/sub-composition split hints are ignored). `duplicate_media_discovery_risk` is downgraded to `INFO` when it only affects `<img>` tags and stays `WARN` for `<video>`/`<audio>` → apply the finding's `Suggestion` fix hint. |
 | G409 | G4 WARN | Motion blur, a mask, or a brightness/contrast/saturation envelope on a lane cue is set away from the default. This version does not apply that field in the render. The message names the clip (or cue) and the field. Spine colour (constant or enveloped brightness/contrast/saturation, temperature, LUT) renders → leave the unused field at its default. |
 | G414 | G4 ERROR | A spine clip's LUT file is missing, unreadable, outside the project folder, or not `.cube`/`.3dl` → put the file under the project folder and re-attach with `spine grade --clip sp_XX --lut <path>`, or clear with `--lut none`. Render refuses to start. |
 | G415 | G4 WARN | A sub-composition script threw while a sibling timeline stayed alive, so HyperFrames skipped it with an empty timeline and that overlay part is blank. `overlays.script_errors` / `overlays.diagnostics` name the element, composition and error → fix that script; the next `render` re-captures. |
@@ -75,7 +75,7 @@ What to check, concretely:
 | SYS09 | SYS ERROR | Subprocess command line exceeds the operating system limit (`ENAMETOOLONG` / `E2BIG`); reports the command length, OS character limit, and clip count. |
 | SYS10 | SYS ERROR | Subprocess progress stalled (`SUBPROCESS_STALLED`): the child process (and its process tree) was terminated because no progress occurred for `CUTHOL_STALL_TIMEOUT_SEC` (default 300 s; `0` disables the watchdog). Reports the step, last progress value, stalled duration, and a concise command summary. |
 
-Every diagnostic is `[CODE] what happened | Öneri: next step`.
+Every diagnostic is `[CODE] what happened | Suggestion: next step`.
 
 ## Render
 

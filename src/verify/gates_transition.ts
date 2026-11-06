@@ -30,7 +30,7 @@ export function verifyExtensionTransitions(
           DIAGNOSTICS.EXTENSION_TRANSITION_PARAM_INVALID(
             tr.kind,
             clip.id,
-            `Yerleşik '${tr.kind}' geçişi parametre almıyor.`
+            `Built-in '${tr.kind}' transition takes no parameters.`
           )
         );
       }
@@ -41,7 +41,7 @@ export function verifyExtensionTransitions(
       diagnostics.push(
         DIAGNOSTICS.EXTENSION_TRANSITION_UNAVAILABLE(
           tr.kind,
-          `'ext:<eklenti>/<ad>' biçiminde değil (küçük harf, [a-z0-9_-]).`,
+          `not in 'ext:<extension>/<name>' form (lowercase, [a-z0-9_-]).`,
           clip.id
         )
       );
@@ -57,8 +57,8 @@ export function verifyExtensionTransitions(
           DIAGNOSTICS.EXTENSION_TRANSITION_UNAVAILABLE(
             tr.kind,
             loadErr
-              ? `'${ref.extension}' eklentisi yüklenemedi: ${loadErr}`
-              : `'${ref.extension}' eklentisi projede etkin değil ya da '${ref.name}' geçişini tanımlamıyor.`,
+              ? `extension '${ref.extension}' failed to load: ${loadErr}`
+              : `extension '${ref.extension}' is not enabled in the project, or does not define the '${ref.name}' transition.`,
             clip.id
           )
         );

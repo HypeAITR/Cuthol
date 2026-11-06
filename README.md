@@ -51,6 +51,7 @@ Editing software is built around a person with a mouse and a timeline they can s
 | **Timeline** | A magnetic primary storyline (`spine`) plus typed parallel lanes (titles, captions, b-roll, motion graphics, voiceover, sfx, music). Cues can be anchored to clips and follow later trims. Long recordings with thousands of cuts and long compositions are normal use. |
 | **Clip effects** | Applied in the render graph, so the source and its transcript binding stay intact: speed ramps that picture, audio and word timings all follow; brightness/contrast/saturation (static or animated), white balance in kelvin and `.cube`/`.3dl` LUTs; per-clip effect chains; mirrored or stretched edge fill; cubic-bezier and step easing; transitions from extensions. |
 | **Speech** | Transcription with word timings; pause and filler cleanup whose cut edges sit in real silence and never eat a kept word; an optional post-cleanup check; repeated phrases and restarted sentences offered for review instead of cut blindly; word-highlighted captions; voiceover synthesis. |
+| **Providers** | Deepgram (transcription) and ElevenLabs (voiceover) are built in. Local models and other services plug in as extension providers — speech recognition, voiceover, and music/sound-effect sources searched and fetched into the library with their source and licence recorded. Secrets are read from the environment and never written to the project. Examples in [`examples/extensions`](examples/extensions). |
 | **Mix** | Loudness normalization to a target (ITU-R BS.1770, e.g. −14 LUFS / −1 dBTP), voice polish, ducking under speech, cut alignment to a beat grid. |
 | **Motion graphics** | HyperFrames compositions composited with true alpha. A runtime (`window.__cuthol`) exposes word times, beats, the beat grid and cut points — for the composition's own window and for the whole edit. A video can be made of motion graphics alone. |
 | **Layout measurement** | Per-frame boxes of every composition element, including tight glyph ink (also inside rotated or scaled containers), opacity, stacking and grouping. A one-shot geometry query reports, for any moment, gaps, overlaps, which element is on top and the distance to the frame edges — so an agent can check a layout in text. |
@@ -86,7 +87,7 @@ The edit lives in one project file and is changed only through Cuthol commands. 
 - Node.js ≥ 22.5
 - `ffmpeg` and `ffprobe` on `PATH` (8.x recommended)
 - A Chrome/Chromium that HyperFrames can launch (only for motion graphics; check with `npx hyperframes doctor`)
-- Optional, for speech: `DEEPGRAM_API_KEY` (transcription), `ELEVENLABS_API_KEY` (voiceover)
+- Optional, for speech: `DEEPGRAM_API_KEY` (transcription), `ELEVENLABS_API_KEY` (voiceover) — or a local model / another service through an extension provider
 
 **Install**
 
@@ -183,7 +184,7 @@ Rendering presets: `draft_480p` (a fast proxy for checking) and `master_1080p` (
 
 Cuthol is at 0.1. Editing, speech, mix, compositing, layout measurement and render are complete and have been exercised end to end by agents on real footage. Expect rough edges and breaking changes.
 
-- Diagnostics have the form `[CUTHOL-Gxxx] what | Öneri: fix` and are currently partly in Turkish (`Öneri` means "suggestion"); English diagnostics are planned.
+- Diagnostics have the form `[CUTHOL-Gxxx] what | Suggestion: next step`.
 - HDR (PQ/HLG) sources are not tone-mapped.
 
 ## Contributing

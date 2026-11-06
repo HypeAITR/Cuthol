@@ -75,7 +75,7 @@ Default lanes (z order: higher is on top; negative = audio-only lanes under the 
 | `ln_bgm` | music | −10 | music bed |
 
 - `lane.add_cue(lane, kind?, asset?, text?, at | anchor+offset, duration, in?, out?, rate?, preserve_pitch?, gain_db?, muted?, z_index?, size, color, max_width, x, y, scale, rotation?, opacity)`.
-  - Text title: `lane.add_cue(lane="ln_titles", text="Başlık", at="0.5s", duration="2.5s", y=-30, size=72)`.
+  - Text title: `lane.add_cue(lane="ln_titles", text="Heading", at="0.5s", duration="2.5s", y=-30, size=72)`.
   - Default typography sizes scale with stage orientation: on vertical `9:16` (`1080x1920`), titles default to `size=76` px (`max_width=70`%) and lane captions to `size=64` px (`max_width=70`%); on landscape `16:9` (`1920x1080`), titles default to `size=56` px (`max_width=76`%) and lane captions to `size=44` px (`max_width=76`%, auto-captions `42` px / `80`%).
   - Music bed: `lane.add_cue(lane="ln_bgm", kind="music", asset="aud_02", at="0s", duration="14s", gain_db=-10)`.
   - Voiceover: `lane.add_cue(lane="ln_vo", kind="voiceover", asset="aud_01", at="0.5s", duration=<asset length>, rate=1.0)`.
@@ -115,7 +115,7 @@ The spine is optional. With no spine clips:
 
 Every edit increments `revision` and returns:
 - `Changed:` — e.g. `~sp_01 (transition:dissolve 500ms)`, `+cue_04 (title: 'Test') on ln_titles`.
-- `Undo (expect_rev N):` — what an undo would revert, e.g. `SİLİNİR: cue_04 …` (will be deleted).
+- `Undo (expect_rev N):` — what an undo would revert, e.g. `DELETED: cue_04 …` (will be deleted).
 
 Undo: `workspace.undo(expect_rev=N)`; several steps `steps=3` or `to=<rev>`; preview with `dry_run=true`. If the revision moved (G109), re-read with `brief`. Locked lanes block undo/redo that would touch them (G111) unless you pass `allow_protected=[ids]`. `workspace.redo`, `workspace.tag(name)` and `workspace.journal` (list) complete the journal.
 

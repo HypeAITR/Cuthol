@@ -46,7 +46,7 @@ function normalizeAndValidatePlannerPatch(
       DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
         extName,
         `planner:${plannerName}`,
-        `Planlayıcı çıktısı bir Cue Sheet JSON nesnesi olmalıdır.`
+        `A planner must return a Cue Sheet JSON object.`
       )
     );
   }
@@ -62,7 +62,7 @@ function normalizeAndValidatePlannerPatch(
         DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
           extName,
           `planner:${plannerName}`,
-          `Planlayıcı yamasında bilinmeyen alan '${k}' (izin verilenler: title, stage, spine, cues, notes).`
+          `The planner patch has an unknown field '${k}' (allowed: title, stage, spine, cues, notes).`
         )
       );
     }
@@ -83,7 +83,7 @@ function normalizeAndValidatePlannerPatch(
         DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
           extName,
           `planner:${plannerName}`,
-          `Planlayıcı yamasındaki 'stage' alanı bir nesne olmalıdır.`
+          `The 'stage' field in the planner patch must be an object.`
         )
       );
     }
@@ -96,7 +96,7 @@ function normalizeAndValidatePlannerPatch(
         DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
           extName,
           `planner:${plannerName}`,
-          `Planlayıcı yamasındaki 'spine' alanı bir dizi olmalıdır.`
+          `The 'spine' field in the planner patch must be an array.`
         )
       );
     }
@@ -109,7 +109,7 @@ function normalizeAndValidatePlannerPatch(
         DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
           extName,
           `planner:${plannerName}`,
-          `Planlayıcı yamasındaki 'cues' alanı bir dizi olmalıdır.`
+          `The 'cues' field in the planner patch must be an array.`
         )
       );
     }
@@ -121,7 +121,7 @@ function normalizeAndValidatePlannerPatch(
           DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
             extName,
             `planner:${plannerName}`,
-            `'cues[${i}]' bir nesne olmalıdır.`
+            `'cues[${i}]' must be an object.`
           )
         );
       }
@@ -132,7 +132,7 @@ function normalizeAndValidatePlannerPatch(
           DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
             extName,
             `planner:${plannerName}`,
-            `'cues[${i}].lane_id' alanı zorunludur.`
+            `'cues[${i}].lane_id' is required.`
           )
         );
       }
@@ -176,7 +176,7 @@ function normalizeAndValidatePlannerPatch(
           DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
             extName,
             `planner:${plannerName}`,
-            `'cues[${i}].at_ms' negatif olmayan geçerli bir milisaniye değeri olmalıdır (verilen: ${String(cObj.at_ms)}).`
+            `'cues[${i}].at_ms' must be a valid non-negative millisecond value (given: ${String(cObj.at_ms)}).`
           )
         );
       }
@@ -188,7 +188,7 @@ function normalizeAndValidatePlannerPatch(
           DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
             extName,
             `planner:${plannerName}`,
-            `'cues[${i}].duration_ms' pozitif bir milisaniye değeri olmalıdır (verilen: ${String(cObj.duration_ms)}).`
+            `'cues[${i}].duration_ms' must be a positive millisecond value (given: ${String(cObj.duration_ms)}).`
           )
         );
       }
@@ -251,7 +251,7 @@ export function runExtensionPlanner(options: {
       DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
         ext.name,
         options.plannerName || "planner",
-        `'${ext.name}' eklentisinde tanımlı hiçbir planlayıcı ('planners') yok.`
+        `Extension '${ext.name}' defines no planners ('planners').`
       )
     );
   }
@@ -263,7 +263,7 @@ export function runExtensionPlanner(options: {
       DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
         ext.name,
         planName || "(belirtilmedi)",
-        `Planlayıcı bulunamadı. Mevcut planlayıcılar: ${planNames.join(", ")}.`
+        `Planner not found. Available planners: ${planNames.join(", ")}.`
       )
     );
   }
@@ -349,7 +349,7 @@ export function runExtensionPlanner(options: {
       throw new CutholError(
         DIAGNOSTICS.EXTENSION_SECURITY_VIOLATION(
           ext.name,
-          `Planlayıcı betiği eklenti klasörünün içine yazma girişiminde bulundu.`
+          `The planner script attempted to write inside the extension folder.`
         )
       );
     }
@@ -372,7 +372,7 @@ export function runExtensionPlanner(options: {
       throw new CutholError(
         DIAGNOSTICS.EXTENSION_SECURITY_VIOLATION(
           ext.name,
-          `Planlayıcı betiği doğrudan çalışma alanı klasörüne ('${extraRootEntries.join(", ") || "cuthol.sequence.json"}') yazma girişiminde bulundu.`
+          `The planner script attempted to write directly into the workspace folder ('${extraRootEntries.join(", ") || "cuthol.sequence.json"}').`
         )
       );
     }
@@ -386,7 +386,7 @@ export function runExtensionPlanner(options: {
       throw new CutholError(
         DIAGNOSTICS.EXTENSION_SECURITY_VIOLATION(
           ext.name,
-          `Planlayıcı betiği Cuthol'un verdiği çıktı yolu dışına ('${extraSandbox.join(", ")}') dosya yazdı.`
+          `The planner script wrote a file outside the output path Cuthol gave it ('${extraSandbox.join(", ")}').`
         )
       );
     }
@@ -396,7 +396,7 @@ export function runExtensionPlanner(options: {
         DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
           ext.name,
           `planner:${planName}`,
-          extensionTimeoutFailureDetail("Planlayıcı betiği", planner.timeout_sec, "120")
+          extensionTimeoutFailureDetail("Planner script", planner.timeout_sec, "120")
         )
       );
     }
@@ -406,7 +406,7 @@ export function runExtensionPlanner(options: {
         DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
           ext.name,
           `planner:${planName}`,
-          `Planlayıcı betiği çıkış kodu ${nodeProc.status}: ${(nodeProc.stderr || nodeProc.stdout || "").trim()}`
+          `Planner script exit code ${nodeProc.status}: ${(nodeProc.stderr || nodeProc.stdout || "").trim()}`
         )
       );
     }
@@ -420,7 +420,7 @@ export function runExtensionPlanner(options: {
           DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
             ext.name,
             `planner:${planName}`,
-            `Planlayıcı çıktı dosyası geçerli bir JSON değil: ${err instanceof Error ? err.message : String(err)}`
+            `The planner output file is not valid JSON: ${err instanceof Error ? err.message : String(err)}`
           )
         );
       }
@@ -431,7 +431,7 @@ export function runExtensionPlanner(options: {
           DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
             ext.name,
             `planner:${planName}`,
-            `Planlayıcı betiği ne çıktı dosyası ('patch.json') üretti ne de stdout üzerinde JSON döndürdü.`
+            `The planner script produced neither an output file ('patch.json') nor JSON on stdout.`
           )
         );
       }
@@ -446,7 +446,7 @@ export function runExtensionPlanner(options: {
             DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
               ext.name,
               `planner:${planName}`,
-              `Planlayıcı betiği geçerli bir JSON döndürmedi: '${lastLine.slice(0, 120)}'`
+              `The planner script did not return valid JSON: '${lastLine.slice(0, 120)}'`
             )
           );
         }

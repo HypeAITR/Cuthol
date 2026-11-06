@@ -4,7 +4,7 @@ import { parseTimeMs } from "./core/time.js";
 import { formatCaptionsDigest, formatTranscribeDigest } from "./library/query.js";
 import { CaptionStylePreset, generateSequenceCaptions } from "./speech/captions.js";
 import { cleanupClipDialogue, cleanupLaneCueDialogue } from "./speech/cleanup.js";
-import { AsrProviderId, TtsProviderId } from "./speech/providers.js";
+import { describeProviderResolution, setProjectProviderDefaults } from "./speech/provider_select.js";
 import { synthesizeVoiceover } from "./speech/synthesize.js";
 import { transcribeLibraryAsset } from "./speech/transcribe.js";
 import { verifyCleanup } from "./speech/verify_cleanup.js";
@@ -25,7 +25,7 @@ export async function runSpeechCommand(ctx: CliCommandContext): Promise<CliComma
       workspaceDir,
       handle,
       language: strFlag(flags, "lang", "tr"),
-      provider: strFlag(flags, "provider") as AsrProviderId | undefined,
+      provider: strFlag(flags, "provider"),
     });
     const payload = flags["verbose"]
       ? { action: "speech.transcribe", ...res }
@@ -45,7 +45,7 @@ export async function runSpeechCommand(ctx: CliCommandContext): Promise<CliComma
       voiceId: strFlag(flags, "voice"),
       modelId: strFlag(flags, "model"),
       speed: numFlag(flags, "speed"),
-      provider: strFlag(flags, "provider") as TtsProviderId | undefined,
+      provider: strFlag(flags, "provider"),
       language: strFlag(flags, "lang", "tr"),
       placeOnLane: strFlag(flags, "place-on-lane"),
       atMs: atRaw ? parseTimeMs(atRaw) : undefined,
@@ -153,6 +153,29 @@ export async function runSpeechCommand(ctx: CliCommandContext): Promise<CliComma
     emitEnvelopeJson(workspaceDir, "speech.verify-cleanup", {
       action: "speech.verify-cleanup",
       ...res,
+    });
+    return;
+  }
+
+  if (action === "providers") {
+    const asrRaw = strFlag(flags, "asr");
+    const ttsRaw = strFlag(flags, "tts");
+    if (asrRaw === undefined && ttsRaw === undefined) {
+      const res = describeProviderResolution(workspaceDir);
+      emitEnvelopeJson(workspaceDir, "speech.providers", {
+        action: "speech.providers",
+        ...res,
+      });
+      return;
+    }
+    const res = setProjectProviderDefaults(workspaceDir, {
+      ...(asrRaw !== undefined ? { asr: asrRaw } : {}),
+      ...(ttsRaw !== undefined ? { tts: ttsRaw } : {}),
+    });
+    emitEnvelopeJson(workspaceDir, "speech.providers", {
+      action: "speech.providers",
+      ...res,
+      effective: describeProviderResolution(workspaceDir).effective,
     });
     return;
   }

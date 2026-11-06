@@ -142,7 +142,7 @@ export function formatTranscribeDigest(res: TranscribeResult): {
       attention,
       query_hints: [
         `cuthol library query --handle ${res.handle} --kind transcript --range 0s..5s`,
-        `cuthol library query --handle ${res.handle} --kind transcript --text "<aranan_kelime>"`,
+        `cuthol library query --handle ${res.handle} --kind transcript --text "<searched_word>"`,
         `cuthol speech transcribe --handle ${res.handle} --verbose`,
       ],
     },
@@ -255,7 +255,7 @@ export function formatWaveformDigest(res: WaveformAnalysisResult): {
       attention: res.silence_intervals.slice(0, 5).map((s) => ({
         span: [s.start_ms, s.end_ms],
         reason: "SILENCE_INTERVAL",
-        note: `${s.duration_ms}ms sessizlik`,
+        note: `${s.duration_ms}ms silence`,
       })),
       query_hints: [
         `cuthol library query --handle ${res.handle} --kind waveform --range 0s..5s`,
@@ -664,7 +664,7 @@ export function queryLibraryAnalysis(options: {
     tokens_est: estTokens,
     items: sliced,
     hint: hasMore
-      ? `${matchedItems.length} öğeden ${sliced.length} tanesi döndü. Devamı için '--cursor ${nextIdx}' veya daha dar bir '--range' kullanın.`
+      ? `${sliced.length} of ${matchedItems.length} items returned. For the rest use '--cursor ${nextIdx}' or a narrower '--range'.`
       : null,
   };
 }

@@ -56,7 +56,7 @@ export function runWorkspaceCommand(ctx: CliCommandContext): CliCommandResult {
 
   if (action === "backdrop") {
     const color = strFlag(flags, "color") ?? rest[0];
-    if (!color) throw new CutholError(DIAGNOSTICS.INVALID_COLOR("(boş / missing --color)"));
+    if (!color) throw new CutholError(DIAGNOSTICS.INVALID_COLOR("(empty / missing --color)"));
     const res = setStageBackdropColor({ workspaceDir, color });
     emitEnvelopeJson(workspaceDir, "workspace.backdrop", {
       action: "workspace.backdrop",
@@ -128,7 +128,7 @@ export function runWorkspaceCommand(ctx: CliCommandContext): CliCommandResult {
         ...(payload.has_changes
           ? {
               diagnostic: DIAGNOSTICS.EXTERNAL_CHANGES_PRESENT(
-                `${payload.compositions.length} kompozisyon, ${fileCount} dosya${payload.sequence ? " + cuthol.sequence.json" : ""}`
+                `${payload.compositions.length} composition${payload.compositions.length === 1 ? "" : "s"}, ${fileCount} file${fileCount === 1 ? "" : "s"}${payload.sequence ? " + cuthol.sequence.json" : ""}`
               ),
             }
           : {}),

@@ -306,17 +306,17 @@ export function computeSequenceDelta(
   const invParts: string[] = [];
   if (addedItems.length > 0) {
     inverseKind = "destructive";
-    invParts.push(`SİLİNİR: ${addedItems.slice(0, 3).join(", ")}`);
+    invParts.push(`DELETED: ${addedItems.slice(0, 3).join(", ")}`);
   }
   if (removedItems.length > 0) {
     if (inverseKind !== "destructive") inverseKind = "additive";
-    invParts.push(`GERİ YÜKLENİR: ${removedItems.slice(0, 3).join(", ")}`);
+    invParts.push(`RESTORED: ${removedItems.slice(0, 3).join(", ")}`);
   }
   if (modifiedItems.length > 0) {
-    invParts.push(`ESKİ HALİNE DÖNER: ${modifiedItems.slice(0, 3).join(", ")}`);
+    invParts.push(`REVERTED: ${modifiedItems.slice(0, 3).join(", ")}`);
   }
   const inverseSummary =
-    invParts.length > 0 ? invParts.join(" | ") : `${operation} işlemi geri alınır`;
+    invParts.length > 0 ? invParts.join(" | ") : `${operation} will be undone`;
 
   return {
     summary,

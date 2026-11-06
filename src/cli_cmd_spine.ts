@@ -35,10 +35,10 @@ function parseSpeedRampFlag(raw: string): SpeedRampPoint[] {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  if (tokens.length === 0) fail(`'${raw}' içinde 'ofset:hız' çifti yok.`);
+  if (tokens.length === 0) fail(`'${raw}' contains no 'offset:rate' pair.`);
   return tokens.map((token) => {
     const sepIdx = token.lastIndexOf(":");
-    if (sepIdx <= 0) fail(`'${token}' 'ofset:hız' biçiminde değil.`);
+    if (sepIdx <= 0) fail(`'${token}' is not in 'offset:rate' form.`);
     const tStr = token.slice(0, sepIdx).trim();
     const vStr = token
       .slice(sepIdx + 1)
@@ -48,10 +48,10 @@ function parseSpeedRampFlag(raw: string): SpeedRampPoint[] {
     try {
       offsetMs = parseTimeMs(tStr);
     } catch {
-      fail(`'${tStr}' geçerli bir zaman değil.`);
+      fail(`'${tStr}' is not a valid time.`);
     }
     const rate = Number(vStr);
-    if (!Number.isFinite(rate)) fail(`'${token}' hızı ('${vStr}') sayı değil.`);
+    if (!Number.isFinite(rate)) fail(`rate of '${token}' ('${vStr}') is not a number.`);
     return { source_offset_ms: offsetMs!, rate };
   });
 }
@@ -75,7 +75,7 @@ function addFxPair(target: Record<string, unknown>, token: string): void {
     const name = eq > 0 ? piece.slice(0, eq).trim() : "";
     if (!name) {
       throw new Error(
-        `'${piece.trim() || token}' bir ad=değer çifti değil; '--param sigma=4' biçiminde verin (birden çok parametre için bayrağı tekrarlayın).`
+        `'${piece.trim() || token}' is not a name=value pair; pass it as '--param sigma=4' (repeat the flag for multiple parameters).`
       );
     }
     target[name] = parseFxScalar(piece.slice(eq + 1));
@@ -241,7 +241,7 @@ export function runSpineCommand(ctx: CliCommandContext): CliCommandResult {
     if (rateRaw && rampRaw !== undefined && !rampIsNone) {
       throw new CutholError(
         DIAGNOSTICS.INVALID_SPEED_RAMP(
-          `'--rate ${rateRaw}' ile '--ramp ${rampRaw}' bir arada verildi; rampa varken taban hız etkisizdir.`
+          `'--rate ${rateRaw}' and '--ramp ${rampRaw}' were given together; the base rate has no effect while a ramp is set.`
         )
       );
     }
@@ -282,7 +282,7 @@ export function runSpineCommand(ctx: CliCommandContext): CliCommandResult {
         const eq = piece.indexOf("=");
         const key = (eq >= 0 ? piece.slice(0, eq) : piece).trim();
         const value = eq >= 0 ? piece.slice(eq + 1) : "";
-        if (!key || eq < 0) throw new Error(`--param must be name=value (got '${piece.trim()}'). Separate several params with commas: --param yon=sol,hiz=2.`);
+        if (!key || eq < 0) throw new Error(`--param must be name=value (got '${piece.trim()}'). Separate several params with commas: --param direction=left,speed=2.`);
         transitionParams[key] = value;
       }
     }
@@ -455,7 +455,7 @@ export function runSpineCommand(ctx: CliCommandContext): CliCommandResult {
       const filter = strFlag(flags, "filter");
       const params = collectSpineFxParams(flags);
       if (filter === undefined && Object.keys(params).length === 0) {
-        throw new Error("Provide --param <ad=değer> or --filter \"<zincir>\".");
+        throw new Error("Provide --param <name=value> or --filter \"<chain>\".");
       }
       const res = setSpineFx({ workspaceDir, clipId, fxId, params, filter });
       emitEnvelopeJson(workspaceDir, "spine.fx.set", { action: "spine.fx.set", ...res });

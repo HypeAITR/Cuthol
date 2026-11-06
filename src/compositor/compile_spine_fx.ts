@@ -96,32 +96,32 @@ function fxSegmentOptionKeys(segment: string): string[] {
 }
 
 /**
- * Validates a built-in (`kind: "ffmpeg"`) raw chain. Returns the Turkish G118 detail, or null when valid.
+ * Validates a built-in (`kind: "ffmpeg"`) raw chain. Returns the English G118 detail, or null when valid.
  * Shared by the compiler and the verify gate so both always agree.
  */
 export function checkBuiltinFxFilterChain(chain: unknown): string | null {
   if (typeof chain !== "string" || !chain.trim()) {
-    return `'filter' boş olmayan bir süzgeç zinciri olmalıdır (ör. "gblur=sigma=3").`;
+    return `'filter' must be a non-empty filter chain (e.g. "gblur=sigma=3").`;
   }
   const trimmed = chain.trim();
   const badChar = trimmed.match(/[[;\]]/);
   if (badChar) {
-    return `zincir grafik ayırıcısı ('${badChar[0]}') içeremez (tek zincirde derlenir).`;
+    return `chain must not contain the graph separator ('${badChar[0]}') (compiled as a single chain).`;
   }
   if (/[\r\n\x00]/.test(trimmed)) {
-    return `zincir satır sonu içeremez.`;
+    return `chain must not contain line breaks.`;
   }
   for (const seg of splitTopLevel(trimmed, ",")) {
     const name = fxSegmentFilterName(seg);
     if (!name) {
-      return `çözümlenemeyen süzgeç parçası ('${seg.trim().slice(0, 40)}').`;
+      return `unresolvable filter segment ('${seg.trim().slice(0, 40)}').`;
     }
     if (BANNED_BUILTIN_FX_FILTERS.has(name)) {
-      return `'${name}' süzgeci ham zincirde yasak (dosya okur ya da dış komut/uzaktan denetim açar).`;
+      return `'${name}' filter is forbidden in a raw chain (it reads files or opens external commands/remote control).`;
     }
     for (const key of fxSegmentOptionKeys(seg)) {
       if (FILE_READING_FX_OPTIONS.has(key)) {
-        return `'${name}' süzgecinde '${key}=' dosya okur; dosya kullanan efektler eklentide tanımlanmalıdır.`;
+        return `'${key}=' in the '${name}' filter reads a file; effects using files must be defined in an extension.`;
       }
     }
   }
@@ -144,7 +144,7 @@ export function resolveFxParams(
   if (names.length > 0) {
     for (const k of Object.keys(raw)) {
       if (!(k in schema)) {
-        throw fail(`bilinmeyen parametre '${k}' (geçerli parametreler: ${names.join(", ")}).`);
+        throw fail(`unknown parameter '${k}' (valid parameters: ${names.join(", ")}).`);
       }
     }
   }
@@ -152,7 +152,7 @@ export function resolveFxParams(
     const val: unknown = raw[k] !== undefined ? raw[k] : def.default;
     if (val === undefined || val === null) {
       if (def.required) {
-        throw fail(`zorunlu parametre '${k}' eksik.`);
+        throw fail(`required parameter '${k}' is missing.`);
       }
       continue;
     }
@@ -160,13 +160,13 @@ export function resolveFxParams(
       const n =
         typeof val === "number" ? val : typeof val === "string" && val.trim() !== "" ? Number(val) : NaN;
       if (!Number.isFinite(n)) {
-        throw fail(`'${k}' parametresi sayı olmalıdır (verilen: ${JSON.stringify(val)}).`);
+        throw fail(`'${k}' must be a number (given: ${JSON.stringify(val)}).`);
       }
       if (def.min !== undefined && n < def.min) {
-        throw fail(`'${k}' parametresi (${n}) alt sınırın (${def.min}) altında.`);
+        throw fail(`'${k}' (${n}) is below the minimum (${def.min}).`);
       }
       if (def.max !== undefined && n > def.max) {
-        throw fail(`'${k}' parametresi (${n}) üst sınırın (${def.max}) üzerinde.`);
+        throw fail(`'${k}' (${n}) is above the maximum (${def.max}).`);
       }
       out[k] = n;
     } else if (def.type === "boolean") {
@@ -176,18 +176,18 @@ export function resolveFxParams(
         const t = val.trim().toLowerCase();
         if (t === "true" || t === "1") out[k] = true;
         else if (t === "false" || t === "0") out[k] = false;
-        else throw fail(`'${k}' parametresi true/false olmalıdır (verilen: ${JSON.stringify(val)}).`);
+        else throw fail(`'${k}' must be true/false (given: ${JSON.stringify(val)}).`);
       } else {
-        throw fail(`'${k}' parametresi true/false olmalıdır (verilen: ${JSON.stringify(val)}).`);
+        throw fail(`'${k}' must be true/false (given: ${JSON.stringify(val)}).`);
       }
     } else {
       if (typeof val !== "string" && typeof val !== "number" && typeof val !== "boolean") {
-        throw fail(`'${k}' parametresi metin olmalıdır (verilen: ${JSON.stringify(val)}).`);
+        throw fail(`'${k}' must be text (given: ${JSON.stringify(val)}).`);
       }
       out[k] = typeof val === "string" ? val : String(val);
     }
     if (def.enum && !def.enum.includes(out[k] as string | number)) {
-      throw fail(`'${k}' parametresi şu değerlerden biri olmalıdır: ${def.enum.join(", ")}.`);
+      throw fail(`'${k}' must be one of: ${def.enum.join(", ")}.`);
     }
   }
   if (names.length === 0) {
@@ -221,16 +221,16 @@ function substituteFxTemplate(
     const expr = animated.get(name);
     if (expr !== undefined) return expr;
     if (!(name in values)) {
-      throw fail(`'${name}' parametresi için değer yok (varsayılan tanımlayın ya da '--param ${name}=<değer>' ile verin).`);
+      throw fail(`no value for the '${name}' parameter (define a default or pass '--param ${name}=<value>').`);
     }
     const formatted = formatFxParamValue(values[name]);
     if (formatted === null) {
-      throw fail(`'${name}' parametre değeri süzgece yazılamıyor (denetim karakteri içeriyor).`);
+      throw fail(`'${name}' parameter value cannot be written into the filter (it contains a control character).`);
     }
     return formatted;
   });
   if (out.includes("{{") || out.includes("}}")) {
-    throw fail(`şablon çözümlenemeyen yer tutucu içeriyor ('${out.slice(0, 80)}').`);
+    throw fail(`template contains an unresolvable placeholder ('${out.slice(0, 80)}').`);
   }
   return out;
 }
@@ -262,11 +262,11 @@ function lookupExtensionFx(
 ): ResolvedEffectDef<ExtensionFxSpec> {
   if (!isExtensionEffectRef(kind)) {
     throw fail(
-      `bilinmeyen tür '${kind}' (yerleşik tür yalnız 'ffmpeg'; eklenti türleri 'ext:<eklenti>/<ad>' biçimindedir).`
+      `unknown kind '${kind}' (the only built-in kind is 'ffmpeg'; extension kinds are in 'ext:<extension>/<name>' form).`
     );
   }
   if (!rootDir) {
-    throw fail(`'${kind}' efekt kaydı proje dizini olmadan çözümlenemedi.`);
+    throw fail(`effect record '${kind}' could not be resolved without a project directory.`);
   }
   const reg = getSequenceEffectRegistry(seq, rootDir);
   const found = reg.fx.get(kind);
@@ -275,20 +275,20 @@ function lookupExtensionFx(
   const loadErr = reg.load_errors.get(ref.extension);
   if (loadErr !== undefined) {
     throw fail(
-      `'${ref.extension}' eklentisi yüklenemedi: ${loadErr}`,
-      `'cuthol extension show --name ${ref.extension}' ile manifesti denetleyin.`
+      `extension '${ref.extension}' failed to load: ${loadErr}`,
+      `check the manifest with 'cuthol extension show --name ${ref.extension}'.`
     );
   }
   const enabled = (seq.extensions ?? []).some((e) => e.name === ref.extension);
   if (!enabled) {
     throw fail(
-      `'${ref.extension}' eklentisi bu projede etkin değil.`,
-      `'cuthol extension enable --name ${ref.extension}' ile etkinleştirin ya da efekti kaldırın.`
+      `extension '${ref.extension}' is not enabled in this project.`,
+      `enable it with 'cuthol extension enable --name ${ref.extension}' or remove the effect.`
     );
   }
   throw fail(
-    `'${ref.extension}' eklentisinde '${ref.name}' adında bir efekt yok.`,
-    `'cuthol extension show --name ${ref.extension}' ile mevcut efektleri görün.`
+    `extension '${ref.extension}' has no effect named '${ref.name}'.`,
+    `list the available effects with 'cuthol extension show --name ${ref.extension}'.`
   );
 }
 
@@ -330,13 +330,13 @@ export function buildSpineClipFxFilters(
         const first = [...ownEnvelopes.keys()][0];
         throw envFail(
           `fx.${fx.id}.${first}`,
-          `yerleşik 'ffmpeg' zincirinin parametreleri zarflanamaz (zincir tek metindir).`
+          `parameters of the built-in 'ffmpeg' chain cannot be enveloped (the chain is a single text).`
         );
       }
       const supplied: Record<string, unknown> = (fx.params ?? {}) as Record<string, unknown>;
       for (const k of Object.keys(supplied)) {
         if (k !== "filter") {
-          throw fail(`bilinmeyen parametre '${k}' (yerleşik tür yalnız 'filter' alır).`);
+          throw fail(`unknown parameter '${k}' (the built-in kind only takes 'filter').`);
         }
       }
       const problem = checkBuiltinFxFilterChain(supplied.filter);
@@ -351,25 +351,25 @@ export function buildSpineClipFxFilters(
     for (const [param, env] of ownEnvelopes) {
       const declared = (def.spec.params ?? {})[param];
       if (!declared) {
-        throw envFail(`fx.${fx.id}.${param}`, `'${fx.kind}' efektinde '${param}' adında bir parametre yok.`);
+        throw envFail(`fx.${fx.id}.${param}`, `effect '${fx.kind}' has no parameter named '${param}'.`);
       }
       if (!animatable.has(param)) {
         throw envFail(
           `fx.${fx.id}.${param}`,
-          `'${param}' zarflanabilir değil (eklenti 'animatable' listesinde bildirmemiş).`
+          `'${param}' is not envelopable (the extension did not declare it in the 'animatable' list).`
         );
       }
       const expr = compileEnvelopeToFfmpegExpr({ envelope: env, timeBaseOffsetMs: 0, mode: "raw" });
-      if (expr === null) continue; // noktasız zarf: animasyon yok, durağan değer kullanılır
+      if (expr === null) continue; // point-less envelope: no animation, the static value is used
       animated.set(param, `'${expr}'`);
     }
     out.push(substituteFxTemplate(def.spec.video_filter, values, animated, fail));
   }
   for (const [fxId, inner] of byFx) {
-    if (seenIds.has(fxId) || disabledIds.has(fxId)) continue; // kapalı efektin zarfı uykudadır, G119 değil
+    if (seenIds.has(fxId) || disabledIds.has(fxId)) continue; // a disabled effect's envelope is dormant, not G119
     const first = [...inner.keys()][0];
     throw new CutholError(
-      DIAGNOSTICS.SPINE_FX_ENVELOPE_UNSUPPORTED(clip.id, `fx.${fxId}.${first}`, `'${fxId}' kimlikli bir efekt bu klipte yok.`)
+      DIAGNOSTICS.SPINE_FX_ENVELOPE_UNSUPPORTED(clip.id, `fx.${fxId}.${first}`, `no effect with id '${fxId}' exists on this clip.`)
     );
   }
   return out;

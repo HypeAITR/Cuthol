@@ -43,7 +43,7 @@ export function runExtensionCommand(ctx: CliCommandContext): CliCommandResult {
     const name = strFlag(flags, "name") ?? rest[0];
     if (!name) {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Eklenti adı ('--name') zorunludur.")
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Extension name ('--name') is required.")
       );
     }
     const res = createExtension({
@@ -64,7 +64,7 @@ export function runExtensionCommand(ctx: CliCommandContext): CliCommandResult {
     const name = strFlag(flags, "name") ?? rest[0];
     if (!name) {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Eklenti adı ('--name') zorunludur.")
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Extension name ('--name') is required.")
       );
     }
     const res = showExtension({
@@ -80,7 +80,7 @@ export function runExtensionCommand(ctx: CliCommandContext): CliCommandResult {
     const name = strFlag(flags, "name") ?? rest[0];
     if (!name) {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Eklenti adı ('--name') zorunludur.")
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Extension name ('--name') is required.")
       );
     }
     const res = enableExtensionInWorkspace({
@@ -97,7 +97,7 @@ export function runExtensionCommand(ctx: CliCommandContext): CliCommandResult {
     const name = strFlag(flags, "name") ?? rest[0];
     if (!name) {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Eklenti adı ('--name') zorunludur.")
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Extension name ('--name') is required.")
       );
     }
     const res = disableExtensionInWorkspace({
@@ -113,7 +113,7 @@ export function runExtensionCommand(ctx: CliCommandContext): CliCommandResult {
     const name = strFlag(flags, "name") ?? rest[0];
     if (!name) {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Eklenti adı ('--name') zorunludur.")
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Extension name ('--name') is required.")
       );
     }
     const res = promoteExtension({
@@ -129,7 +129,7 @@ export function runExtensionCommand(ctx: CliCommandContext): CliCommandResult {
     const name = strFlag(flags, "name") ?? rest[0];
     if (!name) {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Eklenti adı ('--name') zorunludur.")
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Extension name ('--name') is required.")
       );
     }
     const res = removeExtension({
@@ -145,7 +145,7 @@ export function runExtensionCommand(ctx: CliCommandContext): CliCommandResult {
     const name = strFlag(flags, "name") ?? rest[0];
     if (!name) {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Eklenti adı ('--name') zorunludur.")
+        DIAGNOSTICS.INVALID_EXTENSION_MANIFEST("extension", "Extension name ('--name') is required.")
       );
     }
     const processorName = strFlag(flags, "processor");
@@ -199,7 +199,7 @@ export function runExtensionCommand(ctx: CliCommandContext): CliCommandResult {
         DIAGNOSTICS.EXTENSION_EXECUTION_FAILED(
           name,
           processorName || "processor",
-          "İşlemci çalıştırmak için '--input <handle|path>' (veya '--handle') zorunludur."
+          "Running a processor requires '--input <handle|path>' (or '--handle')."
         )
       );
     }

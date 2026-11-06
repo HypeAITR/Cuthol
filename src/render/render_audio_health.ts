@@ -575,7 +575,7 @@ export function scanRenderedMp4AudioHealth(
             );
             similarity = earlyMatch.similarity;
             ok = false;
-            detail = `bölüm içi gecikme kaybolmuş, ses bölüm başına (${Math.round(c.seg.startMs)}ms) kaymış`;
+            detail = `in-segment delay lost, audio drifted to the segment head (${Math.round(c.seg.startMs)}ms)`;
           }
         }
       }
@@ -597,16 +597,16 @@ export function scanRenderedMp4AudioHealth(
 
         if (renderRms < Math.min(0.0005, bestRms * 0.08)) {
           ok = false;
-          detail = "beklenen ses penceresinde sinyal yok (dijital sessizlik)";
+          detail = "no signal in the expected audio window (digital silence)";
         } else if (similarity >= 0.52 && Math.abs(offsetMs) > 20) {
           ok = false;
-          detail = `kaynakla zaman ofseti yüksek (${offsetMs >= 0 ? "+" : ""}${offsetMs.toFixed(1)}ms)`;
+          detail = `large time offset vs the source (${offsetMs >= 0 ? "+" : ""}${offsetMs.toFixed(1)}ms)`;
         } else if (overlappingOtherItems.length > 0 && renderRms >= bestRms * 0.15) {
           // Another active track (e.g. loud dialogue over ducked BGM or loud SFX) masks single-track NCC
           ok = true;
         } else {
           ok = false;
-          detail = `kaynakla korelasyon düşük (benzerlik=${similarity.toFixed(2)})`;
+          detail = `low correlation vs the source (similarity=${similarity.toFixed(2)})`;
         }
       }
     }

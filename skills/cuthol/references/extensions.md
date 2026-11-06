@@ -27,6 +27,7 @@ Allowed top-level fields:
 - `fx` (optional): map of per-clip effect definitions for `spine fx` (`Record<string, ExtensionFxSpec>`): each entry is `{ description?, params?, video_filter, animatable? }`. `video_filter` is an ffmpeg video-filter template with `{{param}}` placeholders (no `[` `]` `;`), substituted per clip at render time. `animatable` lists the number params whose option accepts a per-frame expression, so agents may keyframe them with `envelope(param="fx.<id>.<param>")`; every `{{name}}` must be a declared param.
 - `planners` (optional): map of planner definitions (`Record<string, ExtensionPlannerSpec>`, each with `script`, optional `description`, `params`, and `timeout_sec`)
 - `recipes` (optional): map of recipe definitions (`Record<string, ExtensionRecipeSpec>`)
+- `providers` (optional): speech and media providers served by this extension (`{ asr?, tts?, media? }`; each entry has `script` plus optional `config` and `env` — see *Speech and media providers* below)
 - `transitions` (optional): map of spine transition definitions (see *Spine transition kinds* below)
 - `guide` (optional): relative markdown path (default `"README.md"`), readable via `guide(topic="ext:<name>")`
 
@@ -101,7 +102,7 @@ Example `cuthol-extension.json`:
 
 After `extension.enable`, agents call `spine.fx_add(clip="sp_01", kind="ext:fxdemo/soft_blur", params={"sigma": 8})`; the template is substituted per clip in the render graph (source asset untouched). `animatable` must name declared number params; unknown keys, undeclared `{{placeholders}}` and `[` `]` `;` in the template are `[CUTHOL-G112]`.
 
-## Six capability kinds
+## Seven capability kinds
 
 ### 1. Composition helper (`helper`)
 - When the extension is enabled in a project (`extension.enable`), `syncCompositionBridgeFiles` copies the helper into each composition's `assets/cuthol-ext-<name>.js` and injects `<script src="assets/cuthol-ext-<name>.js"></script>` immediately after `<script src="assets/cuthol-runtime.js"></script>`.
@@ -213,7 +214,121 @@ When an edit needs a **data-dependent, variable number of cues** (for example, p
    - Preview: `extension(action="run", name="paper_sfx", planner="sync_sfx", dry_run=true)`
    - Apply: `extension(action="run", name="paper_sfx", planner="sync_sfx")`
 
-### 6. Guide (`guide`)
+### 6. Speech and media providers (`providers`)
+
+An extension can serve up to three provider kinds — `asr` (speech recognition),
+`tts` (speech synthesis), and `media` (a searchable music/sfx shelf) — so projects
+are not tied to the built-in providers. Cuthol keeps the core generic: each provider
+is a sandboxed child-process `node` script speaking a fixed JSON contract.
+
+```json
+"providers": {
+  "asr": {
+    "description": "Local ASR via a configurable command line.",
+    "script": "asr.js",
+    "config": { "command": "my-asr --json {audio} --language {language}" },
+    "env": ["MY_ASR_API_KEY"]
+  },
+  "tts": { "script": "tts.js", "config": {}, "env": ["MY_TTS_API_KEY"] },
+  "media": { "script": "media.js", "config": { "directory": "tracks" } }
+}
+```
+
+- `script` (required): relative `.js` file inside the extension (same rule as
+  processor/planner scripts). Unknown kinds, unknown fields, a missing script, a
+  non-object `config`, or a malformed `env` list are `[CUTHOL-G112]`.
+- `config` (optional): static JSON object passed verbatim to every invocation
+  (command lines, field mappings, folders, limits). Not a secret store.
+- `env` (optional): environment variable **names** the provider needs
+  (`["SOME_API_KEY"]`). Values are read from the process environment or the project
+  `.env` at call time, passed to the child only, and never written to the sequence,
+  journal, cache key, output, or logs. A missing variable fails with `[CUTHOL-G232]`
+  naming the variable and where to set it. Undeclared variables — including other
+  providers' keys — never reach the script.
+- Providers run on demand and do **not** need `extension.enable` (like processors).
+  `network: false` (default) still forbids network APIs in the script (`[CUTHOL-G206]`);
+  API-backed providers declare `network: true`.
+
+Invocation: `node <script> <requestJsonPath> <responseJsonPath>` in an isolated temp
+working directory. No wall-clock limit, but the progress watchdog kills trees that
+stall (`CUTHOL_STALL_TIMEOUT_SEC`, default 300 s). The script may write only the
+response file, the audio output file (TTS/fetch, path given in the request), and the
+`tmp/` scratch dir (`CUTHOL_PROVIDER_TMP`); anything else is `[CUTHOL-G206]`, as is
+touching the extension folder. A crash, a missing output file, or an unreadable
+response is `[CUTHOL-G234]`; a response that violates the contract below is
+`[CUTHOL-G233]`. The extension `version` and content hash join every cache key, so
+upgrading a provider never reads another version's cache.
+
+**ASR** (`speech transcribe --provider ext:<name>`). Request:
+`{ contract: "cuthol.provider.asr/1", audio_path, language, keyterms, config }`.
+Response: `{ words: [{ word, start_ms, end_ms, confidence?, punctuated_word? }],
+text?, language?, model? }`. Cuthol annotates fillers/repetitions, clamps to the
+asset duration, and caches per provider identity + version + hash + language.
+
+**TTS** (`speech synthesize --provider ext:<name>`; `--voice`/`--model`/`--speed`
+pass through, default `"default"`). Request: `{ contract: "cuthol.provider.tts/1",
+text, voice_id, model_id, speed, language, output_audio_path, config }`. The script
+writes audio to `output_audio_path` and responds with `{ alignment: "word" |
+"character" | "none", words?, characters? }` (`characters` is the
+`{ characters, character_start_times_seconds, character_end_times_seconds }` shape).
+`"none"` is explicit and honest: the voiceover keeps `has_alignment: false` plus a
+warning (`[CUTHOL-G235]`), and Cuthol never invents timings. Declaring `"none"`
+while returning timings is `[CUTHOL-G233]`.
+
+**Media** (`library search` / `library fetch --provider ext:<name>`). Search request:
+`{ contract: "cuthol.provider.media/1", operation: "search", kind: "music"|"sfx",
+query, min_duration_ms, max_duration_ms, limit, config }`; response:
+`{ candidates: [{ id, title?, duration_ms?, preview_url?, license?, source_url?,
+tags? }] }`. Fetch request: `{ ..., operation: "fetch", id, output_audio_path,
+config }`; the script writes the file and responds with
+`{ found: true, title?, license?, source_url?, duration_ms?, filename? }`
+(`{ found: false }` becomes `[CUTHOL-G236]`). Fetch ingests through the normal path
+(`aud_XX`, probe, ledger) and records `source` (provider, id, title, license) on the
+asset, shown by `library query` (`asset_source`) and
+`brief --lens detail --id <handle>`.
+
+Worked examples live in `examples/extensions/`:
+- `asr-command`: any local ASR CLI + JSON field mapping.
+- `tts-command`: any local TTS CLI, with optional `<output>.words.json` alignment.
+- `media-folder`: a local folder of tracks (+ sidecar `<file>.json` tags/license)
+  as a searchable shelf. Copy it into `.cuthol/extensions/` to try search/fetch.
+
+Template for an API-backed provider (placeholder names/URLs only):
+
+```json
+"providers": {
+  "tts": {
+    "script": "tts.js",
+    "config": { "endpoint": "https://api.example.com/v1/speak" },
+    "env": ["ACME_TTS_API_KEY"]
+  }
+}
+```
+
+```js
+// tts.js (skeleton; manifest needs "network": true for the fetch call)
+const fs = require("node:fs");
+const [requestPath, responsePath] = process.argv.slice(2);
+const req = JSON.parse(fs.readFileSync(requestPath, "utf8"));
+main().catch((err) => { process.stderr.write(String(err)); process.exit(1); });
+async function main() {
+  const res = await fetch(req.config.endpoint, {
+    method: "POST",
+    headers: { authorization: `Bearer ${process.env.ACME_TTS_API_KEY}` },
+    body: JSON.stringify({ text: req.text, voice: req.voice_id }),
+  });
+  if (!res.ok) throw new Error(`provider HTTP ${res.status}`);
+  const payload = await res.json(); // { audio_base64, words? }
+  fs.writeFileSync(req.output_audio_path, Buffer.from(payload.audio_base64, "base64"));
+  fs.writeFileSync(responsePath, payload.words
+    ? JSON.stringify({ alignment: "word", words: payload.words })
+    : JSON.stringify({ alignment: "none" }));
+}
+```
+
+Provider scripts are plain CommonJS `.js` files (like processor/planner scripts).
+
+### 7. Guide (`guide`)
 - Call `guide(topic="extensions")` for this manual, or `guide(topic="ext:<name>")` to read an extension's `README.md`.
 
 ## Spine transition kinds (`transitions`)
@@ -268,6 +383,7 @@ transitions are replaced (G122). `extension.show` returns the `transitions` mani
 - Every `extension.run` processor result reports `security_notice: { manifest_path, script_path, network_declared }`.
 - Extensions are forbidden from writing into their own extension folder, into the workspace folder, or outside the designated output path (`[CUTHOL-G206]`). Node processor and planner scripts may also write inside `CUTHOL_EXT_TMP` (`tmp/` in the sandbox). That directory is removed when the run finishes. Writes beside the output (and, for planners, beside `snapshot.json` / `patch.json`) are still `[CUTHOL-G206]`.
 - Node processor and planner scripts whose manifest has `network: false` (default) are forbidden from using network APIs (`fetch`, `node:http`, `node:https`, `node:net`, `WebSocket`) (`[CUTHOL-G206]`).
+- Provider scripts get a restricted environment: only the manifest-declared `env` names plus non-secret OS variables (`PATH`, temp dirs, locale) and `CUTHOL_PROVIDER_*` context. Everything else from the parent environment is withheld, and secret values are never written to the sequence, journal, cache key, output, or logs (missing variables fail with `[CUTHOL-G232]`).
 
 ## Commands (`extension` MCP tool / `cuthol extension`)
 
@@ -281,3 +397,5 @@ transitions are replaced (G122). `extension.show` returns the `transitions` mani
 | `extension(action="promote", name, overwrite?)` | `cuthol extension promote --name <name>` | Copy project extension to persistent storage |
 | `extension(action="remove", name, scope?)` | `cuthol extension remove --name <name> [--scope ...]` | Delete extension folder |
 | `extension(action="run", name, processor?\|planner?\|recipe?, input?, params?, dry_run?)` | `cuthol extension run --name <name> [--planner <p> \| --processor <p> --input <h> \| --recipe <r>] [--params '{...}'] [--dry-run]` | Run a processor, planner or recipe |
+
+Providers have no `extension run` entry point; they run through `speech transcribe` / `speech synthesize` (`--provider ext:<name>`), `speech providers` (project defaults), and `library search` / `library fetch`. Use `extension show` to inspect a provider's manifest section and script.

@@ -196,7 +196,7 @@ export function verifyG2Assets(
                   currentExt.contentHash,
                   "WARN",
                   copyDrift.drifted
-                    ? `kompozisyon kopyası eski/farklı: ${copyDrift.driftedCompositions.join(", ")}`
+                    ? `composition copy stale/different: ${copyDrift.driftedCompositions.join(", ")}`
                     : undefined
                 )
               );
@@ -209,7 +209,7 @@ export function verifyG2Assets(
                   currentExt.version,
                   currentExt.contentHash,
                   "WARN",
-                  `kompozisyon kopyası kaynağından farklı: ${copyDrift.driftedCompositions.join(", ")}`
+                  `composition copy differs from its source: ${copyDrift.driftedCompositions.join(", ")}`
                 )
               );
             }

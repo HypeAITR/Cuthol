@@ -51,7 +51,7 @@ export function verifySpineFx(
       const def = reg.fx.get(fx.kind as ExtensionEffectRef);
       if (def && !def.pinned_match) {
         const pinned = (seq.extensions ?? []).find((e) => e.name === def.extension);
-        const pinnedLabel = pinned ? `v${pinned.version} (${pinned.content_hash.slice(0, 8)})` : "kayıt yok";
+        const pinnedLabel = pinned ? `v${pinned.version} (${pinned.content_hash.slice(0, 8)})` : "no record";
         diagnostics.push(
           DIAGNOSTICS.SPINE_FX_EXTENSION_DRIFTED(
             clip.id,

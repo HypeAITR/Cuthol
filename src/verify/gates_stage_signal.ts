@@ -472,7 +472,7 @@ export function verifyG5Signal(
             diagnostics.push(
               DIAGNOSTICS.COMPOSITION_AUDIO_UNAVAILABLE(
                 cue.id,
-                warnMsg ?? "kompozisyon penceresinde ses enerjisi verisi yok"
+                warnMsg ?? "no audio-energy data in the composition window"
               )
             );
           }

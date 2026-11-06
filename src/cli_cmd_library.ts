@@ -13,6 +13,9 @@ import { analyzeAssetScenes } from "./library/scenes.js";
 import { analyzeAssetSubjectTrack, formatSubjectTrackDigest } from "./library/subject.js";
 import { analyzeAssetWaveform } from "./library/waveform.js";
 import { DIAGNOSTICS } from "./core/diagnostics.js";
+import { parseTimeMs } from "./core/time.js";
+import { loadSequence } from "./core/workspace.js";
+import { fetchMediaSource, searchMediaSource } from "./library/media_source.js";
 import { numFlag, strFlag } from "./cli_args.js";
 import {
   CLI_NOT_HANDLED,
@@ -20,6 +23,19 @@ import {
   CliCommandResult,
   emitEnvelopeJson,
 } from "./cli_output.js";
+
+function readQueryAssetSource(workspaceDir: string, handle: string): Record<string, unknown> {
+  try {
+    const { sequence } = loadSequence(workspaceDir);
+    const item = sequence.library.find((x) => x.handle === handle);
+    if (item?.source) {
+      return { asset_source: item.source };
+    }
+  } catch {
+    // Never fail a query because the source lookup failed.
+  }
+  return {};
+}
 
 export function runLibraryCommand(ctx: CliCommandContext): CliCommandResult {
   const { action, rest, flags, workspaceDir, formatFlag } = ctx;
@@ -130,7 +146,46 @@ export function runLibraryCommand(ctx: CliCommandContext): CliCommandResult {
     emitEnvelopeJson(workspaceDir, "library.query", {
       action: "library.query",
       ...qRes,
+      ...readQueryAssetSource(workspaceDir, handle),
       ...(pageWarning ? { diagnostics: [pageWarning] } : {}),
+    });
+    return;
+  }
+
+  if (action === "search") {
+    const provider = strFlag(flags, "provider");
+    if (!provider) throw new Error("Provide --provider ext:<name>.");
+    const kind = strFlag(flags, "kind");
+    if (!kind) throw new Error("Provide --kind music|sfx.");
+    const query = strFlag(flags, "query");
+    if (!query) throw new Error('Provide --query "<text>".');
+    const minRaw = strFlag(flags, "min");
+    const maxRaw = strFlag(flags, "max");
+    const res = searchMediaSource({
+      workspaceDir,
+      provider,
+      kind,
+      query,
+      minDurationMs: minRaw ? parseTimeMs(minRaw) : null,
+      maxDurationMs: maxRaw ? parseTimeMs(maxRaw) : null,
+      limit: numFlag(flags, "limit"),
+    });
+    emitEnvelopeJson(workspaceDir, "library.search", {
+      action: "library.search",
+      ...res,
+    });
+    return;
+  }
+
+  if (action === "fetch") {
+    const provider = strFlag(flags, "provider");
+    if (!provider) throw new Error("Provide --provider ext:<name>.");
+    const id = strFlag(flags, "id");
+    if (!id) throw new Error("Provide --id <candidate>.");
+    const res = fetchMediaSource({ workspaceDir, provider, id });
+    emitEnvelopeJson(workspaceDir, "library.fetch", {
+      action: "library.fetch",
+      ...res,
     });
     return;
   }

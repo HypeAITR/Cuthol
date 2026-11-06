@@ -200,7 +200,7 @@ export function previewAndCheckComposition(options: {
         diagnostics.push(
           DIAGNOSTICS.COMPOSITION_AUDIO_UNAVAILABLE(
             cueIdLabel,
-            warnMsg ?? "kompozisyon penceresinde ses enerjisi verisi yok"
+            warnMsg ?? "no audio-energy data in the composition window"
           )
         );
       }

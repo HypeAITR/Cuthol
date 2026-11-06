@@ -188,7 +188,7 @@ export function analyzeAssetSubjectTrack(options: {
     throw new CutholError(
       DIAGNOSTICS.EXTERNAL_TOOL_FAILED(
         "subject tracker",
-        `'${options.handle}' kaynağında görüntü akışı (video stream) bulunmuyor.`
+        `Source '${options.handle}' has no video stream.`
       )
     );
   }

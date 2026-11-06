@@ -400,7 +400,7 @@ export function normalizeSequenceAudio(options: {
   const skippedMutedCount = mutRes.skippedMutedCount;
   const { before: mixBefore, after: mixAfter, masterGainDb, targetReached } = mutRes.cal;
   const warningMsg = !targetReached
-    ? `Hedef ses seviyesine (${targetLufs} LUFS) tam ulaşılamadı: ölçülen son karışım ${mixAfter.integrated_lufs} LUFS (gerçek tepe ${mixAfter.true_peak_dbtp} dBTP, tavan ${truePeakDbtp} dBTP).`
+    ? `Target loudness (${targetLufs} LUFS) not fully reached: final measured mix ${mixAfter.integrated_lufs} LUFS (true peak ${mixAfter.true_peak_dbtp} dBTP, ceiling ${truePeakDbtp} dBTP).`
     : undefined;
 
   const normDecisions: DecisionTraceItem[] = adjusted.map((item) => {
@@ -435,7 +435,7 @@ export function normalizeSequenceAudio(options: {
     },
     threshold: { target_lufs: targetLufs, true_peak_dbtp: truePeakDbtp },
     note: targetReached
-      ? `Ana ses karışımı ${mixBefore.integrated_lufs} LUFS -> ${mixAfter.integrated_lufs} LUFS (tepe ${mixAfter.true_peak_dbtp} dBTP, master kazanç ${masterGainDb >= 0 ? "+" : ""}${masterGainDb} dB) seviyesine kalibre edildi`
+      ? `Main audio mix calibrated from ${mixBefore.integrated_lufs} LUFS to ${mixAfter.integrated_lufs} LUFS (peak ${mixAfter.true_peak_dbtp} dBTP, master gain ${masterGainDb >= 0 ? "+" : ""}${masterGainDb} dB)`
       : warningMsg,
   });
 
@@ -464,13 +464,13 @@ export function normalizeSequenceAudio(options: {
       },
     },
     rules: [
-      "R1: Her klip/seslendirme için ITU-R BS.1770-4 Integrated LUFS ve True Peak (dBTP) ölçülüp ön-kazanç atanır",
-      "R2: Derlenen tam sekans ses karışımı (amix + zarflar + filtreler + alimiter) ebur128=peak=true ile ölçülür ve master bus kazancı kapalı çevrimle hedef LUFS'a kalibre edilir",
+      "R1: ITU-R BS.1770-4 Integrated LUFS and True Peak (dBTP) are measured per clip/voiceover and a pre-gain is assigned",
+      "R2: The compiled full-sequence audio mix (amix + envelopes + filters + alimiter) is measured with ebur128=peak=true and the master bus gain is calibrated to the target LUFS in a closed loop",
     ],
     summary: {
       text: targetReached
-        ? `${adjusted.length} ses öğesi ve ana karışım normalize edildi: ${mixBefore.integrated_lufs} LUFS -> ${mixAfter.integrated_lufs} LUFS (hedef ${targetLufs} LUFS, gerçek tepe ${mixAfter.true_peak_dbtp} dBTP, master kazanç ${masterGainDb >= 0 ? "+" : ""}${masterGainDb} dB)`
-        : `UYARI: ${warningMsg}`,
+        ? `${adjusted.length} audio items and the main mix normalized: ${mixBefore.integrated_lufs} LUFS -> ${mixAfter.integrated_lufs} LUFS (target ${targetLufs} LUFS, true peak ${mixAfter.true_peak_dbtp} dBTP, master gain ${masterGainDb >= 0 ? "+" : ""}${masterGainDb} dB)`
+        : `WARNING: ${warningMsg}`,
       candidates: normDecisions.length,
       accepted: normDecisions.filter((d) => d.action === "applied").length,
       rejected: normDecisions.filter((d) => d.reason_code === "TARGET_NOT_REACHED").length,

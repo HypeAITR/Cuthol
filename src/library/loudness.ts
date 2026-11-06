@@ -102,7 +102,7 @@ export function analyzeAssetLoudness(options: {
 
     if (!iMatch || !peakMatch) {
       throw new CutholError(
-        DIAGNOSTICS.EXTERNAL_TOOL_FAILED("ffmpeg ebur128", "ebur128 Summary çıktısı ayrıştırılamadı.")
+        DIAGNOSTICS.EXTERNAL_TOOL_FAILED("ffmpeg ebur128", "could not parse the ebur128 Summary output.")
       );
     }
 

@@ -509,7 +509,7 @@ export function diffCompStates(
 /** Top-level keys whose canonical JSON differs (for the sequence.json summary). */
 export function topLevelKeyDiff(a: unknown, b: unknown): string[] {
   if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) {
-    return canonicalizeJson(a) === canonicalizeJson(b) ? [] : ["(kök)"];
+    return canonicalizeJson(a) === canonicalizeJson(b) ? [] : ["(root)"];
   }
   const ra = a as Record<string, unknown>;
   const rb = b as Record<string, unknown>;
@@ -599,7 +599,7 @@ export function detectExternalChanges(dir: string): ExternalChanges {
   if (diskCorrupt !== null) {
     sequence = {
       status: "corrupt",
-      detail: `dosya geçerli bir JSON değil (${diskCorrupt})`,
+      detail: `not valid JSON (${diskCorrupt})`,
     };
   } else if (baseline.snapshot_raw !== null && baseline.snapshot_parsed !== null && diskParsed) {
     if (canonicalizeJson(diskParsed) !== canonicalizeJson(baseline.snapshot_parsed)) {
@@ -609,8 +609,8 @@ export function detectExternalChanges(dir: string): ExternalChanges {
         status: "modified",
         detail:
           keys.length > 0
-            ? `farklı üst düzey alanlar: ${keys.slice(0, 8).join(", ")}${keys.length > 8 ? ` (+${keys.length - 8})` : ""}${typeof diskRev === "number" && diskRev !== baseline.cursor_revision ? ` (diskte r${diskRev}, journal imleci r${baseline.cursor_revision})` : ""}`
-            : "içerik journal'daki son durumdan farklı",
+            ? `different top-level fields: ${keys.slice(0, 8).join(", ")}${keys.length > 8 ? ` (+${keys.length - 8})` : ""}${typeof diskRev === "number" && diskRev !== baseline.cursor_revision ? ` (r${diskRev} on disk, journal cursor r${baseline.cursor_revision})` : ""}`
+            : "content differs from the journal's last state",
       };
     }
   }
@@ -642,10 +642,10 @@ export function detectExternalChanges(dir: string): ExternalChanges {
   return { has_changes, digest, cursor_revision: baseline.cursor_revision, sequence, compositions, counts };
 }
 
-// --- Notice texts (Turkish, single line) ---
+// --- Notice texts (English, single line) ---
 
 function formatCount(n: number, singular: string): string {
-  return `${n} dosya ${singular}`;
+  return `${n} file${n === 1 ? "" : "s"} ${singular}`;
 }
 
 function truncateList(items: string[], max: number): string {
@@ -656,11 +656,11 @@ function truncateList(items: string[], max: number): string {
 function describeCompChange(c: CompChangeSet): string {
   const parts: string[] = [];
   if (c.modified.length > 0)
-    parts.push(`${formatCount(c.modified.length, "değişti")}: ${truncateList(c.modified, 5)}`);
+    parts.push(`${formatCount(c.modified.length, "modified")}: ${truncateList(c.modified, 5)}`);
   if (c.added.length > 0)
-    parts.push(`${formatCount(c.added.length, "eklendi")}: ${truncateList(c.added, 5)}`);
+    parts.push(`${formatCount(c.added.length, "added")}: ${truncateList(c.added, 5)}`);
   if (c.deleted.length > 0)
-    parts.push(`${formatCount(c.deleted.length, "silindi")}: ${truncateList(c.deleted, 5)}`);
+    parts.push(`${formatCount(c.deleted.length, "deleted")}: ${truncateList(c.deleted, 5)}`);
   return `\`${c.key}\` (${parts.join("; ")})`;
 }
 
@@ -677,8 +677,8 @@ export function formatExternalNotice(
   if (changes.sequence) {
     parts.push(
       changes.sequence.status === "corrupt"
-        ? `\`cuthol.sequence.json\` bozulmuş (${changes.sequence.detail})`
-        : `\`cuthol.sequence.json\` dışarıdan düzenlendi (${changes.sequence.detail})`
+        ? `\`cuthol.sequence.json\` is corrupt (${changes.sequence.detail})`
+        : `\`cuthol.sequence.json\` edited outside Cuthol (${changes.sequence.detail})`
     );
   }
   const show = flavor === "cli" ? "`cuthol workspace changes show`" : '`workspace(action="changes_show")`';
@@ -686,10 +686,10 @@ export function formatExternalNotice(
     flavor === "cli" ? "`cuthol workspace changes adopt`" : '`workspace(action="changes_adopt")`';
   const revert =
     flavor === "cli" ? "`cuthol workspace changes revert`" : '`workspace(action="changes_revert")`';
-  const prefix = flavor === "cli" ? "> Proje değişikliği tespit edildi: " : "NOTE Proje değişikliği tespit edildi: ";
+  const prefix = flavor === "cli" ? "> External project change detected: " : "NOTE External project change detected: ";
   return (
     `${prefix}${parts.join("; ")}. ` +
-    `Değişiklikleri Cuthol'a yazdıralım mı? ${show} (fark) · ${adopt} (benimse: yeni revizyon, geri alınabilir) · ${revert} (Cuthol'daki son hâle döndür).`
+    `Write the changes into Cuthol? ${show} (diff) · ${adopt} (adopt: new revision, undoable) · ${revert} (back to Cuthol's last state).`
   );
 }
 
@@ -700,8 +700,8 @@ export function formatExternalReminder(changes: ExternalChanges): string | null 
   const comps = changes.compositions.map((c) => `\`${c.key}\``).join(", ");
   const seqBit = changes.sequence ? " + `cuthol.sequence.json`" : "";
   return (
-    `NOTE Dış değişiklik sürüyor (${changes.digest}: ${comps}${seqBit}, ${total} dosya${seqBit ? " + sekans" : ""}): ` +
-    `ayrıntı için \`workspace(action="changes_show")\`.`
+    `NOTE External change still pending (${changes.digest}: ${comps}${seqBit}, ${total} file${total === 1 ? "" : "s"}${seqBit ? " + sequence" : ""}): ` +
+    `see \`workspace(action="changes_show")\` for details.`
   );
 }
 
@@ -727,11 +727,11 @@ export function unifiedDiff(oldText: string, newText: string, maxLines: number):
   const a = oldText.split("\n");
   const b = newText.split("\n");
   if (a.length * b.length > 4_000_000) {
-    return { old_lines: a.length, new_lines: b.length, lines: [`(dosya çok büyük: ${a.length} satır → ${b.length} satır, fark gösterilmiyor)`], truncated: true };
+    return { old_lines: a.length, new_lines: b.length, lines: [`(file too large: ${a.length} lines → ${b.length} lines, diff hidden)`], truncated: true };
   }
   const hugeLine = (ls: string[]): boolean => ls.some((l) => l.length > 2000);
   if (hugeLine(a) || hugeLine(b)) {
-    return { old_lines: a.length, new_lines: b.length, lines: ["(satırlar çok uzun, fark gösterilmiyor)"], truncated: true };
+    return { old_lines: a.length, new_lines: b.length, lines: ["(lines too long, diff hidden)"], truncated: true };
   }
   // LCS table over lines.
   const n = a.length;
@@ -912,14 +912,14 @@ export function buildChangesShow(dir: string, compFilter?: string): ShowPayload 
       if ((kind !== "added" && !oldBuf) || (kind !== "deleted" && !newBuf)) {
         note =
           prevEntry && !prevEntry.stored
-            ? "(büyük dosya: içeriği saklanmıyor, fark gösterilmiyor)"
-            : "(içerik okunamadı)";
+            ? "(large file: content not stored, diff hidden)"
+            : "(content unreadable)";
       } else if (
         (oldBuf as Buffer).length + (newBuf as Buffer).length > 256 * 1024 ||
         !isTextBuffer(oldBuf as Buffer) ||
         !isTextBuffer(newBuf as Buffer)
       ) {
-        note = "(ikili veya büyük dosya, fark gösterilmiyor)";
+        note = "(binary or large file, diff hidden)";
       } else if (diffBudget > 0) {
         diffBudget--;
         diff = unifiedDiff(
@@ -928,7 +928,7 @@ export function buildChangesShow(dir: string, compFilter?: string): ShowPayload 
           SHOW_DIFF_MAX_LINES_PER_FILE
         );
       } else {
-        note = `(fark bütçesi doldu; ilk ${SHOW_DIFF_MAX_FILES} dosyanın farkı gösterildi)`;
+        note = `(diff budget spent; diff shown for the first ${SHOW_DIFF_MAX_FILES} files)`;
       }
       files.push({ rel, kind, note, diff });
     }
@@ -943,24 +943,24 @@ export function buildChangesShow(dir: string, compFilter?: string): ShowPayload 
   const scopedChanges = compFilter ? comps.length > 0 || changes.sequence !== null : changes.has_changes;
   const out: string[] = [];
   if (!scopedChanges) {
-    out.push("Dış değişiklik yok: disk durumu journal'daki son revizyonla eşleşiyor.");
+    out.push("No external changes: disk state matches the journal's last revision.");
   } else {
-    out.push(`Dış değişiklikler (journal imleci r${changes.cursor_revision}, özet ${changes.digest}):`);
+    out.push(`External changes (journal cursor r${changes.cursor_revision}, digest ${changes.digest}):`);
     if (changes.sequence) {
       out.push(
         changes.sequence.status === "corrupt"
-          ? `- \`cuthol.sequence.json\`: BOZUK — ${changes.sequence.detail}. \`adopt\` reddedilir; dosyayı düzeltin ya da \`revert\` ile journal'daki son hâle döndürün.`
-          : `- \`cuthol.sequence.json\`: dışarıdan düzenlendi — ${changes.sequence.detail}.`
+          ? `- \`cuthol.sequence.json\`: CORRUPT — ${changes.sequence.detail}. \`adopt\` is refused; fix the file or run \`revert\` to return to the journal's last state.`
+          : `- \`cuthol.sequence.json\`: edited outside Cuthol — ${changes.sequence.detail}.`
       );
     }
     for (const c of comps) {
-      out.push(`- \`${c.key}\` (${c.files.length} dosya):`);
+      out.push(`- \`${c.key}\` (${c.files.length} file${c.files.length === 1 ? "" : "s"}):`);
       for (const f of c.files) {
         const tag = f.kind === "added" ? "+" : f.kind === "deleted" ? "-" : "~";
         out.push(`  ${tag} ${f.rel}${f.note ? ` ${f.note}` : ""}`);
         if (f.diff && f.diff.lines.length > 0) {
           for (const dl of f.diff.lines) out.push(`    ${dl}`);
-          if (f.diff.truncated) out.push(`    (… fark kesildi, ilk ${SHOW_DIFF_MAX_LINES_PER_FILE} satır)`);
+          if (f.diff.truncated) out.push(`    (… diff cut, first ${SHOW_DIFF_MAX_LINES_PER_FILE} lines)`);
         }
       }
     }
@@ -1023,7 +1023,7 @@ export function adoptExternalChanges(dir: string, compFilter?: string): AdoptRes
     throw new CutholError(
       DIAGNOSTICS.INVALID_COMPOSITION_CONTRACT(
         "cuthol.sequence.json",
-        `dosya geçerli bir JSON değil (${diskCorruptMsg ?? "bilinmeyen ayrıştırma hatası"}); düzeltin ya da 'cuthol workspace changes revert' ile journal'daki son hâle döndürün`
+        `not valid JSON (${diskCorruptMsg ?? "unknown parse error"}); fix it or run 'cuthol workspace changes revert' to return to the journal's last state`
       )
     );
   }
@@ -1040,7 +1040,7 @@ export function adoptExternalChanges(dir: string, compFilter?: string): AdoptRes
       adopted_files: 0,
       sequence_folded: false,
       verification: null,
-      summary_text: "Benimsenecek dış değişiklik yok.",
+      summary_text: "No external changes to adopt.",
     };
   }
 
@@ -1053,7 +1053,7 @@ export function adoptExternalChanges(dir: string, compFilter?: string): AdoptRes
       throw new CutholError(
         DIAGNOSTICS.INVALID_COMPOSITION_CONTRACT(
           "cuthol.sequence.json",
-          `dosya geçerli bir JSON değil (${diskCorruptMsg ?? "bilinmeyen ayrıştırma hatası"}); 'adopt' reddedildi, dosya ve journal değişmedi`
+          `not valid JSON (${diskCorruptMsg ?? "unknown parse error"}); 'adopt' refused, file and journal unchanged`
         )
       );
     }
@@ -1071,7 +1071,7 @@ export function adoptExternalChanges(dir: string, compFilter?: string): AdoptRes
 
   const opBits = scoped.map(describeChangeSetShort);
   if (changes.sequence) opBits.push("cuthol.sequence.json");
-  const operation = `${ADOPT_OPERATION_PREFIX}(${opBits.join(", ") || "değişiklik yok"}): dış değişiklik benimsendi`;
+  const operation = `${ADOPT_OPERATION_PREFIX}(${opBits.join(", ") || "no changes"}): external change adopted`;
 
   const { revision } = commitSequenceMutation(
     dir,
@@ -1109,9 +1109,9 @@ export function adoptExternalChanges(dir: string, compFilter?: string): AdoptRes
     sequence_folded: changes.sequence !== null,
     verification,
     summary_text:
-      `Dış değişiklik benimsendi → r${revision} (${scoped.map(describeChangeSetShort).join("; ") || "yalnız sekans"}` +
-      `${changes.sequence ? "; cuthol.sequence.json katıldı (G1–G3 geçti)" : ""}). ` +
-      `'cuthol workspace journal undo' ile geri alınabilir.`,
+      `External change adopted → r${revision} (${scoped.map(describeChangeSetShort).join("; ") || "sequence only"}` +
+      `${changes.sequence ? "; cuthol.sequence.json folded in (passed G1–G3)" : ""}). ` +
+      `Undoable with 'cuthol workspace journal undo'.`,
   };
 }
 
@@ -1165,13 +1165,13 @@ export function revertExternalChanges(dir: string, compFilter?: string): RevertR
       reverted_comps: [],
       reverted_files: 0,
       sequence_restored: false,
-      summary_text: "Geri alınacak dış değişiklik yok.",
+      summary_text: "No external changes to revert.",
     };
   }
 
   const known = readRevManifest(paths, changes.cursor_revision);
   if (!known) {
-    throw new Error("Bilinen durum kaydı bulunamadı; önce 'cuthol workspace changes show' çalıştırın.");
+    throw new Error("Known-state record not found; run 'cuthol workspace changes show' first.");
   }
 
   // Validate the whole plan before writing anything (atomicity).
@@ -1184,18 +1184,18 @@ export function revertExternalChanges(dir: string, compFilter?: string): RevertR
       plan.push({ comp: c, rel, kind: "modified" });
       const pe = prevFiles[rel];
       if (!pe || (!pe.stored && !readContentBlob(paths, pe.sha))) {
-        unrestorable.push(`${c.key}/${rel} (değişti; önceki içerik saklanmıyor — büyük dosya)`);
+        unrestorable.push(`${c.key}/${rel} (modified; previous content not stored — large file)`);
       } else if (pe.stored && !readContentBlob(paths, pe.sha)) {
-        unrestorable.push(`${c.key}/${rel} (önceki içerik kayıp)`);
+        unrestorable.push(`${c.key}/${rel} (previous content lost)`);
       }
     }
     for (const rel of c.deleted) {
       plan.push({ comp: c, rel, kind: "deleted" });
       const pe = prevFiles[rel];
       if (!pe || (!pe.stored && !readContentBlob(paths, pe.sha))) {
-        unrestorable.push(`${c.key}/${rel} (silindi; önceki içerik saklanmıyor — büyük dosya)`);
+        unrestorable.push(`${c.key}/${rel} (deleted; previous content not stored — large file)`);
       } else if (pe.stored && !readContentBlob(paths, pe.sha)) {
-        unrestorable.push(`${c.key}/${rel} (önceki içerik kayıp)`);
+        unrestorable.push(`${c.key}/${rel} (previous content lost)`);
       }
     }
     for (const rel of c.added) {
@@ -1203,12 +1203,12 @@ export function revertExternalChanges(dir: string, compFilter?: string): RevertR
     }
   }
   if (seqInScope && baseline.snapshot_raw === null) {
-    unrestorable.push("cuthol.sequence.json (journal anlık görüntüsü yok)");
+    unrestorable.push("cuthol.sequence.json (no journal snapshot)");
   }
   if (unrestorable.length > 0) {
     throw new Error(
-      `'revert' durduruldu: bazı dosyalar geri yüklenemez (hiçbir şey yazılmadı):\n- ${unrestorable.join("\n- ")}\n` +
-        `Büyük dosyaları elle eski hâline getirin ya da 'cuthol workspace changes adopt' ile benimseyin.`
+      `'revert' stopped: some files cannot be restored (nothing was written):\n- ${unrestorable.join("\n- ")}\n` +
+        `Restore the large files by hand, or adopt them with 'cuthol workspace changes adopt'.`
     );
   }
 
@@ -1252,7 +1252,7 @@ export function revertExternalChanges(dir: string, compFilter?: string): RevertR
     const pe = known.compositions[comp.key]?.files[rel];
     const content = pe ? readContentBlob(paths, pe.sha) : null;
     if (!pe || !content) {
-      throw new Error(`İçerik kaybı: ${comp.key}/${rel} geri yüklenemedi (hiçbir revizyon yazılmadı).`);
+      throw new Error(`Content lost: ${comp.key}/${rel} could not be restored (no revision written).`);
     }
     fs.mkdirSync(path.dirname(full), { recursive: true });
     writeFileAtomically(full, content);
@@ -1263,7 +1263,7 @@ export function revertExternalChanges(dir: string, compFilter?: string): RevertR
 
   const opBits = scoped.map(describeChangeSetShort);
   if (seqInScope) opBits.push("cuthol.sequence.json");
-  const operation = `${REVERT_OPERATION_PREFIX}(${opBits.join(", ")}): dış değişiklik geri alındı`;
+  const operation = `${REVERT_OPERATION_PREFIX}(${opBits.join(", ")}): external change reverted`;
 
   const { revision } = commitSequenceMutation(
     dir,
@@ -1291,9 +1291,9 @@ export function revertExternalChanges(dir: string, compFilter?: string): RevertR
     reverted_files: revertedFiles,
     sequence_restored: seqInScope,
     summary_text:
-      `Dış değişiklik geri alındı → r${revision} (${scoped.map(describeChangeSetShort).join("; ") || "yalnız sekans"}` +
-      `${seqInScope ? "; cuthol.sequence.json journal'daki hâle döndü" : ""}). ` +
-      `Bu revert de bir revizyon: 'cuthol workspace journal undo' revert-öncesi içeriği geri getirir.`,
+      `External change reverted → r${revision} (${scoped.map(describeChangeSetShort).join("; ") || "sequence only"}` +
+      `${seqInScope ? "; cuthol.sequence.json restored to the journal state" : ""}). ` +
+      `This revert is a revision too: 'cuthol workspace journal undo' brings back the pre-revert content.`,
   };
 }
 
@@ -1393,7 +1393,7 @@ export function assertMutatorKeptExternalFiles(paths: WorkspacePaths, prestate: 
           unrestored.push(`${c.key}/${rel}`);
         }
       } else {
-        unrestored.push(`${c.key}/${rel} (büyük dosya, önceki içerik saklanmıyor)`);
+        unrestored.push(`${c.key}/${rel} (large file, previous content not stored)`);
       }
     }
   }
@@ -1401,8 +1401,8 @@ export function assertMutatorKeptExternalFiles(paths: WorkspacePaths, prestate: 
   throw new CutholError(
     DIAGNOSTICS.EXTERNAL_CHANGE_WOULD_BE_OVERWRITTEN(
       overwritten.slice(0, 5).join(", ") + (overwritten.length > 5 ? ` (+${overwritten.length - 5})` : ""),
-      `bu Cuthol işlemi dışarıdan değiştirilmiş dosyaların üzerine yazacaktı; işlem durduruldu, dosya(lar) eski hâline döndürüldü` +
-        (unrestored.length > 0 ? ` (geri döndürülemeyen: ${unrestored.slice(0, 3).join(", ")})` : "")
+      `this Cuthol operation would have overwritten externally-changed files; the operation was stopped, file(s) restored to their previous state` +
+        (unrestored.length > 0 ? ` (not restorable: ${unrestored.slice(0, 3).join(", ")})` : "")
     )
   );
 }
@@ -1504,11 +1504,11 @@ export function assertBridgeWontRewriteExternal(
         ? readContentBlob(paths, knownEntry.sha)?.toString("utf8") ?? null
         : null;
     if (knownHtml === null || bridgeRewriteRevertsUserEdit(knownHtml, diskHtml, helpers)) {
-      const lost = knownHtml === null ? "bilinen içerik saklanmıyor" : "kullanıcının düzenlemesi geri döndürülecekti";
+      const lost = knownHtml === null ? "known content not stored" : "the user's edit would have been reverted";
       throw new CutholError(
         DIAGNOSTICS.EXTERNAL_CHANGE_WOULD_BE_OVERWRITTEN(
           `${c.key}/${c.entry_html}`,
-          `Cuthol köprü eşitleme dışarıdan değiştirilmiş giriş HTML'ini yeniden yazacaktı (${lost}); işlem durduruldu, dosya değişmedi`
+          `Cuthol bridge sync would have rewritten the externally-changed entry HTML (${lost}); operation stopped, file unchanged`
         )
       );
     }
@@ -1700,12 +1700,12 @@ function restoreAdoptTraversal(
       if (kind === "added") {
         // to-state has the file, from-state lacks it: create when still absent.
         if (fs.existsSync(full)) {
-          skipped.push(`${c.key}/${rel} (yeniden oluşturulmuş, dokunulmadı)`);
+          skipped.push(`${c.key}/${rel} (recreated, untouched)`);
           return;
         }
         const content = toFiles[rel]?.stored ? readContentBlob(paths, toFiles[rel].sha) : null;
         if (!content) {
-          skipped.push(`${c.key}/${rel} (içerik saklanmıyor — büyük dosya)`);
+          skipped.push(`${c.key}/${rel} (content not stored — large file)`);
           return;
         }
         writeRestoredFile(absDir, rel, content);
@@ -1716,34 +1716,34 @@ function restoreAdoptTraversal(
         // to-state lacks the file: delete only when disk still matches from-state.
         const expect = fromFiles[rel];
         if (!expect || hashDiskFile(full) !== expect.sha) {
-          skipped.push(`${c.key}/${rel} (üzerine yeni değişiklik yapılmış, silinmedi)`);
+          skipped.push(`${c.key}/${rel} (changed again on top, not deleted)`);
           return;
         }
         try {
           fs.unlinkSync(full);
           restored.push(`${c.key}/${rel}`);
         } catch {
-          skipped.push(`${c.key}/${rel} (silinemedi)`);
+          skipped.push(`${c.key}/${rel} (could not delete)`);
         }
         return;
       }
       const expect = fromFiles[rel];
       const target = toFiles[rel];
       if (!expect || !target) {
-        skipped.push(`${c.key}/${rel} (beklenen durum yok)`);
+        skipped.push(`${c.key}/${rel} (no expected state)`);
         return;
       }
       if (hashDiskFile(full) !== expect.sha) {
-        skipped.push(`${c.key}/${rel} (üzerine yeni değişiklik yapılmış, korunuyor)`);
+        skipped.push(`${c.key}/${rel} (changed again on top, kept)`);
         return;
       }
       if (!target.stored) {
-        skipped.push(`${c.key}/${rel} (hedef içerik saklanmıyor — büyük dosya)`);
+        skipped.push(`${c.key}/${rel} (target content not stored — large file)`);
         return;
       }
       const content = readContentBlob(paths, target.sha);
       if (!content) {
-        skipped.push(`${c.key}/${rel} (hedef içerik kayıp)`);
+        skipped.push(`${c.key}/${rel} (target content lost)`);
         return;
       }
       writeRestoredFile(absDir, rel, content);
@@ -1756,8 +1756,8 @@ function restoreAdoptTraversal(
   }
   if (restored.length === 0 && skipped.length === 0) return null;
   const bits: string[] = [];
-  if (restored.length > 0) bits.push(`kompozisyon dosyaları r${toRev} hâline döndürüldü (${restored.length} dosya)`);
-  if (skipped.length > 0) bits.push(`korunan/atlanan: ${skipped.slice(0, 4).join("; ")}${skipped.length > 4 ? ` (+${skipped.length - 4})` : ""}`);
+  if (restored.length > 0) bits.push(`composition files restored to the r${toRev} state (${restored.length} file${restored.length === 1 ? "" : "s"})`);
+  if (skipped.length > 0) bits.push(`kept/skipped: ${skipped.slice(0, 4).join("; ")}${skipped.length > 4 ? ` (+${skipped.length - 4})` : ""}`);
   return bits.join("; ");
 }
 
@@ -1787,16 +1787,16 @@ function restoreRevertTraversal(
       if (f.kind === "added") {
         // Pre-revert the file existed (revert deleted it): recreate when still absent.
         if (fs.existsSync(full)) {
-          skipped.push(`${f.comp}/${f.rel} (yeniden oluşturulmuş, dokunulmadı)`);
+          skipped.push(`${f.comp}/${f.rel} (recreated, untouched)`);
           continue;
         }
         if (!f.blob) {
-          skipped.push(`${f.comp}/${f.rel} (revert-öncesi içerik saklanmıyor — büyük dosya)`);
+          skipped.push(`${f.comp}/${f.rel} (pre-revert content not stored — large file)`);
           continue;
         }
         const content = readContentBlob(paths, f.blob);
         if (!content) {
-          skipped.push(`${f.comp}/${f.rel} (revert-öncesi içerik kayıp)`);
+          skipped.push(`${f.comp}/${f.rel} (pre-revert content lost)`);
           continue;
         }
         writeRestoredFile(absDir, f.rel, content);
@@ -1807,29 +1807,29 @@ function restoreRevertTraversal(
         // Pre-revert the file was absent (revert recreated it): delete when unchanged.
         const expect = compState?.files[f.rel];
         if (!expect || hashDiskFile(full) !== expect.sha) {
-          skipped.push(`${f.comp}/${f.rel} (üzerine yeni değişiklik yapılmış, silinmedi)`);
+          skipped.push(`${f.comp}/${f.rel} (changed again on top, not deleted)`);
           continue;
         }
         try {
           fs.unlinkSync(full);
           restored.push(`${f.comp}/${f.rel}`);
         } catch {
-          skipped.push(`${f.comp}/${f.rel} (silinemedi)`);
+          skipped.push(`${f.comp}/${f.rel} (could not delete)`);
         }
         continue;
       }
       const expect = compState?.files[f.rel];
       if (!expect || hashDiskFile(full) !== expect.sha) {
-        skipped.push(`${f.comp}/${f.rel} (üzerine yeni değişiklik yapılmış, korunuyor)`);
+        skipped.push(`${f.comp}/${f.rel} (changed again on top, kept)`);
         continue;
       }
       if (!f.blob) {
-        skipped.push(`${f.comp}/${f.rel} (revert-öncesi içerik saklanmıyor — büyük dosya)`);
+        skipped.push(`${f.comp}/${f.rel} (pre-revert content not stored — large file)`);
         continue;
       }
       const content = readContentBlob(paths, f.blob);
       if (!content) {
-        skipped.push(`${f.comp}/${f.rel} (revert-öncesi içerik kayıp)`);
+        skipped.push(`${f.comp}/${f.rel} (pre-revert content lost)`);
         continue;
       }
       writeRestoredFile(absDir, f.rel, content);
@@ -1838,26 +1838,26 @@ function restoreRevertTraversal(
       // Redo the revert: expect the pre-revert (sidecar) state, write r`rev` state.
       if (f.kind === "added") {
         if (f.sha === null || hashDiskFile(full) !== f.sha) {
-          skipped.push(`${f.comp}/${f.rel} (revert-öncesi içerikten farklı, silinmedi)`);
+          skipped.push(`${f.comp}/${f.rel} (differs from pre-revert content, not deleted)`);
           continue;
         }
         try {
           fs.unlinkSync(full);
           restored.push(`${f.comp}/${f.rel}`);
         } catch {
-          skipped.push(`${f.comp}/${f.rel} (silinemedi)`);
+          skipped.push(`${f.comp}/${f.rel} (could not delete)`);
         }
         continue;
       }
       if (f.kind === "deleted") {
         if (fs.existsSync(full)) {
-          skipped.push(`${f.comp}/${f.rel} (yeniden oluşturulmuş, dokunulmadı)`);
+          skipped.push(`${f.comp}/${f.rel} (recreated, untouched)`);
           continue;
         }
         const target = compState?.files[f.rel];
         const content = target?.stored ? readContentBlob(paths, target.sha) : null;
         if (!target || !content) {
-          skipped.push(`${f.comp}/${f.rel} (hedef içerik yok)`);
+          skipped.push(`${f.comp}/${f.rel} (no target content)`);
           continue;
         }
         writeRestoredFile(absDir, f.rel, content);
@@ -1865,13 +1865,13 @@ function restoreRevertTraversal(
         continue;
       }
       if (f.sha === null || hashDiskFile(full) !== f.sha) {
-        skipped.push(`${f.comp}/${f.rel} (revert-öncesi içerikten farklı, korunuyor)`);
+        skipped.push(`${f.comp}/${f.rel} (differs from pre-revert content, kept)`);
         continue;
       }
       const target = compState?.files[f.rel];
       const content = target?.stored ? readContentBlob(paths, target.sha) : null;
       if (!target || !content) {
-        skipped.push(`${f.comp}/${f.rel} (hedef içerik yok)`);
+        skipped.push(`${f.comp}/${f.rel} (no target content)`);
         continue;
       }
       writeRestoredFile(absDir, f.rel, content);
@@ -1887,7 +1887,7 @@ function restoreRevertTraversal(
   if (sidecar.sequence_blob && direction === "undo" && targetRevision === rev - 1) {
     const preRevertRaw = readContentBlob(paths, sidecar.sequence_blob)?.toString("utf8") ?? null;
     if (preRevertRaw === null) {
-      skipped.push("cuthol.sequence.json (revert-öncesi içerik kayıp)");
+      skipped.push("cuthol.sequence.json (pre-revert content lost)");
     } else {
       let diskRaw: string | null = null;
       try {
@@ -1900,14 +1900,14 @@ function restoreRevertTraversal(
         writeFileAtomically(paths.sequenceFile, preRevertRaw);
         restored.push("cuthol.sequence.json");
       } else {
-        skipped.push("cuthol.sequence.json (beklenen durumdan farklı, korunuyor)");
+        skipped.push("cuthol.sequence.json (differs from expected state, kept)");
       }
     }
   }
   if (restored.length === 0 && skipped.length === 0) return null;
   const bits: string[] = [];
-  if (restored.length > 0) bits.push(`r${rev} revert kaydı uygulandı (${restored.length} dosya)`);
-  if (skipped.length > 0) bits.push(`korunan/atlanan: ${skipped.slice(0, 4).join("; ")}${skipped.length > 4 ? ` (+${skipped.length - 4})` : ""}`);
+  if (restored.length > 0) bits.push(`r${rev} revert record applied (${restored.length} file${restored.length === 1 ? "" : "s"})`);
+  if (skipped.length > 0) bits.push(`kept/skipped: ${skipped.slice(0, 4).join("; ")}${skipped.length > 4 ? ` (+${skipped.length - 4})` : ""}`);
   return bits.join("; ");
 }
 

@@ -331,7 +331,7 @@ function runOneWatchedJob(job) {
     const startTime = Date.now();
     let lastProgressTime = startTime;
     let hasProgress = false;
-    let lastProgressDesc = "hiç ilerleme/çıktı üretilmedi";
+    let lastProgressDesc = "no progress/output produced";
 
     let maxFrame = -1;
     let maxOutTimeUs = -1;
@@ -497,8 +497,8 @@ function runOneWatchedJob(job) {
           hasProgress = true;
           if (maxFrame < 0 && maxOutTimeUs < 0) {
             lastProgressDesc = lastStreamSnippet
-              ? "stdout: " + lastStreamSnippet + ", dosya_boyutu=" + curWatchedBytes + "B"
-              : "dosya_boyutu=" + curWatchedBytes + "B";
+              ? "stdout: " + lastStreamSnippet + ", file_size=" + curWatchedBytes + "B"
+              : "file_size=" + curWatchedBytes + "B";
           }
         }
       }

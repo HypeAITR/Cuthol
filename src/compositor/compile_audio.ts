@@ -23,7 +23,7 @@ export interface CompiledAudioPlan {
   hasActiveAudio: boolean;
 }
 
-/** rampali klipte sesin izleyecegi zaman haritasi. */
+/** The time map the audio follows in a ramped clip. */
 export interface AudioRampInfo {
   spanMs: number;
   fallbackRate: number;
@@ -31,11 +31,11 @@ export interface AudioRampInfo {
 }
 
 /**
- * hiz sonrasi ses zinciri (denoise, voice, gain, fade,
- * dilim kirpma, gecikme, dolgu). `buildSingleAudioTrackFilterChain` icindeki
- * hiz-sonrasi blokla ayni sira ve bicimde uretir; yalniz rampali (cok
- * dilimli) yolda, `concat` ciktisina uygulanmak icin ayristirilmistir.
- * Rampasiz yol `buildSingleAudioTrackFilterChain` icinde oldugu gibi durur.
+ * Post-rate audio chain (denoise, voice, gain, fade,
+ * slice trimming, delay, padding). Produces the same order and form as the
+ * post-rate block inside `buildSingleAudioTrackFilterChain`; factored out only
+ * for the ramped (multi-slice) path, to be applied to the `concat` output.
+ * The unramped path stays as-is inside `buildSingleAudioTrackFilterChain`.
  */
 function buildRampedAudioPostFilters(options: {
   audioChain: CutholSequence["spine"]["clips"][number]["audio_chain"] | undefined;
@@ -305,12 +305,12 @@ export function compileSequenceAudioPlan(
       return;
     }
 
-    // rampali (>=2 nokta) klipte ses, goruntuyle ayni integral
-    // haritasini izler (dilim + dilim hizi + kesin sure kelepcesi + concat).
-    // Kelepce (atrim 0:dt + apad dt) sart: olcumde her dilimin atempo ciktisi
-    // icerige gore +-2ms oynuyor (tonda uzama, sessizlikte kisalma); kelepcesiz
-    // 24 dilimde birikim 33ms kare sinirini asiyor. Rampasiz yol asagida
-    // oldugu gibi korunur (filtre metni bayt bayt ayni).
+    // In a ramped (>=2 points) clip the audio follows the same integral
+    // map as the video (slice + slice rate + exact duration clamp + concat).
+    // The clamp (atrim 0:dt + apad dt) is required: measurements show each slice's
+    // atempo output wobbles +-2ms with content (longer in tone, shorter in silence);
+    // without the clamp the drift over 24 slices exceeds the 33ms frame bound. The
+    // unramped path below is kept as-is (filter text byte-identical).
     const rampInfo = item.rampInfo;
     if (rampInfo && rampInfo.ramp.length >= 2) {
       const rampSpanMs = Math.max(1, rampInfo.spanMs);
@@ -435,9 +435,9 @@ export function compileSequenceAudioPlan(
       const rampSplitPads = rampSlices.map((_, i) => `[${item.padPrefix}_${rampPadIdx}_in${i}]`);
       const rampSliceOutPads = rampSlices.map((_, i) => `[${item.padPrefix}_${rampPadIdx}_s${i}]`);
       const rampConcatPad = `[${item.padPrefix}_${rampPadIdx}_cat]`;
-      // Eklemler: iki yandaki dilim de >= 6ms ise 5ms capraz gecis (acrossfade),
-      // degilse duz concat. Capraz gecisli dilim kaynagini saga 5ms*cikis hizi
-      // kadar genisletir; toplam sure degismez (genisleme - ortusme = 0).
+      // Joints: when both neighboring slices are >= 6ms, a 5ms crossfade (acrossfade),
+      // otherwise a plain concat. A crossfaded slice extends its source right by
+      // 5ms*output rate; total duration is unchanged (extension - overlap = 0).
       const RAMP_XFADE_MS = 5;
       const RAMP_XFADE_MIN_SLICE_MS = 6;
       const rampXfadeAfter: boolean[] = rampSlices.map((s, i) => {

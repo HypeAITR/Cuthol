@@ -11,6 +11,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveCueStartMs } from "../core/timeline.js";
+import { CutholDiagnostic, DIAGNOSTICS } from "../core/diagnostics.js";
 import { loadDotEnvIfNeeded } from "../core/env.js";
 import {
   allocateNextHandle,
@@ -32,6 +33,12 @@ import {
   TranscriptDocument,
   TtsProviderId,
 } from "./providers.js";
+import { providerCacheTag, resolveExtensionProvider } from "../extensions/ext_providers.js";
+import {
+  ExtensionTtsAlignmentKind,
+  synthesizeWithExtensionProvider,
+} from "./provider_ext.js";
+import { extensionNameOf, resolveTtsProvider } from "./provider_select.js";
 
 export interface SynthesizeVoiceoverResult {
   asset: LibraryItem;
@@ -42,6 +49,10 @@ export interface SynthesizeVoiceoverResult {
   placed_cue?: LaneCue;
   is_placeholder_audio?: boolean;
   placeholder_warning?: string;
+  has_alignment: boolean;
+  alignment_kind: "word" | "character" | "none";
+  alignment_warning?: string;
+  diagnostics?: CutholDiagnostic[];
 }
 
 export async function synthesizeVoiceover(options: {
@@ -50,7 +61,7 @@ export async function synthesizeVoiceover(options: {
   voiceId?: string;
   modelId?: string;
   speed?: number;
-  provider?: TtsProviderId;
+  provider?: string;
   language?: string;
   placeOnLane?: string;
   atMs?: number;
@@ -59,27 +70,45 @@ export async function synthesizeVoiceover(options: {
 }): Promise<SynthesizeVoiceoverResult> {
   const { paths, sequence: currentSeq } = loadSequence(options.workspaceDir);
   loadDotEnvIfNeeded(paths.rootDir);
-  const provider: TtsProviderId = options.provider ?? "elevenlabs";
-  const voiceId = options.voiceId ?? (provider === "elevenlabs" ? "21m00Tcm4TlvDq8ikWAM" : "local_default");
-  const modelId = options.modelId ?? (provider === "elevenlabs" ? "eleven_multilingual_v2" : "local-cadence-v1");
+  const resolvedProvider = resolveTtsProvider({
+    workspaceDir: options.workspaceDir,
+    explicit: options.provider,
+  });
+  const provider: TtsProviderId = resolvedProvider.id;
+  const extProviderName = extensionNameOf(provider);
+  const extCacheTag =
+    extProviderName !== null
+      ? providerCacheTag(
+          resolveExtensionProvider({
+            extensionName: extProviderName,
+            kind: "tts",
+            workspaceDir: options.workspaceDir,
+          }).extension
+        )
+      : null;
+  const transcriptProvider: TranscriptDocument["provider"] =
+    provider === "elevenlabs" ? "deepgram" : provider === "local" ? "local" : provider;
+  const voiceId = options.voiceId ?? (provider === "elevenlabs" ? "21m00Tcm4TlvDq8ikWAM" : provider === "local" ? "local_default" : "default");
+  const modelId = options.modelId ?? (provider === "elevenlabs" ? "eleven_multilingual_v2" : provider === "local" ? "local-cadence-v1" : "default");
   const speed =
     options.speed !== undefined && Number.isFinite(options.speed) ? options.speed : 1.0;
   const lang = (options.language ?? "tr").toLowerCase();
 
   const cacheKey = crypto
     .createHash("sha256")
-    .update(JSON.stringify({ provider, voiceId, modelId, speed, text: options.text.trim() }))
+    .update(JSON.stringify(extCacheTag !== null ? { provider, ext: extCacheTag, voiceId, modelId, speed, text: options.text.trim() } : { provider, voiceId, modelId, speed, text: options.text.trim() }))
     .digest("hex");
 
   const ledger = new MediaLedger(paths.ledgerFile);
   let audioFilePath: string;
   let words: RawTranscriptWord[];
   let wasCached = false;
+  let extAlignmentKind: ExtensionTtsAlignmentKind | undefined;
   let probedSha256: string;
   let probedMeta: ReturnType<typeof probeLocalMediaFile>["probe"];
 
   try {
-    const cachedTts = ledger.getTts<{ words: RawTranscriptWord[] }>(cacheKey);
+    const cachedTts = ledger.getTts<{ words: RawTranscriptWord[]; alignment_kind?: ExtensionTtsAlignmentKind }>(cacheKey);
     if (cachedTts && fs.existsSync(cachedTts.audioPath)) {
       wasCached = true;
       const ext = path.extname(cachedTts.audioPath) || (provider === "elevenlabs" ? ".mp3" : ".wav");
@@ -92,11 +121,25 @@ export async function synthesizeVoiceover(options: {
       }
       audioFilePath = fs.existsSync(localBlobPath) ? localBlobPath : cachedTts.audioPath;
       words = cachedTts.alignment.words;
+      extAlignmentKind = cachedTts.alignment.alignment_kind;
     } else {
       const ext = provider === "elevenlabs" ? "mp3" : "wav";
       audioFilePath = path.join(paths.blobsDir, `tts_${cacheKey.slice(0, 14)}.${ext}`);
 
-      if (provider === "local") {
+      if (extProviderName !== null) {
+        const res = await synthesizeWithExtensionProvider({
+          workspaceDir: options.workspaceDir,
+          extensionName: extProviderName,
+          text: options.text,
+          voiceId,
+          modelId,
+          speed,
+          language: lang,
+          tempAudioPath: audioFilePath,
+        });
+        words = res.output.words;
+        extAlignmentKind = res.alignmentKind;
+      } else if (provider === "local") {
         const res = await synthesizeWithLocalProvider({
           text: options.text,
           voiceId,
@@ -146,13 +189,17 @@ export async function synthesizeVoiceover(options: {
       }
     }
 
-    ledger.setTts(cacheKey, audioFilePath, { words });
+    ledger.setTts(
+      cacheKey,
+      audioFilePath,
+      extAlignmentKind !== undefined ? { words, alignment_kind: extAlignmentKind } : { words }
+    );
 
     // Store the word alignment directly in `transcript_cache` under the audio file's SHA-256
     // so `speech captions` and `speech cleanup` work immediately on synthesized voiceovers!
     const { disfluencies } = annotateWordsAndDisfluencies(words, probedMeta.duration_ms);
     const doc: TranscriptDocument = {
-      provider: provider === "elevenlabs" ? "deepgram" : "local",
+      provider: transcriptProvider,
       model: modelId,
       language: lang,
       duration_ms: probedMeta.duration_ms,
@@ -163,6 +210,9 @@ export async function synthesizeVoiceover(options: {
     ledger.setTranscript(probedSha256, lang, doc);
     ledger.setTranscript(probedSha256, `local:${lang}`, doc);
     ledger.setTranscript(probedSha256, `deepgram:${lang}`, doc);
+    if (extProviderName !== null) {
+      ledger.setTranscript(probedSha256, `ext:${extProviderName}:${lang}`, doc);
+    }
     ledger.setTranscript(probedSha256, "auto", doc);
     ledger.setTranscript(probedSha256, "latest", doc);
   } finally {
@@ -172,9 +222,23 @@ export async function synthesizeVoiceover(options: {
   const transcriptRef = `tts_${probedSha256.slice(0, 8)}`;
   const existingItem = currentSeq.library.find((item) => item.digest_sha256 === probedSha256);
 
+  const alignmentKind: "word" | "character" | "none" =
+    extAlignmentKind ??
+    (extProviderName !== null
+      ? words.length > 0
+        ? "word"
+        : "none"
+      : provider === "local"
+        ? "word"
+        : "character");
+  const alignmentWarning =
+    extProviderName !== null && alignmentKind === "none"
+      ? `Extension TTS provider '${extProviderName}' returned audio without word or character alignment, so no word timings are available.`
+      : undefined;
+
   const isPlaceholder = provider === "local" && !process.env.CUTHOL_LOCAL_TTS_CMD;
   const placeholderWarning = isPlaceholder
-    ? "CUTHOL_LOCAL_TTS_CMD tanımlı olmadığı için konuşma yerine sentetik formant yer-tutucu ton üretildi; gerçek konuşma için ElevenLabs veya CUTHOL_LOCAL_TTS_CMD kullanın."
+    ? "CUTHOL_LOCAL_TTS_CMD is not set, so a synthetic formant placeholder tone was produced instead of speech; for real speech use ElevenLabs, CUTHOL_LOCAL_TTS_CMD or an ext: TTS provider."
     : undefined;
 
   // If the asset is already in the library with its transcript ref set and no lane placement is requested,
@@ -189,6 +253,12 @@ export async function synthesizeVoiceover(options: {
       cached: wasCached,
       provider,
       duration_ms: existingItem.probe.duration_ms,
+      has_alignment: words.length > 0,
+      alignment_kind: alignmentKind,
+      ...(alignmentWarning !== undefined ? { alignment_warning: alignmentWarning } : {}),
+      ...(extProviderName !== null && alignmentKind === "none"
+        ? { diagnostics: [DIAGNOSTICS.PROVIDER_TTS_NO_ALIGNMENT(extProviderName)] }
+        : {}),
       words,
       is_placeholder_audio: isPlaceholder,
       placeholder_warning: placeholderWarning,
@@ -268,6 +338,12 @@ export async function synthesizeVoiceover(options: {
     cached: wasCached,
     provider,
     duration_ms: mutRes.asset.probe.duration_ms,
+    has_alignment: words.length > 0,
+    alignment_kind: alignmentKind,
+    ...(alignmentWarning !== undefined ? { alignment_warning: alignmentWarning } : {}),
+    ...(extProviderName !== null && alignmentKind === "none"
+      ? { diagnostics: [DIAGNOSTICS.PROVIDER_TTS_NO_ALIGNMENT(extProviderName)] }
+      : {}),
     words,
     placed_cue: mutRes.placedCue,
     is_placeholder_audio: isPlaceholder,

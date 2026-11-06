@@ -108,7 +108,7 @@ export const MEDIA_ACTION_SPECS: ActionSpec[] = [
     params: [
       p.handle("Asset with speech (vid_XX / aud_XX)."),
       p.lang(),
-      { name: "provider", type: "string", description: "ASR provider (default deepgram; 'local' needs a sidecar transcript or CUTHOL_LOCAL_ASR_CMD).", enum: ["deepgram", "local"] },
+      { name: "provider", type: "string", description: "ASR provider: deepgram (default), local (sidecar transcript or CUTHOL_LOCAL_ASR_CMD), or ext:<extension>. Without it, CUTHOL_ASR_PROVIDER, then the project default (speech.providers), then deepgram." },
       p.verbose(),
     ],
   },
@@ -124,12 +124,23 @@ export const MEDIA_ACTION_SPECS: ActionSpec[] = [
       { name: "voice", type: "string", description: "Voice id." },
       { name: "model", type: "string", description: "TTS model id." },
       { name: "speed", type: "number", description: "Speaking rate multiplier." },
-      { name: "provider", type: "string", description: "TTS provider (default elevenlabs; 'local' without CUTHOL_LOCAL_TTS_CMD produces placeholder tones, not speech).", enum: ["elevenlabs", "local"] },
+      { name: "provider", type: "string", description: "TTS provider: elevenlabs (default), local (placeholder tones without CUTHOL_LOCAL_TTS_CMD), or ext:<extension>. Without it, CUTHOL_TTS_PROVIDER, then the project default (speech.providers), then elevenlabs." },
       p.lang(),
       { name: "place_on_lane", type: "string", description: "Lane to place the voiceover on, e.g. 'ln_vo'." },
       { name: "at", type: "time", description: "Absolute start when placed." },
       { name: "anchor", type: "string", description: "Spine clip to anchor the voiceover to." },
       { name: "offset", type: "time", description: "Offset from the anchor clip." },
+    ],
+  },
+  {
+    tool: "speech",
+    action: "providers",
+    argv: ["speech", "providers"],
+    summary: "Show the project default speech providers and how each one resolves (flag > CUTHOL_ASR_PROVIDER/CUTHOL_TTS_PROVIDER > project default > built-in), or store new project defaults (journaled).",
+    mutates: true,
+    params: [
+      { name: "asr", type: "string", description: "Default ASR provider: deepgram, local, ext:<extension>, or 'builtin' to clear." },
+      { name: "tts", type: "string", description: "Default TTS provider: elevenlabs, local, ext:<extension>, or 'builtin' to clear." },
     ],
   },
   {

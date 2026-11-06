@@ -297,7 +297,7 @@ export function alignClipsToBeats(options: {
     Math.abs(totalDurationDeltaMs) > Math.max(toleranceMs, 500) ||
     (oldTotalDurationMs > 0 && Math.abs(totalDurationDeltaMs) / oldTotalDurationMs > 0.08);
   const durationWarning = significantDurationChange
-    ? `Toplam omurga süresi belirgin şekilde değişti: ${oldTotalDurationMs}ms -> ${newTotalDurationMs}ms (${totalDurationDeltaMs >= 0 ? "+" : ""}${totalDurationDeltaMs}ms). Süreyi korumak için '--preserve-duration' veya daha dar '--tolerance' kullanabilirsiniz.`
+    ? `Total spine duration changed noticeably: ${oldTotalDurationMs}ms -> ${newTotalDurationMs}ms (${totalDurationDeltaMs >= 0 ? "+" : ""}${totalDurationDeltaMs}ms). To keep the duration, use '--preserve-duration' or a tighter '--tolerance'.`
     : undefined;
 
   const beatDecisions: DecisionTraceItem[] = aligned.map((c) => {
@@ -319,7 +319,7 @@ export function alignClipsToBeats(options: {
       },
       ...(isAlreadyOnBeat
         ? {
-            note: `'${c.clip_id}' bitiş noktası (${c.beat_time_ms}ms) zaten müzik vuruşu üzerinde olduğu için kaydırılmadı (0ms)`,
+            note: `'${c.clip_id}' end point (${c.beat_time_ms}ms) already sits on a music beat, so it was not shifted (0ms)`,
           }
         : {}),
     };
@@ -342,7 +342,7 @@ export function alignClipsToBeats(options: {
           tolerance_ms: toleranceMs,
         },
         margin: (s.distance_ms ?? 0) - toleranceMs,
-        note: `'${s.clip_id}' bitiş noktasına (${s.desired_end_ms}ms) en yakın vuruş ${s.nearest_beat_ms}ms (${s.distance_ms}ms uzakta > tolerans ±${toleranceMs}ms); klip süresi değiştirilmedi`,
+        note: `nearest beat to the '${s.clip_id}' end point (${s.desired_end_ms}ms) is ${s.nearest_beat_ms}ms (${s.distance_ms}ms away > tolerance ±${toleranceMs}ms); clip duration unchanged`,
       };
     }
     return {
@@ -355,7 +355,7 @@ export function alignClipsToBeats(options: {
         max_end_ms: s.max_timeline_ms,
         tolerance_ms: toleranceMs,
       },
-      note: `'${s.clip_id}' klibinin geçerli süre aralığında (${s.min_allowed_ms}..${s.max_timeline_ms}ms) müzik vuruşu bulunamadı`,
+      note: `no music beat found in the valid duration range of clip '${s.clip_id}' (${s.min_allowed_ms}..${s.max_timeline_ms}ms)`,
     };
   });
 
@@ -371,13 +371,13 @@ export function alignClipsToBeats(options: {
   const alreadyOnBeatCount = aligned.filter((c) => c.shift_ms === 0).length;
   const outOfTolCount = skippedTargetClips.filter((s) => s.reason_code === "OUT_OF_TOLERANCE").length;
   const summaryParts = [
-    `${aligned.length}/${allBeatDecisions.length} klip '${options.bgmHandle}' ${alignMode === "grid" ? "vuruş ızgarasına" : "onset'lerine"} (${beatAnalysis.estimated_bpm} BPM, faz ${beatAnalysis.phase_ms ?? 0}ms, tolerans ±${toleranceMs}ms) hizalandı (${shiftedCount} kaydırıldı, ${alreadyOnBeatCount} zaten vuruşta)`,
+    `${aligned.length}/${allBeatDecisions.length} clips aligned to '${options.bgmHandle}' ${alignMode === "grid" ? "beat grid" : "onsets"} (${beatAnalysis.estimated_bpm} BPM, phase ${beatAnalysis.phase_ms ?? 0}ms, tolerance ±${toleranceMs}ms) (${shiftedCount} shifted, ${alreadyOnBeatCount} already on beat)`,
   ];
   if (outOfTolCount > 0) {
-    summaryParts.push(`${outOfTolCount} klip tolerans dışında kaldığı için korundu (OUT_OF_TOLERANCE)`);
+    summaryParts.push(`${outOfTolCount} clips kept untouched for falling outside the tolerance (OUT_OF_TOLERANCE)`);
   }
   if (durationWarning) {
-    summaryParts.push(`UYARI: ${durationWarning}`);
+    summaryParts.push(`WARNING: ${durationWarning}`);
   }
 
   const decisionTrace: DecisionTrace = {
@@ -410,9 +410,9 @@ export function alignClipsToBeats(options: {
       },
     },
     rules: [
-      `R1: Her hedef klibin bitiş noktası yalnızca ±${toleranceMs}ms tolerans içindeki en yakın müzik vuruşuna (${alignMode === "grid" ? "grid_ms" : "onsets_ms"}) hizalanır`,
-      "R2: En yakın vuruşu tolerans dışında kalan kliplere dokunulmaz ve OUT_OF_TOLERANCE olarak işaretlenir",
-      "R3: Fiziksel kaynak süresi (probe.duration_ms) ve geçiş (transition_out) alt sınırları korunur",
+      `R1: Each target clip's end point is aligned only to the nearest music beat (${alignMode === "grid" ? "grid_ms" : "onsets_ms"}) within ±${toleranceMs}ms`,
+      "R2: Clips whose nearest beat is outside the tolerance are left untouched and marked OUT_OF_TOLERANCE",
+      "R3: The physical source duration (probe.duration_ms) and transition (transition_out) lower bounds are kept",
     ],
     summary: {
       text: summaryParts.join("; "),

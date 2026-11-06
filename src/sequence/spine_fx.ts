@@ -48,7 +48,7 @@ function assertScalarParams(
   for (const [k, v] of Object.entries(params)) {
     if (typeof v !== "number" && typeof v !== "string" && typeof v !== "boolean") {
       throw new CutholError(
-        DIAGNOSTICS.SPINE_FX_INVALID(clipId, fxId, kind, `'${k}' parametresi sayı, metin ya da true/false olmalıdır.`)
+        DIAGNOSTICS.SPINE_FX_INVALID(clipId, fxId, kind, `'${k}' must be a number, text or true/false.`)
       );
     }
     out[k] = v;
@@ -79,14 +79,14 @@ export function addSpineFx(options: {
             options.clipId,
             "fx_??",
             options.kind ?? BUILTIN_FX_KIND,
-            `ya '--kind <tür>' ya da '--filter "<zincir>"' verin (ikisi birden ya da hiçbiri olmaz).`
+            `pass either '--kind <kind>' or '--filter "<chain>"' (not both, not neither).`
           )
         );
       }
       const kind = hasFilter ? BUILTIN_FX_KIND : options.kind!.trim();
       if (!kind) {
         throw new CutholError(
-          DIAGNOSTICS.SPINE_FX_INVALID(options.clipId, "fx_??", kind, `tür boş olamaz.`)
+          DIAGNOSTICS.SPINE_FX_INVALID(options.clipId, "fx_??", kind, `kind must not be empty.`)
         );
       }
       const id = allocateFxId(clip.fx);
@@ -129,7 +129,7 @@ export function setSpineFx(options: {
               options.clipId,
               options.fxId,
               fx.kind,
-              `'--filter' yalnız yerleşik 'ffmpeg' türünde kullanılabilir.`
+              `'--filter' can only be used with the built-in 'ffmpeg' kind.`
             )
           );
         }

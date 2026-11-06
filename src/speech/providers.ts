@@ -14,8 +14,8 @@ import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { requireApiKey } from "../core/env.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
 
-export type AsrProviderId = "deepgram" | "local";
-export type TtsProviderId = "elevenlabs" | "local";
+export type AsrProviderId = "deepgram" | "local" | `ext:${string}`;
+export type TtsProviderId = "elevenlabs" | "local" | `ext:${string}`;
 
 export interface RawTranscriptWord {
   word: string;
@@ -724,7 +724,7 @@ export async function synthesizeWithLocalProvider(options: {
     words,
     is_placeholder_audio: isPlaceholder,
     placeholder_warning: isPlaceholder
-      ? "CUTHOL_LOCAL_TTS_CMD tanımlı olmadığı için konuşma yerine sentetik formant yer-tutucu ton üretildi; gerçek konuşma için ElevenLabs veya CUTHOL_LOCAL_TTS_CMD kullanın."
+      ? "CUTHOL_LOCAL_TTS_CMD is not set, so a synthetic formant placeholder tone was produced instead of speech; for real speech use ElevenLabs, CUTHOL_LOCAL_TTS_CMD or an ext: TTS provider."
       : undefined,
   };
 }

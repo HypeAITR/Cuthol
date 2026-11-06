@@ -42,7 +42,7 @@ export function analyzeAssetScenes(options: {
     throw new CutholError(
       DIAGNOSTICS.EXTERNAL_TOOL_FAILED(
         "ffmpeg scdet",
-        `'${options.handle}' kaynağında görüntü akışı (video stream) bulunmuyor.`
+        `Source '${options.handle}' has no video stream.`
       )
     );
   }

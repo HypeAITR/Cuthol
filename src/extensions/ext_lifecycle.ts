@@ -44,7 +44,7 @@ export function createExtension(options: {
     throw new CutholError(
       DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
         cleanName || "extension",
-        `Geçersiz eklenti adı '${cleanName}'. Eklenti adları küçük harfle başlamalı ve yalnızca [a-z0-9_-] içermelidir.`
+        `Invalid extension name '${cleanName}'. Extension names must start lowercase and contain only [a-z0-9_-].`
       )
     );
   }
@@ -65,8 +65,8 @@ export function createExtension(options: {
       DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
         cleanName,
         scope === "persistent"
-          ? "Kalıcı eklenti klasörü devre dışı ('CUTHOL_EXTENSIONS_DIR=0'). '--scope project' kullanın veya 'CUTHOL_EXTENSIONS_DIR' dizinini açın."
-          : "Proje eklenti klasörü çözümlenemedi. Bir çalışma alanı ('--dir') belirtin veya '--scope persistent' kullanın."
+          ? "The persistent extensions folder is disabled ('CUTHOL_EXTENSIONS_DIR=0'). Use '--scope project' or open the 'CUTHOL_EXTENSIONS_DIR' folder."
+          : "The project extensions folder could not be resolved. Pass a workspace ('--dir') or use '--scope persistent'."
       )
     );
   }
@@ -338,7 +338,7 @@ export function promoteExtension(options: {
     throw new CutholError(
       DIAGNOSTICS.INVALID_EXTENSION_MANIFEST(
         projExt.name,
-        "Kalıcı eklenti klasörü devre dışı ('CUTHOL_EXTENSIONS_DIR=0')."
+        "The persistent extensions folder is disabled ('CUTHOL_EXTENSIONS_DIR=0')."
       )
     );
   }

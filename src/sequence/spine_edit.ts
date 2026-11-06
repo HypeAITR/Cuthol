@@ -687,31 +687,31 @@ function validateSpeedRampForSet(clipId: string, spanMs: number, ramp: SpeedRamp
   if (ramp.length === 1) {
     throw new CutholError(
       DIAGNOSTICS.INVALID_SPEED_RAMP(
-        `tek nokta verildi (${ramp[0].source_offset_ms}ms:${ramp[0].rate}); rampa en az 2 nokta ister.`
+        `single point given (${ramp[0].source_offset_ms}ms:${ramp[0].rate}); a ramp needs at least 2 points.`
       )
     );
   }
   for (let i = 0; i < ramp.length; i++) {
     const pt = ramp[i];
     if (!Number.isFinite(pt.source_offset_ms) || !Number.isFinite(pt.rate)) {
-      throw new CutholError(DIAGNOSTICS.INVALID_SPEED_RAMP(`nokta ${i + 1} sayı değil.`));
+      throw new CutholError(DIAGNOSTICS.INVALID_SPEED_RAMP(`point ${i + 1} is not a number.`));
     }
     if (pt.rate < 0.1 || pt.rate > 16) {
       throw new CutholError(
-        DIAGNOSTICS.INVALID_SPEED_RAMP(`nokta ${i + 1} hızı ${pt.rate} aralık dışında (0.1..16).`)
+        DIAGNOSTICS.INVALID_SPEED_RAMP(`point ${i + 1} rate ${pt.rate} is out of range (0.1..16).`)
       );
     }
     if (pt.source_offset_ms < 0 || pt.source_offset_ms > spanMs) {
       throw new CutholError(
         DIAGNOSTICS.INVALID_SPEED_RAMP(
-          `nokta ${i + 1} ofseti ${pt.source_offset_ms}ms kaynak aralığının (0..${spanMs}ms) dışında.`
+          `point ${i + 1} offset ${pt.source_offset_ms}ms is outside the source range (0..${spanMs}ms).`
         )
       );
     }
     if (i > 0 && pt.source_offset_ms <= ramp[i - 1].source_offset_ms) {
       throw new CutholError(
         DIAGNOSTICS.INVALID_SPEED_RAMP(
-          `ofsetler artmıyor: nokta ${i} (${ramp[i - 1].source_offset_ms}ms) >= nokta ${i + 1} (${pt.source_offset_ms}ms).`
+          `offsets not increasing: point ${i} (${ramp[i - 1].source_offset_ms}ms) >= point ${i + 1} (${pt.source_offset_ms}ms).`
         )
       );
     }
@@ -796,7 +796,7 @@ export function setSpineSpeed(options: {
     }
   );
 
-  // Rampa uyarıları (G410, WARN) — raporu genişletir, işlemi engellemez.
+  // Ramp warnings (G410, WARN) — widen the report, never block the operation.
   const finalRamp = result.playback.speed_ramp;
   if (finalRamp && finalRamp.length >= 2) {
     const spanMs = Math.max(1, result.source_out_ms - result.source_in_ms);
@@ -844,7 +844,7 @@ export function setSpineTransition(options: {
           DIAGNOSTICS.EXTENSION_TRANSITION_PARAM_INVALID(
             stored.kind,
             clip.id,
-            `Yerleşik '${stored.kind}' geçişi parametre almıyor.`
+            `Built-in '${stored.kind}' transition takes no parameters.`
           )
         );
       }

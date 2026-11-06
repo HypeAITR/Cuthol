@@ -50,7 +50,7 @@ export function isSupportedColorTemperature(kelvin: unknown): kelvin is number {
 export function resolveGradeLutPath(rootDir: string, clipId: string, lutUri: string): string {
   const raw = lutUri.trim();
   if (!raw) {
-    throw new CutholError(DIAGNOSTICS.LUT_FILE_NOT_READABLE(clipId, lutUri, "boş LUT yolu"));
+    throw new CutholError(DIAGNOSTICS.LUT_FILE_NOT_READABLE(clipId, lutUri, "empty LUT path"));
   }
   const abs = path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(rootDir, raw);
   const root = path.resolve(rootDir);
@@ -58,7 +58,7 @@ export function resolveGradeLutPath(rootDir: string, clipId: string, lutUri: str
   const eqRoot = process.platform === "win32" ? root.toLowerCase() : root;
   if (eqAbs !== eqRoot && !eqAbs.startsWith(eqRoot + path.sep)) {
     throw new CutholError(
-      DIAGNOSTICS.LUT_FILE_NOT_READABLE(clipId, lutUri, "yol proje klasörü dışına çıkıyor")
+      DIAGNOSTICS.LUT_FILE_NOT_READABLE(clipId, lutUri, "path escapes the project folder")
     );
   }
   const ext = path.extname(abs).toLowerCase();
@@ -67,7 +67,7 @@ export function resolveGradeLutPath(rootDir: string, clipId: string, lutUri: str
       DIAGNOSTICS.LUT_FILE_NOT_READABLE(
         clipId,
         lutUri,
-        `desteklenmeyen uzantı '${ext || "(yok)"}' (yalnız .cube/.3dl)`
+        `unsupported extension '${ext || "(none)"}' (only .cube/.3dl)`
       )
     );
   }
@@ -75,14 +75,14 @@ export function resolveGradeLutPath(rootDir: string, clipId: string, lutUri: str
     const st = fs.statSync(abs);
     if (!st.isFile()) {
       throw new CutholError(
-        DIAGNOSTICS.LUT_FILE_NOT_READABLE(clipId, lutUri, "yol bir dosya değil")
+        DIAGNOSTICS.LUT_FILE_NOT_READABLE(clipId, lutUri, "path is not a file")
       );
     }
     fs.accessSync(abs, fs.constants.R_OK);
   } catch (err) {
     if (err instanceof CutholError) throw err;
     throw new CutholError(
-      DIAGNOSTICS.LUT_FILE_NOT_READABLE(clipId, lutUri, "dosya bulunamadı ya da okunamıyor")
+      DIAGNOSTICS.LUT_FILE_NOT_READABLE(clipId, lutUri, "file not found or unreadable")
     );
   }
   return abs;

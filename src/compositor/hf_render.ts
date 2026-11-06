@@ -209,7 +209,7 @@ export function renderHyperFramesCompositionToMp4(options: {
     throw new CutholError(
       DIAGNOSTICS.HYPERFRAMES_RENDER_FAILED(
         options.compositionDir,
-        "hyperframes CLI bulunamadı (npm install ile kurulmalı)"
+        "hyperframes CLI not found (must be installed with npm install)"
       )
     );
   }
@@ -296,7 +296,7 @@ export function renderHyperFramesCompositionToMp4(options: {
           throw new CutholError(
             DIAGNOSTICS.HYPERFRAMES_RENDER_FAILED(
               options.compositionDir,
-              `FFV1 alpha paketleme başarısız oldu: ${(packProc.stderr || "").trim().slice(-200)}`
+              `FFV1 alpha packing failed: ${(packProc.stderr || "").trim().slice(-200)}`
             )
           );
         }

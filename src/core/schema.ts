@@ -36,12 +36,27 @@ export interface ProbeMetadata {
   size_bytes: number;
 }
 
+export interface MediaSourceRef {
+  /** Media provider id, e.g. `ext:media-folder`. */
+  provider: string;
+  /** Candidate id within the provider. */
+  id: string;
+  title?: string;
+  license?: string;
+  source_url?: string;
+  fetched_at?: string;
+}
+
 export interface LibraryItem {
   handle: string;
   kind: AssetKind;
   uri: string;
   digest_sha256: string;
   probe: ProbeMetadata;
+  /**
+   * Where a fetched media asset came from (set by `library fetch` from a media provider).
+   */
+  source?: MediaSourceRef;
   analysis_refs: {
     loudness?: string;
     waveform?: string;
@@ -351,6 +366,14 @@ export interface CutholSequence {
   lanes: ParallelLane[];
   markers: TimelineMarker[];
   extensions?: MountedExtensionRef[];
+  /**
+   * Default speech providers for this project (`speech providers` to change; the
+   * `--provider` flag and `CUTHOL_ASR_PROVIDER` / `CUTHOL_TTS_PROVIDER` override it).
+   */
+  providers?: {
+    asr?: string;
+    tts?: string;
+  };
   /**
    * Retired reviewer keys (`coords_suppress`, `coords_rules`) from the removed layout
    * warning system: ignored, but preserved so old projects keep opening and undo

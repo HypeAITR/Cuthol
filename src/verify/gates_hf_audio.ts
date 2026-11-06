@@ -170,7 +170,7 @@ function scanHtmlForAudioMarkers(
       markers.push({
         file: relPath,
         kind: "video",
-        detail: `${relPath}'de sesli <video src="${src}">`,
+        detail: `audible <video src="${src}"> in ${relPath}`,
       });
     }
   }
@@ -201,7 +201,7 @@ function scanJsForAudioMarkers(jsPath: string, relPath: string): HfCompositionAu
       {
         file: relPath,
         kind: "js",
-        detail: `${relPath} JavaScript dosyasında ses öğesi`,
+        detail: `audio element in ${relPath} JavaScript file`,
       },
     ];
   }
@@ -280,7 +280,7 @@ export function verifyCompositionAudio(
       const detail =
         markers.length === 1
           ? markers[0].detail
-          : `${markers[0].detail} (+${markers.length - 1} ses öğesi daha)`;
+          : `${markers[0].detail} (+${markers.length - 1} more audio elements)`;
       diagnostics.push(DIAGNOSTICS.COMPOSITION_AUDIO_SILENT(cue.id, detail));
     }
   }

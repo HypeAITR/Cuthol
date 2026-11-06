@@ -270,7 +270,7 @@ export function commitSequenceMutation<T>(
   writeJsonAtomically(paths.sequenceFile, cloned);
 
   const absorbedExternalNote = extPrestate.sequenceFolded
-    ? "dışarıdan düzenlenmiş cuthol.sequence.json bu revizyona katıldı (adopt'suz)"
+    ? "externally-edited cuthol.sequence.json folded into this revision (without adopt)"
     : undefined;
   activeEntries.push({
     revision: nextRevision,
@@ -422,7 +422,7 @@ export function buildEnvelopeHistory(
       operation: curEntry.operation,
       delta_summary: curEntry.delta_summary ?? curEntry.operation,
       inverse_kind: curEntry.inverse_kind ?? "modifying",
-      inverse_summary: curEntry.inverse_summary ?? `${curEntry.operation} geri alınır`,
+      inverse_summary: curEntry.inverse_summary ?? `${curEntry.operation} will be undone`,
       affects,
       touches_protected: Boolean(curEntry.touches_protected || dynamicProtected),
     };
@@ -594,7 +594,7 @@ export function stepJournal(
       inverse_kind: effectiveInvKind,
       inverse_summary:
         direction === "undo"
-          ? e.inverse_summary ?? `${e.operation} geri alınır`
+          ? e.inverse_summary ?? `${e.operation} will be undone`
           : e.delta_summary ?? e.operation,
       affected_ids: aff,
     };
@@ -651,7 +651,7 @@ export function stepJournal(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (revertedDetails.length > 0) {
-        revertedDetails[0].inverse_summary += ` | dosya geri yükleme hatası: ${msg}`;
+        revertedDetails[0].inverse_summary += ` | file restore error: ${msg}`;
       }
     }
   } else {
@@ -804,7 +804,7 @@ export function toExternalChangesSummary(
   notice: string
 ): ExternalChangesSummary {
   const bits = changes.compositions.map(
-    (c) => `${c.key}: ${c.added.length + c.modified.length + c.deleted.length} dosya`
+    (c) => `${c.key}: ${c.added.length + c.modified.length + c.deleted.length} file${c.added.length + c.modified.length + c.deleted.length === 1 ? "" : "s"}`
   );
   if (changes.sequence) bits.push("cuthol.sequence.json");
   return {
@@ -814,7 +814,7 @@ export function toExternalChangesSummary(
     sequence: changes.sequence,
     compositions: changes.compositions,
     notice,
-    diagnostic: DIAGNOSTICS.EXTERNAL_CHANGES_PRESENT(bits.join("; ") || "değişiklik"),
+    diagnostic: DIAGNOSTICS.EXTERNAL_CHANGES_PRESENT(bits.join("; ") || "changes"),
   };
 }
 

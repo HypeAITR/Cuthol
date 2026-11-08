@@ -14,9 +14,11 @@ import { minClipDurationMs } from "../core/time.js";
 import {
   describeSequenceExtent,
   findBackdropOnlySpans,
+  findSpansCoveredOnlyByCues,
   resolveCueStartMs,
 } from "../core/timeline.js";
 import { WorkspacePaths } from "../core/workspace.js";
+import { ffmpegVersionWarningDiagnostics } from "../core/ffmpeg_version.js";
 import {
   detectCompositionExtensionCopyDrift,
   syncEnabledExtensionAssetsToComposition,
@@ -79,6 +81,18 @@ export function verifyG1Schema(
       }
       if (cue.anchor && !spineMap.has(cue.anchor.ref)) {
         diagnostics.push(DIAGNOSTICS.DANGLING_ANCHOR_REF(cue.id, cue.anchor.ref));
+      }
+      if (cue.composition_audio !== undefined && cue.composition_audio !== "mix" && cue.composition_audio !== "off") {
+        diagnostics.push(
+          DIAGNOSTICS.INVALID_COMPOSITION_AUDIO(cue.id, `got '${String(cue.composition_audio)}', want 'mix' or 'off'`)
+        );
+      } else if (
+        cue.composition_audio !== undefined &&
+        (cue.kind !== "composition" || !cue.composition)
+      ) {
+        diagnostics.push(
+          DIAGNOSTICS.INVALID_COMPOSITION_AUDIO(cue.id, `'composition_audio' is set on a non-composition cue (kind '${cue.kind}')`)
+        );
       }
     }
   }
@@ -336,6 +350,12 @@ export function verifyG2Assets(
       }
     }
   }
+
+  // Environment: ffmpeg/ffprobe below the tested 8.x warn once per tool
+  // (probed once per process; silent when the version is unreadable).
+  for (const diag of ffmpegVersionWarningDiagnostics()) {
+    diagnostics.push(diag);
+  }
 }
 
 /** True when a cached cleanup profile has an above-floor window inside the clip. No profile: false. */
@@ -352,9 +372,41 @@ function cachedClipHasSpeechAboveFloor(seq: CutholSequence, clip: SpineClip): bo
   return false;
 }
 
+/** Alpha bbox fill below this counts as "mostly empty" for the G316 check. */
+const SPARSE_TRANSPARENT_FILL_THRESHOLD = 0.5;
+
+/**
+ * Cached alpha fill ratio (bbox area over frame area) of a composition, or
+ * null when no measurement sidecar was recorded yet (preview/monitor/render
+ * writes one for transparent compositions).
+ */
+function readCompositionAlphaFillRatio(
+  compositionDir: string,
+  paths: WorkspacePaths | undefined
+): number | null {
+  try {
+    const absCompDir = path.isAbsolute(compositionDir)
+      ? compositionDir
+      : paths
+        ? path.resolve(paths.rootDir, compositionDir)
+        : null;
+    if (!absCompDir) return null;
+    const raw = JSON.parse(
+      fs.readFileSync(path.join(absCompDir, "assets", "cuthol-bbox.json"), "utf8")
+    );
+    const w = Number(raw.width_pct);
+    const h = Number(raw.height_pct);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w < 0 || h < 0 || w > 1 || h > 1) return null;
+    return w * h;
+  } catch {
+    return null;
+  }
+}
+
 export function verifyG3Timing(
   seq: CutholSequence,
-  diagnostics: CutholDiagnostic[]
+  diagnostics: CutholDiagnostic[],
+  paths?: WorkspacePaths | undefined
 ): void {
   const minMs = minClipDurationMs(seq.stage.fps, OPEN_STANDARDS.SIGNAL_SANITY.MIN_CLIP_FRAMES);
   let expectedTimelineIn = 0;
@@ -484,5 +536,35 @@ export function verifyG3Timing(
   }
   for (const span of findBackdropOnlySpans(seq)) {
     diagnostics.push(DIAGNOSTICS.BACKDROP_ONLY_SPAN(span.start_ms, span.end_ms));
+  }
+  // A spine-less stretch whose only picture is transparent composition(s)
+  // with mostly-empty alpha still shows bare stage backdrop: one aggregate
+  // INFO names the spans. Cues without a cached alpha measurement stay silent
+  // rather than guessing.
+  const sparseTransparentCueIds = new Set<string>();
+  if (seq.spine.clips.length === 0) {
+    for (const lane of seq.lanes) {
+      if (lane.muted || lane.kind === "music" || lane.kind === "sfx" || lane.kind === "voiceover") continue;
+      for (const cue of lane.cues) {
+        if (!cue.composition || cue.composition.transparent !== true) continue;
+        if ((cue.composition.mode ?? "overlay_alpha") === "scene_host") continue;
+        const fill = readCompositionAlphaFillRatio(cue.composition.composition_dir, paths);
+        if (fill !== null && fill < SPARSE_TRANSPARENT_FILL_THRESHOLD) {
+          sparseTransparentCueIds.add(cue.id);
+        }
+      }
+    }
+  }
+  if (sparseTransparentCueIds.size > 0) {
+    const bareSpans = findSpansCoveredOnlyByCues(seq, sparseTransparentCueIds);
+    if (bareSpans.length > 0) {
+      diagnostics.push(
+        DIAGNOSTICS.BARE_BACKDROP_UNDER_TRANSPARENT_COMPOSITION(
+          bareSpans,
+          seq.stage.backdrop.color,
+          [...sparseTransparentCueIds].sort()
+        )
+      );
+    }
   }
 }

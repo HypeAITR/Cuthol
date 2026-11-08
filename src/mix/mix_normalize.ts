@@ -13,6 +13,11 @@ import {
 import { createDefaultAudioChain, CutholSequence } from "../core/schema.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
 import { loadSequence, WorkspacePaths } from "../core/workspace.js";
+import {
+  compositionAudioRequestForCue,
+  readCompositionStemState,
+} from "../compositor/composition_audio.js";
+import { hyperFramesCompositionAudioAdapter } from "../compositor/composition_audio_hf.js";
 import { analyzeAssetLoudness } from "../library/loudness.js";
 import { buildOrRenderSequenceAudioForMixOrRender } from "../render/renderer.js";
 import { commitVerifiedMutation, VerificationReport } from "../verify/gates.js";
@@ -145,6 +150,24 @@ function measureSequenceMixLoudness(
     integrated_lufs: parsed.integrated_lufs,
     true_peak_dbtp: parsed.true_peak_dbtp,
   };
+}
+
+/** Loudness of an already-extracted composition stem file (read-only: never renders). */
+function measureStemFileLoudness(
+  stemPath: string
+): { integrated_lufs: number; true_peak_dbtp: number } | null {
+  try {
+    const proc = spawnWatchedSync(
+      "ffmpeg",
+      ["-nostats", "-v", "info", "-i", stemPath, "-af", "ebur128=peak=true", "-f", "null", "-"],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, step: "ffmpeg stem loudness" }
+    );
+    if (proc.error || proc.status !== 0) return null;
+    const stderr = `${proc.stderr || ""}\n${proc.stdout || ""}`;
+    return parseEbur128MixSummary(stderr);
+  } catch {
+    return null;
+  }
 }
 
 export function calibrateSequenceMasterAudio(
@@ -283,6 +306,29 @@ export function normalizeSequenceAudio(options: {
     }
   };
 
+  // Composition stems have no library asset: pre-gain from the extracted stem
+  // file when one is already cached (read-only; the master loop below measures
+  // the stem through the shared compiler either way).
+  const loudnessByCueStem = new Map<string, { integrated_lufs: number; true_peak_dbtp: number }>();
+  const ensureLoudnessForCueStem = (
+    lane: CutholSequence["lanes"][number],
+    cue: CutholSequence["lanes"][number]["cues"][number]
+  ): void => {
+    if (cue.asset_handle || loudnessByCueStem.has(cue.id)) return;
+    const request = compositionAudioRequestForCue(cue, paths, {
+      fps: initialSeq.stage.fps,
+      width: initialSeq.stage.width,
+      height: initialSeq.stage.height,
+    });
+    if (!request) return;
+    const state = readCompositionStemState(cue, request, hyperFramesCompositionAudioAdapter, {
+      laneMuted: lane.muted,
+    });
+    if (state.kind !== "mixed") return;
+    const m = measureStemFileLoudness(state.stemPath);
+    if (m) loudnessByCueStem.set(cue.id, m);
+  };
+
   for (const clip of initialSeq.spine.clips) {
     if (targetSet && !targetSet.has(clip.id)) continue;
     if (clip.audio_chain.muted) continue;
@@ -295,6 +341,7 @@ export function normalizeSequenceAudio(options: {
       const includeCue = targetSet ? targetSet.has(cue.id) : lane.id === "ln_vo" || cue.kind === "voiceover";
       if (!includeCue) continue;
       ensureLoudnessForAsset(cue.asset_handle);
+      ensureLoudnessForCueStem(lane, cue);
     }
   }
   const fallbackToAllAudioCues = !targetSet && loudnessByAsset.size === 0;
@@ -304,6 +351,7 @@ export function normalizeSequenceAudio(options: {
       for (const cue of lane.cues) {
         if (cue.audio_chain?.muted) continue;
         ensureLoudnessForAsset(cue.asset_handle);
+        ensureLoudnessForCueStem(lane, cue);
       }
     }
   }
@@ -355,15 +403,24 @@ export function normalizeSequenceAudio(options: {
           const includeCue = targetSet
             ? targetSet.has(cue.id)
             : fallbackToAllAudioCues || lane.id === "ln_vo" || cue.kind === "voiceover";
-          if (!includeCue || !cue.asset_handle) continue;
-          if (lane.muted || cue.audio_chain?.muted) {
-            const asset = libMap.get(cue.asset_handle);
-            if (!asset || asset.probe.has_audio) {
-              skippedMutedCount++;
+          if (!includeCue) continue;
+          const stemM = cue.asset_handle ? undefined : loudnessByCueStem.get(cue.id);
+          if (cue.asset_handle) {
+            if (lane.muted || cue.audio_chain?.muted) {
+              const asset = libMap.get(cue.asset_handle);
+              if (!asset || asset.probe.has_audio) {
+                skippedMutedCount++;
+              }
+              continue;
             }
-            continue;
+          } else {
+            if (!stemM) continue;
+            if (lane.muted || cue.audio_chain?.muted) {
+              skippedMutedCount++;
+              continue;
+            }
           }
-          const m = loudnessByAsset.get(cue.asset_handle);
+          const m = cue.asset_handle ? loudnessByAsset.get(cue.asset_handle) : stemM;
           if (!m) continue;
 
           const desiredGain = targetLufs - m.integrated_lufs;

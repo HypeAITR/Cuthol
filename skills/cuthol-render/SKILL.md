@@ -16,6 +16,9 @@ warnings must be understood. After rendering, sample frames of the **output
 file** (CLI: `ffmpeg -ss 4.2 -i out.mp4 -frames:v 1 f.png`; MCP:
 `monitor.frame` shows the same pipeline) before delivering.
 
+ffmpeg/ffprobe below 8.x warn (`CUTHOL-G212`, from the render-start verify):
+Cuthol is tested with 8.x — install it when the warning appears.
+
 ## Overlay cache: why things re-render
 
 Overlays render once and cache in `.cuthol/blobs/`, keyed only by what affects

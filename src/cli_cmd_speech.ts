@@ -24,8 +24,9 @@ export async function runSpeechCommand(ctx: CliCommandContext): Promise<CliComma
     const res = await transcribeLibraryAsset({
       workspaceDir,
       handle,
-      language: strFlag(flags, "lang", "tr"),
+      language: strFlag(flags, "lang"),
       provider: strFlag(flags, "provider"),
+      refresh: boolFlag(flags, "refresh", false),
     });
     const payload = flags["verbose"]
       ? { action: "speech.transcribe", ...res }
@@ -46,7 +47,7 @@ export async function runSpeechCommand(ctx: CliCommandContext): Promise<CliComma
       modelId: strFlag(flags, "model"),
       speed: numFlag(flags, "speed"),
       provider: strFlag(flags, "provider"),
-      language: strFlag(flags, "lang", "tr"),
+      language: strFlag(flags, "lang"),
       placeOnLane: strFlag(flags, "place-on-lane"),
       atMs: atRaw ? parseTimeMs(atRaw) : undefined,
       anchorClipId: strFlag(flags, "anchor"),
@@ -105,7 +106,7 @@ export async function runSpeechCommand(ctx: CliCommandContext): Promise<CliComma
       removeFillers: boolFlag(flags, "remove-fillers", true),
       removeRepetitions: boolFlag(flags, "remove-repetitions", false),
       cutCandidates,
-      language: strFlag(flags, "lang", "tr"),
+      language: strFlag(flags, "lang"),
       dryRun: boolFlag(flags, "dry-run", false),
     };
     const res =
@@ -148,7 +149,7 @@ export async function runSpeechCommand(ctx: CliCommandContext): Promise<CliComma
       clipIds,
       allSpine,
       provider: strFlag(flags, "provider"),
-      language: strFlag(flags, "lang", "tr"),
+      language: strFlag(flags, "lang"),
     });
     emitEnvelopeJson(workspaceDir, "speech.verify-cleanup", {
       action: "speech.verify-cleanup",
@@ -189,7 +190,7 @@ export async function runSpeechCommand(ctx: CliCommandContext): Promise<CliComma
       style,
       maxWordsPerGroup: numFlag(flags, "max-words"),
       maxCharsPerLine: numFlag(flags, "max-chars"),
-      language: strFlag(flags, "lang", "tr"),
+      language: strFlag(flags, "lang"),
       replaceExistingCaptions: boolFlag(flags, "replace"),
     });
     const payload = flags["verbose"]

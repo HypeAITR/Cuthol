@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0.0",
+  "name": "montage",
+  "version": "1.0.0",
+  "description": "Example planners: assemble a spine from handles, or drop sound cues on composition events.",
+  "planners": {
+    "assemble": {
+      "description": "Append one spine clip per handle, each `clip_ms` long (clamped to the asset).",
+      "script": "assemble.js",
+      "params": {
+        "handles": { "type": "string", "required": true, "description": "Comma-separated library handles, e.g. vid_01,vid_02." },
+        "clip_ms": { "type": "number", "default": 1500, "min": 100, "description": "Timeline length taken from the head of each asset." }
+      }
+    },
+    "event_sfx": {
+      "description": "Place an ln_sfx cue on every composition event named `event`.",
+      "script": "event_sfx.js",
+      "params": {
+        "event": { "type": "string", "default": "paper_drop", "description": "Composition event name to listen for." },
+        "drop_asset": { "type": "string", "default": "aud_02", "description": "Audio handle placed at each hit." },
+        "duration_ms": { "type": "number", "default": 400, "min": 50 },
+        "gain_db": { "type": "number", "default": -5 }
+      }
+    }
+  },
+  "guide": "README.md"
+}

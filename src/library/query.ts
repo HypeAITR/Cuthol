@@ -84,7 +84,7 @@ export function formatTranscribeDigest(res: TranscribeResult): {
     attention.push({
       span: [p.source_start_ms, p.source_end_ms],
       reason: "LONG_PAUSE",
-      note: `${p.duration_ms}ms duraksama`,
+      note: `${p.duration_ms}ms pause`,
     });
   }
   for (const lc of lowConf.slice(0, 3)) {

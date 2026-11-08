@@ -55,7 +55,7 @@ export function runMixCommand(ctx: CliCommandContext): CliCommandResult {
       duckDb: numFlag(flags, "duck-db"),
       attackMs: attackRaw ? parseTimeMs(attackRaw) : undefined,
       releaseMs: releaseRaw ? parseTimeMs(releaseRaw) : undefined,
-      language: strFlag(flags, "lang", "tr"),
+      language: strFlag(flags, "lang"),
     });
     emitEnvelopeJson(workspaceDir, "mix.duck", { action: "mix.duck", ...res });
     return;

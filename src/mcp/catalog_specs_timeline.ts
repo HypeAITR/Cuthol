@@ -340,6 +340,7 @@ export const TIMELINE_ACTION_SPECS: ActionSpec[] = [
       { name: "entry", type: "string", description: "Entry HTML file (default index.html)." },
       { name: "scaffold", type: "string", description: "Create the folder from this preset if it has no index.html yet.", enum: ["blank", "counter", "beat_cards", "audio_glow", "cut_phases", "lower_third", "title_card", "stat_callout", "badge_overlay"] },
       { name: "id", type: "string", description: "Explicit cue id." },
+      { name: "composition_audio", type: "string", description: "'mix' (default) mixes the composition's engine-rendered sound into the Cuthol mix, 'off' keeps it silent.", enum: ["mix", "off"] },
     ],
   },
   {
@@ -369,6 +370,7 @@ export const TIMELINE_ACTION_SPECS: ActionSpec[] = [
       { name: "max_width", type: "number", description: "Max text width %." },
       { name: "gain_db", type: "number", description: "Audio gain in dB for media cues." },
       { name: "muted", type: "boolean", description: "Mute or unmute this cue's audio." },
+      { name: "composition_audio", type: "string", description: "Composition cues only: 'mix' (default) mixes the engine-rendered stem into the Cuthol mix, 'off' keeps the composition silent.", enum: ["mix", "off"] },
     ],
   },
   {

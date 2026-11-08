@@ -6,6 +6,8 @@ import {
   resolveLibraryItemPath
 } from "../library/probe.js";
 import { buildAtempoChain, buildAudioRampTempoFilters, compileEnvelopeToFfmpegExpr, buildSeekableMediaInput } from "./compile_filters.js";
+import { compositionAudioRequestForCue, ensureCompositionStem } from "./composition_audio.js";
+import { hyperFramesCompositionAudioAdapter } from "./composition_audio_hf.js";
 import { getAudioRampSlicesInRange, integrateRampSourceOffsetToLocalMs, invertRampLocalMsToSourceOffset } from "../sequence/spine_time.js";
 
 export interface CompileAudioOptions {
@@ -726,10 +728,46 @@ export function compileSequenceAudioPlan(
     audioMixPads.push(aPad);
   };
 
+  const appendCompositionStemToPlan = (cue: CutholSequence["lanes"][number]["cues"][number]): void => {
+    const request = compositionAudioRequestForCue(cue, paths, {
+      fps: seq.stage.fps,
+      width: seq.stage.width,
+      height: seq.stage.height,
+    });
+    if (!request) return;
+    // Resolves (and caches) the engine-rendered stem; null when the cue is
+    // silent, opted out, muted, or the extraction failed (recorded for G435).
+    const stem = ensureCompositionStem(cue, request, hyperFramesCompositionAudioAdapter);
+    if (!stem) return;
+    // The video path plays composition cues from local 0 at rate 1 (cue source
+    // trim and playback rate do not apply to overlays), so the stem follows the
+    // same placement to keep audio and picture in sync.
+    const srcInMs = 0;
+    const srcOutMs = Math.min(stem.stemDurationMs, cue.duration_ms);
+    if (srcOutMs <= 0) return;
+    appendAudioItemToPlan({
+      padPrefix: "a_comp",
+      absAssetPath: stem.stemPath,
+      assetDurationMs: stem.stemDurationMs,
+      sampleRate: 48000,
+      srcInMs,
+      srcOutMs,
+      effectiveRate: 1.0,
+      preservePitch: true,
+      audioChain: cue.audio_chain,
+      envelopes: cue.envelopes,
+      postTrimDurationMs: Math.max(0, srcOutMs - srcInMs),
+      timelineStartMs: resolveCueStartMs(seq, cue),
+    });
+  };
+
   const compileLaneAudio = (lane: CutholSequence["lanes"][number]): void => {
     if (lane.muted) return;
     for (const cue of lane.cues) {
-      if (!cue.asset_handle) continue;
+      if (!cue.asset_handle) {
+        appendCompositionStemToPlan(cue);
+        continue;
+      }
       const asset = libMap.get(cue.asset_handle);
       if (!asset) continue;
       if (

@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0.0",
+  "name": "freeze-fade",
+  "version": "1.0.0",
+  "description": "Example ffmpeg processors: freeze the last frame, or fade video up from black.",
+  "processors": {
+    "hold": {
+      "kind": "ffmpeg",
+      "description": "Freeze the last frame for N seconds. Video-only: audio is dropped because the duration changes.",
+      "output_ext": ".mp4",
+      "asset_kind": "footage",
+      "params": {
+        "seconds": { "type": "number", "default": 1, "min": 0.1, "max": 10 }
+      },
+      "video_filter": "tpad=stop_mode=clone:stop_duration={{seconds}}",
+      "audio": "drop"
+    },
+    "fade_in": {
+      "kind": "ffmpeg",
+      "description": "Fade video up from black. Duration is unchanged, so audio is kept.",
+      "output_ext": ".mp4",
+      "asset_kind": "footage",
+      "params": {
+        "seconds": { "type": "number", "default": 0.5, "min": 0.1, "max": 5 }
+      },
+      "video_filter": "fade=t=in:st=0:d={{seconds}}"
+    }
+  },
+  "guide": "README.md"
+}

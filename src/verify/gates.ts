@@ -266,7 +266,7 @@ export function verifySequence(
 
   // --- Gate 3: Temporal Continuity & Frame Budget (G3_TIMING) ---
   if (gateSet.has("G3_TIMING")) {
-    verifyG3Timing(seq, diagnostics);
+    verifyG3Timing(seq, diagnostics, paths);
   }
 
   if (gateSet.has("G1_SCHEMA") || gateSet.has("G4_STAGE")) verifyExtensionTransitions(seq, paths, diagnostics, gateSet);

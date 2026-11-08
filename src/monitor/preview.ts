@@ -22,6 +22,7 @@ import {
   computeSequenceDurationMs,
   resolveCueStartMs,
 } from "../core/timeline.js";
+import { cueCoversTimeMs } from "../core/frame_time.js";
 import {
   createSubprocessFailureDiagnostic,
   CutholDiagnostic,
@@ -432,7 +433,7 @@ export function annotateRgb24BufferToCanvas(
     for (const cue of lane.cues) {
       const start = resolveCueStartMs(seq, cue);
       const end = start + cue.duration_ms;
-      if (clampedMs >= start && clampedMs < end) {
+      if (cueCoversTimeMs(start, end, clampedMs)) {
         activeHandles.push(cue.id);
       }
     }
@@ -457,7 +458,7 @@ export function annotateRgb24BufferToCanvas(
     for (const cue of lane.cues) {
       const start = resolveCueStartMs(seq, cue);
       const end = start + cue.duration_ms;
-      if (clampedMs >= start && clampedMs < end) {
+      if (cueCoversTimeMs(start, end, clampedMs)) {
         // Only draw visual bounding boxes on visual cues (skip audio-only cues: music, sfx, voiceover)
         const isAudioOnlyCue =
           cue.kind === "music" || cue.kind === "sfx" || cue.kind === "voiceover";

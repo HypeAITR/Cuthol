@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0.0",
+  "name": "motion-transitions",
+  "version": "1.0.0",
+  "description": "Example spine transitions: a push, a white flash dissolve and a parameterized wipe reveal, declared as ffmpeg templates with no code.",
+  "transitions": {
+    "push": {
+      "description": "Incoming slides in from the right while outgoing slides out left.",
+      "incoming_x": "if(lt(t,{{t1}}),{{W}}-{{W}}*{{p}},{{x}})",
+      "outgoing_x": "if(lt(t,{{t1}}),{{x}}-{{W}}*{{p}},{{x}}-{{W}})"
+    },
+    "wipe_reveal": {
+      "description": "Incoming wipes in from the right over the held outgoing frame.",
+      "params": {
+        "span": {
+          "type": "number",
+          "default": 1,
+          "min": 0.1,
+          "max": 1,
+          "description": "Travelled share of the stage width."
+        }
+      },
+      "incoming_x": "if(lt(t,{{t1}}),{{x}}+({{W}}*{{span}}*(1-{{p}})),{{x}})"
+    },
+    "flash": {
+      "description": "Outgoing burns to white while incoming dissolves in, fading back from white.",
+      "outgoing_filter": "eq=brightness='min(1,2*({{p}}))':eval=frame",
+      "incoming_filter": "fade=t=in:st=0:d={{dur}}:alpha=1,eq=brightness='1-({{p}})':eval=frame"
+    }
+  },
+  "guide": "README.md"
+}

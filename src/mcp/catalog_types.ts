@@ -53,7 +53,7 @@ export const p = {
     description: desc,
     required,
   }),
-  lang: (): ParamSpec => ({ name: "lang", type: "string", description: "Speech language code (default 'tr')." }),
+  speechLang: (): ParamSpec => ({ name: "lang", type: "string", description: "Speech language code ('auto' detects it from the audio, the default)." }),
   verbose: (): ParamSpec => ({
     name: "verbose",
     type: "boolean",

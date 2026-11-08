@@ -478,6 +478,33 @@ export function hasPendingCollectedOverlayForPaths(candidatePaths: string[]): bo
   });
 }
 
+const HF_ESC = String.fromCharCode(27);
+const ANSI_CSI_RE = new RegExp(HF_ESC + "\\[[0-9;?]*[a-zA-Z]", "g");
+const PROGRESS_BAR_RUN_RE = /[█▉▊▋▌▍▎▏▓▒░▄▀■□▪▫●○◼◻═━─]{2,}/g;
+const LEADING_PERCENT_RE = new RegExp("^\\s*\\d{1,3}%\\s*");
+const PURE_PROGRESS_LINE_RE = new RegExp("^[\\d\\s%.,:;|/\\\\()_=-]*$");
+const LONE_CR_RE = new RegExp("\\r");
+const WHITESPACE_RUN_RE = new RegExp("\\s+", "g");
+
+/**
+ * Removes HyperFrames render-progress residue from one stderr/stdout log line:
+ * ANSI codes, block-char progress bars, lone carriage-return progress segments,
+ * leading percents, and pure percent/progress lines. Returns null when nothing
+ * readable remains. Error sentences pass through untouched.
+ */
+export function stripHyperFramesProgressLine(line: string): string | null {
+  const noAnsi = line.replace(ANSI_CSI_RE, "");
+  const kept: string[] = [];
+  for (const segment of noAnsi.split(LONE_CR_RE)) {
+    let s = segment.replace(PROGRESS_BAR_RUN_RE, " ");
+    s = s.replace(LEADING_PERCENT_RE, "").trim();
+    if (!s || PURE_PROGRESS_LINE_RE.test(s)) continue;
+    kept.push(s);
+  }
+  if (kept.length === 0) return null;
+  return kept.join(" ").replace(WHITESPACE_RUN_RE, " ").trim();
+}
+
 export function buildHyperFramesFailureError(
   compositionDir: string,
   renderArgs: string[],
@@ -529,8 +556,8 @@ export function buildHyperFramesFailureError(
 
   const logLines = `${stderrStr}\n${stdoutStr}`
     .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith("[INFO]"));
+    .map((l) => stripHyperFramesProgressLine(l.trim()))
+    .filter((l): l is string => l !== null && !l.startsWith("[INFO]"));
   const errorLines = logLines.filter((l) => /error|fail|exception|timeout|cannot|not found/i.test(l));
   // Never cut the head: the first line names the failure ("Failed: Render blocked by ...").
   // Only pathological logs (multi-KB lines) lose their tail, never their meaning.

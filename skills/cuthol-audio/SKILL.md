@@ -4,7 +4,7 @@ description: >
   Mix audio in Cuthol: loudness measurement and mix.normalize to a LUFS target,
   mix.polish_voice noise cleanup, mix.duck music ducking under speech, beat
   grid and onset analysis, mix.beat_align cuts to the beat, music and effects
-  lanes, in-composition audio limits, and post-render audio health. Load when
+  lanes, composition sound stems, and post-render audio health. Load when
   balancing levels, ducking music, cutting to beats, or chasing drift and gaps.
 ---
 
@@ -80,10 +80,35 @@ and effects can also come from a provider shelf (`library.search` /
 `library.fetch` — see `cuthol-speech`). Keep effect levels well under the
 voice; start low.
 
-Compositions are picture-only: `<audio>`, audible `<video>`,
-`<hf-audio-group>` and JS-created audio inside a composition never enter the
-Cuthol mix (`CUTHOL-G416` per cue; `muted`/silent/sourceless tags stay quiet).
-Put the sound on `ln_sfx`/`ln_bgm` instead.
+## Sound inside compositions (per-cue stem)
+
+A composition cue whose HTML holds audible `<audio>` or `<video>` (including
+`<hf-audio-group>` buses, volume automation and fx chains) brings that sound
+into the Cuthol mix as a **stem**: the engine's own mix of the composition,
+rendered to a 48 kHz stereo file cached beside the overlay blobs.
+
+- Placement: the stem starts at the cue's lane start and plays from
+  composition time 0 at rate 1 (like the picture), cut at the cue duration.
+- It follows the cue like any audio cue: `gain_db`, `muted`, lane mute,
+  envelopes; `mix.normalize` pre-gains it (from the cached stem) and measures
+  it in the master mix; on `ln_vo` its whole span counts as dialogue for
+  `mix.duck`. Measurement and render use the same audio compiler.
+- The stem is extracted on the first render or mix measurement after the
+  composition files, used data or props change; unchanged compositions reuse
+  it. An opaque (mp4) overlay supplies it from its own blob; otherwise one
+  extra draft render of the composition produces it.
+- Compositions without audible elements produce no stem and no change to the
+  render plan.
+- Switch per cue: `lane.update_cue(cue, composition_audio="off")` (or
+  `lane.add_composition(..., composition_audio="off")`) keeps the composition
+  silent; `"mix"` (default) turns it back on. Journaled and undoable.
+- `verify` reports the state per cue: `CUTHOL-G416` INFO when the stem is in
+  the mix (cue, ms of audio, the off switch) or when it is `off`; G416 WARN
+  while no stem has been extracted yet; `CUTHOL-G435` WARN with the reason when
+  extraction failed; `CUTHOL-G436` INFO when the engine rendered silence.
+- JS-created audio (Web Audio built in script) is only included if the engine
+  itself renders it into its own audio track; if it does not, the stem is
+  silent and `verify` says so with G436. Prefer `<audio>` elements.
 
 ## Drift and gaps: how audio breaks and how to catch it
 

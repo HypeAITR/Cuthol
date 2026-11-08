@@ -53,7 +53,7 @@ export async function transcribeWithExtensionProvider(options: {
     declared: provider.spec.env,
   });
 
-  const lang = (options.language ?? "tr").toLowerCase();
+  const lang = (options.language ?? "auto").toLowerCase();
   const { response } = runExtensionProviderScript({
     provider,
     workspaceDir: options.workspaceDir,

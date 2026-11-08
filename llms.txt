@@ -21,4 +21,4 @@ Start an agent with `guide(topic="cuthol")` over MCP, or load the `cuthol` skill
 ## Optional
 
 - [Architecture](https://github.com/HypeAITR/Cuthol/blob/main/src/ARCHITECTURE.md): source map
-- [Example extensions](https://github.com/HypeAITR/Cuthol/tree/main/examples/extensions): command-based speech recognition and voiceover bridges, a local media folder provider
+- [Example extensions](https://github.com/HypeAITR/Cuthol/tree/main/examples/extensions): one per extension kind — transitions, film-look clip effects, freeze/fade processors, speed-ramp recipes, montage planners, a caption composition kit — plus command-based speech recognition and voiceover bridges and a local media folder provider

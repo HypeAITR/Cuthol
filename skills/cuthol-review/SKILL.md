@@ -68,17 +68,20 @@ Every diagnostic is `[CODE] what happened | Suggestion: next step`.
 | G207 / G208 | G2 INFO | Variable-frame-rate source (converted to stage fps); BT.2020 source (converted to BT.709). Only for assets actually played. |
 | G209 | G2 WARN | Extension processor output's video/audio lengths differ by > 1 frame → `"audio": "drop"` or an aligning filter. |
 | G210 / G211 | G2 INFO/ERROR | Outside edits present (adopt or revert); an op refused to overwrite one → show, adopt/revert, retry. |
+| G212 | G2 WARN | ffmpeg/ffprobe below 8.x (Cuthol is tested with 8.x) → install 8.x; also shown at render start. |
+| G213 | SYS ERROR | ASR provider cannot auto-detect the language → re-run transcribe with `lang`. |
 | G230–G236 | G1/G2/SYS | Unknown provider; extension lacks that kind; missing env secret; bad provider output; provider crashed; TTS without alignment (transcribe the voiceover or change provider); media id not found. |
 | G301–G305 | G3 ERROR | Clip < 2 frames; spine gap/overlap; transition > half a neighbour; rate outside 0.1..16; keyframe out of range. |
 | G306–G309 | G3 WARN | Cue past the spine end; empty sequence (render refuses); backdrop-only stretch with an empty spine → cover it; clip ≤ 150 ms → remove or merge. |
 | G310 / G311 | G3 ERROR | `lane.excise` on a non-media cue; malformed `--ranges` → `2s..3s,6s..7s`. |
-| G312–G315 | G3 INFO/ERROR | 150–300 ms speech fragment (restart leftover?); cleanup on a non-audio cue; cleanup taking clip + cue together; bad `--across`. |
+| G312–G316 | G3 INFO/ERROR | 150–300 ms speech fragment (restart leftover?); cleanup on a non-audio cue; cleanup taking clip + cue together; bad `--across`; only a mostly-empty transparent composition on screen (bare backdrop shows through). |
 | G401–G403 | G4 WARN | Outside title-safe (by N px) → move/shrink; captions too fast → fewer words; text covered → move a layer. |
 | G406 / G407 | G4 WARN | Backdrop-filter/blend in overlay mode → `scene_host`; HyperFrames lint finding → apply its fix hint. |
 | G409 | G4 WARN | A field the render ignores (motion blur, mask, brightness/contrast/saturation envelope on a lane cue) set off-default → leave it at default; spine colour renders. |
 | G415–G419 | G4 WARN | Failed sub-composition script (that part renders blank); in-composition audio (never enters the mix — move it to `ln_sfx`/`ln_bgm`); coords measurement failed / raw-HTML fallback / unmappable placement. |
 | G428 / G429 | G4 ERROR | Unknown geometry element ref (message names the nearest key); geometry query misuse. |
 | G430–G432 | G4 ERROR/WARN | Composition script threw before the timeline registered (render stops; monitor shows the static page — don't trust it) / while running / `console.error` (e.g. shader compile). Fix, then `composition.preview(cue=…)` to refresh the record. |
+| G509 | G4 INFO | N compositions were never opened in a browser, so their scripts are unchecked → `composition.preview(cue=…)` to record a check. |
 | G501–G508 | G5 | True peak > −1 dBTP; blank/backdrop frame (with timestamps after render); overlay render failed (render stops, nothing substituted); ducking skipped untranscribed clips; opaque overlay hiding moving footage; 8 px edge strip; inaudible `C.audio` window; post-render audio drift/gap. See `cuthol-render` for the render-side ones. |
 
 Full table with severities and fix commands: `references/diagnostics.md`.

@@ -111,6 +111,7 @@ export const KNOWN_CLI_FLAGS = new Set([
   "comp",
   "comp-dir",
   "composition-dir",
+  "composition-audio",
   "dir-comp",
   "entry",
   "props",

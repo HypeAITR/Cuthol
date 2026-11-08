@@ -26,7 +26,7 @@ The full file map, layering rules and where to start for each kind of change are
 | `src/monitor/`, `src/render/`, `src/verify/`, `src/brief/` | Frames/sheets/timeline, render + post-render scan, the 5 gates, text lenses |
 | `skills/cuthol/` | The agent skill shipped with Cuthol |
 
-Build with `npm install && npm run build`; run with `node dist/cli.js` (or `node dist/cli.js mcp`).
+Build with `npm install && npm run build`; run with `node dist/cli.js` (or `node dist/cli.js mcp`). Test with `npm test` (`src/test/`; optional fixtures and paid-service keys are skipped when absent, see `src/test/fixtures.ts`).
 
 ## Rules
 

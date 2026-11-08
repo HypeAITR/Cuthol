@@ -67,7 +67,7 @@ export function generateSequenceCaptions(options: {
       : OPEN_STANDARDS.CAPTIONS.MAX_CHARS_PER_LINE_16_9);
   const defaultFontSizePx = resolveDefaultCaptionFontSizePx(initialSeq.stage);
   const defaultMaxWidthPct = resolveDefaultCaptionMaxWidthPct(initialSeq.stage);
-  const lang = options.language ?? "tr";
+  const lang = options.language ?? "auto";
   let detectedTranscriptLang: string | null = null;
   const replaceExisting = options.replaceExistingCaptions ?? true;
   const minFrameDurMs = Math.ceil(

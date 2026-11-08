@@ -4,7 +4,7 @@
 // and the monitor probe (page load plus timeline seeks); a record matches only the exact
 // files it was measured against, so an unknown composition stays silent (never "clean").
 import path from "node:path";
-import { CutholDiagnostic } from "../core/diagnostics.js";
+import { CutholDiagnostic, DIAGNOSTICS } from "../core/diagnostics.js";
 import { CutholSequence } from "../core/schema.js";
 import { WorkspacePaths } from "../core/workspace.js";
 import { readCurrentScriptErrorRecord } from "../compositor/coords_extract.js";
@@ -16,6 +16,7 @@ export function verifyCompositionScripts(
   diagnostics: CutholDiagnostic[]
 ): void {
   if (!paths) return;
+  let unprobedCount = 0;
   for (const lane of sequence.lanes) {
     if (lane.muted) continue;
     if (lane.kind === "music" || lane.kind === "sfx" || lane.kind === "voiceover") continue;
@@ -30,9 +31,15 @@ export function verifyCompositionScripts(
         continue;
       }
       const record = readCurrentScriptErrorRecord(paths.rootDir, absCompDir, cue.composition.entry_html);
-      if (!record) continue;
+      if (!record) {
+        unprobedCount++;
+        continue;
+      }
       const diag = scriptRecordToDiagnostic(cue.id, record);
       if (diag) diagnostics.push(diag);
     }
+  }
+  if (unprobedCount > 0) {
+    diagnostics.push(DIAGNOSTICS.COMPOSITIONS_NEVER_PROBED_IN_BROWSER(unprobedCount));
   }
 }

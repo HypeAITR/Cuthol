@@ -40,6 +40,16 @@ import {
 } from "./provider_ext.js";
 import { extensionNameOf, resolveTtsProvider } from "./provider_select.js";
 
+/**
+ * Language recorded for a voiceover when none is given. Letters that only Turkish uses
+ * (ğ, ı, ş, İ) mark it as `tr`; anything else is recorded as `und` (BCP 47 "undetermined")
+ * instead of guessing, so an explicit `speech transcribe --lang <code>` never reuses it as
+ * a transcript in the wrong language.
+ */
+export function guessTextLanguage(text: string): string {
+  return /[ğĞıİşŞ]/.test(text) ? "tr" : "und";
+}
+
 export interface SynthesizeVoiceoverResult {
   asset: LibraryItem;
   cached: boolean;
@@ -92,7 +102,7 @@ export async function synthesizeVoiceover(options: {
   const modelId = options.modelId ?? (provider === "elevenlabs" ? "eleven_multilingual_v2" : provider === "local" ? "local-cadence-v1" : "default");
   const speed =
     options.speed !== undefined && Number.isFinite(options.speed) ? options.speed : 1.0;
-  const lang = (options.language ?? "tr").toLowerCase();
+  const lang = (options.language?.trim() || guessTextLanguage(options.text)).toLowerCase();
 
   const cacheKey = crypto
     .createHash("sha256")

@@ -70,6 +70,26 @@ export const DIAGNOSTICS = {
       `First inspect the diff with 'cuthol workspace changes show', then run 'cuthol workspace changes adopt' or 'cuthol workspace changes revert' and retry the operation.`
     ),
 
+  // --- Environment: CUTHOL-G212 ---
+  FFMPEG_VERSION_BELOW_SUPPORTED: (tool: string, found: string) =>
+    createDiagnostic(
+      "CUTHOL-G212",
+      "G2_ASSETS",
+      "WARN",
+      `${tool} ${found} found; Cuthol is tested with ffmpeg/ffprobe 8.x (tempo, loudness and scene analysis may differ).`,
+      `Install ffmpeg and ffprobe 8.x on PATH and re-run.`
+    ),
+
+  // --- Speech language: CUTHOL-G213 ---
+  ASR_LANGUAGE_REQUIRED: (provider: string) =>
+    createDiagnostic(
+      "CUTHOL-G213",
+      "SYS",
+      "ERROR",
+      `ASR provider '${provider}' cannot detect the speech language automatically, and no language was given.`,
+      `Re-run with an explicit language, e.g. 'cuthol speech transcribe --handle <id> --lang en --provider ${provider}'.`
+    ),
+
   // --- System & Workspace (SYS) ---
   WORKSPACE_NOT_FOUND: (dir: string) =>
     createDiagnostic(
@@ -345,6 +365,19 @@ export const DIAGNOSTICS = {
       `Fill the span with a composition/title/visual cue, or extend the adjacent cue; if the empty backdrop is intentional, this warning is informational.`
     ),
 
+  BARE_BACKDROP_UNDER_TRANSPARENT_COMPOSITION: (
+    spans: Array<{ start_ms: number; end_ms: number }>,
+    backdropColor: string,
+    cueIds: string[]
+  ) =>
+    createDiagnostic(
+      "CUTHOL-G316",
+      "G3_TIMING",
+      "INFO",
+      `Spine is empty and in ${spans.map((s) => `${s.start_ms}..${s.end_ms}ms`).join(", ")} the only picture comes from transparent composition cue(s) ${cueIds.map((id) => `'${id}'`).join(", ")} with mostly-empty alpha; bare stage backdrop (${backdropColor}) shows through.`,
+      `Set a base color with 'cuthol workspace backdrop --color #RRGGBB', or add an opaque background layer under the composition.`
+    ),
+
   SHORT_SPINE_CLIP: (clipId: string, durationMs: number, recommendedMinMs: number) =>
     createDiagnostic(
       "CUTHOL-G309",
@@ -492,6 +525,18 @@ export const DIAGNOSTICS = {
       `HyperFrames composition '${compositionDir}' failed to render; the render was stopped (no fallback image is substituted): ${reason}`,
       `Open the composition with 'composition preview' to see the error, check the HTML/GSAP code with 'npx hyperframes check'; verify browser (Chrome/Edge) access with 'npx hyperframes doctor'.`,
       compositionDir
+    ),
+
+  // --- Unprobed compositions: CUTHOL-G509 ---
+  COMPOSITIONS_NEVER_PROBED_IN_BROWSER: (count: number) =>
+    createDiagnostic(
+      "CUTHOL-G509",
+      "G4_STAGE",
+      "INFO",
+      count === 1
+        ? `1 composition was never opened in a browser, so its script is unchecked (no record).`
+        : `${count} compositions were never opened in a browser, so their scripts are unchecked (no record).`,
+      `Run 'cuthol composition preview --cue <cue_XX>' (or 'composition coords --all' / 'monitor frame') to record a script-error check.`
     ),
 
   DUCKING_WITHOUT_TRANSCRIPT: (clipIds: string[], mode: "skipped" | "acoustic_vad") =>
@@ -975,8 +1020,59 @@ export const DIAGNOSTICS = {
       "CUTHOL-G416",
       "G4_STAGE",
       "WARN",
-      `Audio playing in composition cue '${cueId}' (${detail}) does not enter the Cuthol mix: overlays are rendered as video only, in-composition audio stays out.`,
-      `Place the audio as a cue on the 'ln_sfx' or 'ln_bgm' lane ('cuthol lane add-cue --lane ln_sfx --kind sfx --asset <handle> ...'), and remove or mute the in-composition audio element.`,
+      `Audio playing in composition cue '${cueId}' (${detail}) is not in the Cuthol mix yet: no audio stem has been extracted for the current composition files.`,
+      `Run 'cuthol render' (or a mix measurement such as 'cuthol mix normalize') once; it extracts the stem and mixes it at the cue's lane time. To keep the composition silent, run 'cuthol lane update-cue --cue ${cueId} --composition-audio off'; to manage the sound as a separate cue instead, place it on the 'ln_sfx' or 'ln_bgm' lane ('cuthol lane add-cue --lane ln_sfx --kind sfx --asset <handle> ...').`,
+      cueId
+    ),
+
+  // --- Composition audio stems: CUTHOL-G416 (in-mix/off info), CUTHOL-G435, CUTHOL-G436, CUTHOL-G437 ---
+  COMPOSITION_AUDIO_IN_MIX: (cueId: string, stemMs: number, offHint: string) =>
+    createDiagnostic(
+      "CUTHOL-G416",
+      "G4_STAGE",
+      "INFO",
+      `Composition cue '${cueId}' brings ${stemMs}ms of engine-rendered audio into the Cuthol mix as a per-cue stem (lane gain, mute, envelopes and ducking apply).`,
+      offHint,
+      cueId
+    ),
+
+  COMPOSITION_AUDIO_OFF: (cueId: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G416",
+      "G4_STAGE",
+      "INFO",
+      `Audio in composition cue '${cueId}' (${detail}) stays out of the Cuthol mix because 'composition_audio' is 'off' on this cue.`,
+      `To mix it, run 'cuthol lane update-cue --cue ${cueId} --composition-audio mix'.`,
+      cueId
+    ),
+
+  COMPOSITION_STEM_FAILED: (cueId: string, reason: string) =>
+    createDiagnostic(
+      "CUTHOL-G435",
+      "G4_STAGE",
+      "WARN",
+      `Composition cue '${cueId}' has audio, but its stem could not be extracted (${reason}); the cue renders silent until the extraction succeeds.`,
+      `Fix the cause (usually a missing or unreadable audio file inside the composition), then re-render so the stem is retried.`,
+      cueId
+    ),
+
+  COMPOSITION_RENDER_SILENT: (cueId: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G436",
+      "G4_STAGE",
+      "INFO",
+      `Composition cue '${cueId}' shows audio elements (${detail}), but the engine render produced no audible sound, so no stem enters the mix.`,
+      `If the silence is unintended, check the audio file paths and timing inside the composition; otherwise no action is needed.`,
+      cueId
+    ),
+
+  INVALID_COMPOSITION_AUDIO: (cueId: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G437",
+      "G1_SCHEMA",
+      "ERROR",
+      `Cue '${cueId}' has an invalid 'composition_audio' setting: ${detail}`,
+      `Set 'composition_audio' to 'mix' or 'off' ('cuthol lane update-cue --cue ${cueId} --composition-audio mix|off'), only on composition cues.`,
       cueId
     ),
 

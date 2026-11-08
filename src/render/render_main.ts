@@ -34,6 +34,7 @@ import {
 import { progressBegin, progressStop } from "../core/progress.js";
 import { CutholSequence } from "../core/schema.js";
 import { loadSequence, WorkspacePaths } from "../core/workspace.js";
+import { ffmpegVersionWarningDiagnostics } from "../core/ffmpeg_version.js";
 import { verifySequence, VerificationReport } from "../verify/gates.js";
 import { PostRenderAudioHealthResult, scanRenderedMp4AudioHealth } from "./render_audio_health.js";
 import { PostRenderBlankScanResult, scanRenderedMp4ForBlankFrames, scanRenderedMp4ForEdgeStrips } from "./render_scan.js";
@@ -107,6 +108,14 @@ function prepareSequenceRender(options: {
   if (!verification.ok) {
     const firstErr = verification.diagnostics.find((d) => d.severity === "ERROR")!;
     throw new CutholError(firstErr);
+  }
+  // Render start repeats the ffmpeg/ffprobe version warning when verify did
+  // not already carry it (same short WARN, never duplicated).
+  for (const diag of ffmpegVersionWarningDiagnostics()) {
+    if (!verification.diagnostics.some((d) => d.code === diag.code && d.what === diag.what)) {
+      verification.diagnostics.push(diag);
+      verification.warning_count += 1;
+    }
   }
   const g205Diag = verification.diagnostics.find((d) => d.code === "CUTHOL-G205");
   if (g205Diag) {

@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0.0",
+  "name": "film-look",
+  "version": "1.0.0",
+  "description": "Example per-clip effects: film grain, vignette, channel split and an envelope-driven soft focus.",
+  "fx": {
+    "film_grain": {
+      "description": "Animated grain over the frame.",
+      "params": {
+        "strength": { "type": "number", "default": 8, "min": 0, "max": 40 }
+      },
+      "video_filter": "noise=alls={{strength}}:allf=t"
+    },
+    "vignette": {
+      "description": "Darkened corners; larger angles darken more of the frame.",
+      "params": {
+        "angle": { "type": "number", "default": 0.63, "min": 0.1, "max": 1.5 }
+      },
+      "video_filter": "vignette=angle={{angle}}"
+    },
+    "rgb_split": {
+      "description": "Opposite red/blue channel shift (chromatic aberration).",
+      "params": {
+        "shift_r": { "type": "number", "default": 6, "min": -40, "max": 40 },
+        "shift_b": { "type": "number", "default": -6, "min": -40, "max": 40 }
+      },
+      "video_filter": "rgbashift=rh={{shift_r}}:bh={{shift_b}}"
+    },
+    "soft_focus": {
+      "description": "Plain blur (static strength).",
+      "params": {
+        "sigma": { "type": "number", "default": 2, "min": 0, "max": 20 }
+      },
+      "video_filter": "gblur=sigma={{sigma}}"
+    },
+    "pulse": {
+      "description": "Brightness lift whose level can ride a keyframe envelope.",
+      "params": {
+        "level": { "type": "number", "default": 0, "min": -1, "max": 1 }
+      },
+      "animatable": ["level"],
+      "video_filter": "eq=brightness={{level}}:eval=frame"
+    }
+  },
+  "guide": "README.md"
+}

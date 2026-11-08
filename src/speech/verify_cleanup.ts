@@ -708,7 +708,7 @@ function roundRate(matched: number, expected: number, heard: number): number {
 export async function verifyCleanup(options: VerifyCleanupOptions): Promise<VerifyCleanupResult> {
   const { paths, sequence } = loadSequence(options.workspaceDir);
   loadDotEnvIfNeeded(paths.rootDir);
-  const language = (options.language ?? "tr").toLowerCase();
+  const language = (options.language ?? "auto").toLowerCase();
   const targets = resolveCleanupTargetClips(sequence, {
     clipId: options.clipId,
     clipIds: options.clipIds,

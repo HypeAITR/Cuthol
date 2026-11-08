@@ -3,7 +3,9 @@
  *
  * Uses content-addressed `.cuthol/ledger.sqlite` (`transcript_cache`) so identical media
  * assets are never transcribed twice. Supports both cloud (`deepgram` Nova-3) and
- * pluggable `local` providers.
+ * pluggable `local` providers. The default language is auto-detection; records are
+ * keyed by the document's real language, and a record filed under a disagreeing
+ * language key is skipped on read so the cache heals itself.
  */
 
 import { spawnSync } from "node:child_process";
@@ -36,12 +38,63 @@ export interface TranscribeResult {
   projected_sequence_words: TimedWordToken[];
 }
 
+/** Language named by a transcript cache key, or null for generic keys. */
+function cacheKeyLanguage(key: string): string | null {
+  const norm = key.toLowerCase();
+  if (norm === "auto" || norm === "latest") return null;
+  const last = norm.split(":").pop() ?? "";
+  if (!last || last === "auto" || last === "latest") return null;
+  return last;
+}
+
+/** True when two language tags name the same language (lenient on empty). */
+function sameLanguage(a: string, b: string): boolean {
+  const x = a.trim().toLowerCase();
+  const y = b.trim().toLowerCase();
+  if (!x || !y) return true;
+  if (x === y) return true;
+  return x.split(/[-_]/)[0] === y.split(/[-_]/)[0];
+}
+
+/**
+ * True when a cached record is filed under a language key that disagrees with
+ * the document's own language (a poisoned record): skipped on read so the
+ * cache heals itself; the next transcribe overwrites the bad keys.
+ */
+function isPoisonedCacheRecord(key: string, docLanguage: string | undefined): boolean {
+  const keyLang = cacheKeyLanguage(key);
+  if (!keyLang) return false;
+  return !sameLanguage(keyLang, docLanguage ?? "");
+}
+
+function resolveTranscribeLookupKeys(
+  providerSource: string,
+  cacheLangKey: string,
+  lang: string,
+  requestedAuto: boolean
+): string[] {
+  if (requestedAuto) {
+    // Auto-detection accepts whatever the transcript's language is; `auto` and
+    // `latest` always point at the most recent transcript. An explicit provider
+    // reads only its own auto record so providers never share transcripts.
+    return providerSource !== "builtin"
+      ? [cacheLangKey]
+      : ["auto", "latest", cacheLangKey, "tr", "en", "deepgram:tr", "deepgram:en", "local:tr", "local:en"];
+  }
+  // An explicit language searches only that language's keys; generic keys are
+  // never consulted, so another language's record cannot leak in.
+  return providerSource !== "builtin"
+    ? [cacheLangKey]
+    : [cacheLangKey, lang, `local:${lang}`];
+}
+
 export async function transcribeLibraryAsset(options: {
   workspaceDir: string;
   handle: string;
   language?: string;
   provider?: string;
   keyterms?: string[];
+  refresh?: boolean;
 }): Promise<TranscribeResult> {
   const { paths, sequence } = loadSequence(options.workspaceDir);
   loadDotEnvIfNeeded(paths.rootDir);
@@ -53,7 +106,8 @@ export async function transcribeLibraryAsset(options: {
     throw new CutholError(DIAGNOSTICS.NO_AUDIO_STREAM(options.handle));
   }
 
-  const lang = (options.language ?? "tr").toLowerCase();
+  const lang = (options.language ?? "auto").toLowerCase();
+  const requestedAuto = lang === "auto";
   const resolvedProvider = resolveAsrProvider({
     workspaceDir: options.workspaceDir,
     explicit: options.provider,
@@ -77,28 +131,31 @@ export async function transcribeLibraryAsset(options: {
   const ledger = new MediaLedger(paths.ledgerFile);
 
   try {
-    const lookupKeys =
-      // Explicit or configured providers read only their own cache record, so different
-      // providers never share transcripts; the untouched built-in default keeps the legacy lookup.
-      resolvedProvider.source !== "builtin"
-        ? [cacheLangKey]
-        : lang === "auto"
-          ? [cacheLangKey, "auto", "latest", "tr", "en", "deepgram:tr", "deepgram:en", "local:tr", "local:en"]
-          : [cacheLangKey, lang, `deepgram:${lang}`, `local:${lang}`, "auto", "latest"];
-
     let doc: TranscriptDocument | null = null;
-    for (const k of lookupKeys) {
-      doc = ledger.getTranscript<TranscriptDocument>(item.digest_sha256, k);
-      if (doc) break;
+    if (!options.refresh) {
+      const lookupKeys = resolveTranscribeLookupKeys(
+        resolvedProvider.source,
+        cacheLangKey,
+        lang,
+        requestedAuto
+      );
+      for (const k of lookupKeys) {
+        const candidate = ledger.getTranscript<TranscriptDocument>(item.digest_sha256, k);
+        if (!candidate) continue;
+        if (isPoisonedCacheRecord(k, candidate.language)) continue;
+        doc = candidate;
+        break;
+      }
     }
     let wasCached = Boolean(doc);
 
     if (doc) {
-      // Ensure canonical keys are populated in both project and shared ledgers
-      ledger.setTranscript(item.digest_sha256, cacheLangKey, doc);
-      ledger.setTranscript(item.digest_sha256, lang, doc);
-      ledger.setTranscript(item.digest_sha256, "auto", doc);
-      ledger.setTranscript(item.digest_sha256, "latest", doc);
+      // Re-key a cache hit only under the document's own real language, never
+      // under the requested one when they differ.
+      const hitLang = (doc.language ?? "").trim().toLowerCase();
+      if (hitLang && hitLang !== "auto" && hitLang !== "latest") {
+        ledger.setTranscript(item.digest_sha256, hitLang, doc);
+      }
     } else {
       wasCached = false;
       // Pre-compute acoustic 25ms-window silence intervals so ASR word tails stretched across silent pauses are clamped accurately
@@ -300,15 +357,19 @@ export async function transcribeLibraryAsset(options: {
       }
       doc.disfluencies.sort((a, b) => a.source_start_ms - b.source_start_ms);
 
-      ledger.setTranscript(item.digest_sha256, cacheLangKey, doc);
-      // Also store under bare language key and canonical latest/auto keys so downstream lookups find it reliably
-      ledger.setTranscript(item.digest_sha256, lang, doc);
+      const detectedRaw = (doc.language ?? "").trim().toLowerCase();
+      if (requestedAuto && (!detectedRaw || detectedRaw === "auto")) {
+        throw new CutholError(DIAGNOSTICS.ASR_LANGUAGE_REQUIRED(provider));
+      }
+      const realLang = detectedRaw && detectedRaw !== "auto" ? detectedRaw : lang;
+      ledger.setTranscript(item.digest_sha256, `${providerKeyPrefix}:${realLang}`, doc);
+      ledger.setTranscript(item.digest_sha256, realLang, doc);
       ledger.setTranscript(item.digest_sha256, "auto", doc);
       ledger.setTranscript(item.digest_sha256, "latest", doc);
-      const detectedLang = doc.language?.toLowerCase();
-      if (detectedLang && detectedLang !== lang) {
-        ledger.setTranscript(item.digest_sha256, detectedLang, doc);
-        ledger.setTranscript(item.digest_sha256, `${providerKeyPrefix}:${detectedLang}`, doc);
+      if (requestedAuto) {
+        // The provider's own latest auto detection, so an explicit provider
+        // hits its own auto cache without ever reading another provider's.
+        ledger.setTranscript(item.digest_sha256, cacheLangKey, doc);
       }
     }
 
@@ -341,7 +402,7 @@ export async function transcribeLibraryAsset(options: {
 export function loadCachedTranscriptForAsset(
   workspaceDir: string,
   handle: string,
-  language = "tr"
+  language = "auto"
 ): TranscriptDocument {
   const { paths, sequence } = loadSequence(workspaceDir);
   const item = sequence.library.find((x) => x.handle === handle);
@@ -352,6 +413,9 @@ export function loadCachedTranscriptForAsset(
   const normLang = language.toLowerCase();
   const ledger = new MediaLedger(paths.ledgerFile);
   try {
+    // Downstream readers prefer the requested language but stay lenient: any
+    // recorded transcript of the asset is usable dialogue data. Poisoned
+    // records (key language vs doc.language mismatch) are skipped everywhere.
     const candidateKeys =
       normLang === "auto"
         ? ["latest", "auto", "tr", "en", "deepgram:tr", "deepgram:en", "local:tr", "local:en"]
@@ -367,16 +431,14 @@ export function loadCachedTranscriptForAsset(
             "local:en",
           ];
 
-    let doc: TranscriptDocument | null = null;
     for (const key of candidateKeys) {
-      doc = ledger.getTranscript<TranscriptDocument>(item.digest_sha256, key);
-      if (doc) break;
+      const candidate = ledger.getTranscript<TranscriptDocument>(item.digest_sha256, key);
+      if (!candidate) continue;
+      if (isPoisonedCacheRecord(key, candidate.language)) continue;
+      return candidate;
     }
 
-    if (!doc) {
-      throw new CutholError(DIAGNOSTICS.TRANSCRIPT_NOT_FOUND(handle));
-    }
-    return doc;
+    throw new CutholError(DIAGNOSTICS.TRANSCRIPT_NOT_FOUND(handle));
   } finally {
     ledger.close();
   }

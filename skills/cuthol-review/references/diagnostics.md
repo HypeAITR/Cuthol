@@ -39,6 +39,8 @@ and never reused; they may appear in old projects and logs.
 | G209 | G2 WARN | Extension processor output's video/audio lengths differ by > 1 frame (40 ms without a frame rate) → `"audio": "drop"` or an aligning `audio_filter`. Also on cache hits. |
 | G210 | G2 INFO | Outside edits present → `changes_show`, then adopt or revert. |
 | G211 | G2 ERROR | An op refused to overwrite outside edits → show, adopt or revert, then retry. |
+| G212 | G2 WARN | ffmpeg/ffprobe below 8.x (Cuthol is tested with 8.x; tempo, loudness and scene analysis may differ) → install 8.x; also shown at render start. |
+| G213 | SYS ERROR | ASR provider cannot auto-detect the speech language and no `lang` was given → re-run transcribe with `lang`. |
 | G230 | G1 ERROR | Unknown provider id → use a listed one. |
 | G231 | G2 ERROR | Extension does not provide that provider kind → `extension show` its `providers`. |
 | G232 | SYS ERROR | Provider env secret missing → set it in the shell or project `.env`; values are never written anywhere. |
@@ -61,6 +63,7 @@ and never reused; they may appear in old projects and logs.
 | G313 | G3 ERROR | `speech.cleanup` on a non-audio cue → voiceover/music/sfx cues only. |
 | G314 | G3 ERROR | Cleanup taking a spine clip and an audio cue in one call → one target per call. |
 | G315 | G3 ERROR | Invalid `--across` → `lane`, `all_lanes`, `all`, `spine`, `none`. |
+| G316 | G3 INFO | Spine-less stretch whose only picture is a transparent composition with mostly-empty alpha (bare backdrop shows through) → `workspace backdrop --color` or an opaque background layer. Only reported with a cached alpha measurement. |
 | G401 | G4 WARN | Outside the title-safe area by N px → move / shrink / `max_width`. |
 | G402 | G4 WARN | Caption reading speed too high → fewer words per caption. |
 | G403 | G4 WARN | Text covered by a higher layer. |
@@ -73,7 +76,9 @@ and never reused; they may appear in old projects and logs.
 | G413 | G4 WARN | A used extension transition's extension changed on disk (render uses the current one) → `extension enable` to accept. |
 | G414 | G4 ERROR | LUT file missing, unreadable, outside the project, or not `.cube`/`.3dl` → place it under the project and re-attach, or clear with `--lut none`. Render refuses to start. |
 | G415 | G4 WARN | A sub-composition script threw while a sibling timeline stayed alive: skipped with an empty timeline, that overlay part is blank → fix that script; the next render re-captures. |
-| G416 | G4 WARN | A composition cue plays audio (`<audio>`, audible `<video>`, `<hf-audio-group>`, JS audio) that never enters the Cuthol mix — overlays are picture-only. `muted` / silent / sourceless stays quiet → move the sound to `ln_sfx` / `ln_bgm`. |
+| G416 | G4 WARN / INFO | A composition cue plays audio (`<audio>`, audible `<video>`, `<hf-audio-group>`). INFO when its stem is in the Cuthol mix (it follows the cue's gain, mute, envelopes and ducking) or the cue has `composition_audio: off`; WARN while no stem has been extracted yet (render or `mix` extracts it). |
+| G435 | G4 WARN | Extracting a composition's sound failed (reason in the message); the cue stays silent in the mix → fix the composition, or `lane update-cue --cue <id> --composition-audio off`. |
+| G436 | G4 INFO | The engine rendered silence for a composition with audio markers (for example sound made only in JS) → prefer `<audio>` elements. |
 | G417 | G4 WARN | Coordinate measurement failed for a cue → skipped, the rest continue. |
 | G418 | G4 WARN | Coords fell back to raw HTML (bundled fonts unavailable). |
 | G419 | G4 INFO | Coords page error or unmappable placement. |
@@ -90,6 +95,7 @@ and never reused; they may appear in old projects and logs.
 | G506 | G5 WARN | 8 px black strip on the right/bottom edge (an ffmpeg conversion bug at widths like 1080). Check versions and render again. |
 | G507 | G5 WARN | A composition uses `C.audio` but no audio energy could be extracted for its window, so `C.audio` returns 0. |
 | G508 | G5 WARN | Post-render audio health: alignment offset, missing signal, or silent output gap while the source is loud (ramp-aware on ramped clips, inconclusive on periodic signals) → check the item's timing/audio chain and render again. |
+| G509 | G4 INFO | N compositions were never opened in a browser, so their scripts are unchecked → `composition.preview(cue=…)` to record a check. |
 | SYS01–08 | — | Project not found, bad time literal, journal entry unavailable, external tool spawn/exit failure (`SYS04`, e.g. `ENOENT`), missing API key, transcript missing, invalid colour, extension execution failure (`SYS08`). |
 | SYS09 | SYS ERROR | Subprocess command line exceeds the OS limit (`ENAMETOOLONG` / `E2BIG`); reports length, limit, clip count. |
 | SYS10 | SYS ERROR | Subprocess progress stalled: the process tree was terminated after `CUTHOL_STALL_TIMEOUT_SEC` (default 300 s; `0` disables) without progress. Reports step, last progress, stall duration. After one automatic `libx264` retry if a hardware encoder stalled. |

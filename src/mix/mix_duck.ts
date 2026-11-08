@@ -8,6 +8,11 @@ import {
 import { ParameterEnvelopePoint } from "../core/schema.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
 import { loadSequence } from "../core/workspace.js";
+import {
+  compositionAudioRequestForCue,
+  resolveCompositionAudioMode,
+} from "../compositor/composition_audio.js";
+import { hyperFramesCompositionAudioAdapter } from "../compositor/composition_audio_hf.js";
 import { analyzeAssetWaveform } from "../library/waveform.js";
 import {
   sourceMsToSequenceMs
@@ -60,9 +65,9 @@ export function duckMusicUnderDialogue(options: {
     OPEN_STANDARDS.DUCKING.MIN_RELEASE_MS,
     Math.min(OPEN_STANDARDS.DUCKING.MAX_RELEASE_MS, rawReleaseMs)
   );
-  const lang = options.language ?? "tr";
+  const lang = options.language ?? "auto";
 
-  const { sequence: initialSeq } = loadSequence(options.workspaceDir);
+  const { paths: duckPaths, sequence: initialSeq } = loadSequence(options.workspaceDir);
 
   // Collect active dialogue intervals in sequence milliseconds
   const rawWindows: Array<{ start_ms: number; end_ms: number }> = [];
@@ -91,7 +96,25 @@ export function duckMusicUnderDialogue(options: {
     if (lane.muted) continue;
     for (const cue of lane.cues) {
       const isVoCue = lane.id === "ln_vo" || lane.kind === "voiceover" || cue.kind === "voiceover";
-      if (!isVoCue || cue.audio_chain?.muted || !cue.asset_handle) continue;
+      if (!isVoCue || cue.audio_chain?.muted) continue;
+      if (!cue.asset_handle) {
+        // Composition cue on a voiceover lane: a stem has no transcript, so
+        // (like an untranscribed asset cue) the whole cue span counts as dialogue.
+        const request = compositionAudioRequestForCue(cue, duckPaths, {
+          fps: initialSeq.stage.fps,
+          width: initialSeq.stage.width,
+          height: initialSeq.stage.height,
+        });
+        if (
+          request &&
+          resolveCompositionAudioMode(cue) === "mix" &&
+          hyperFramesCompositionAudioAdapter.hasAudio(request)
+        ) {
+          const cueStart = resolveCueStartMs(initialSeq, cue);
+          rawWindows.push({ start_ms: cueStart, end_ms: cueStart + cue.duration_ms });
+        }
+        continue;
+      }
       const cueStart = resolveCueStartMs(initialSeq, cue);
       const cueSourceIn = cue.source_in_ms ?? 0;
       const cueSourceOut = Math.min(

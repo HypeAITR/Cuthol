@@ -8,9 +8,10 @@ import {
   validateHyperFramesCompositionContract,
 } from "./compositor/hyperframes_bridge.js";
 import { CutholError, DIAGNOSTICS } from "./core/diagnostics.js";
-import { HyperFramesCompositeMode, LaneKind } from "./core/schema.js";
+import { CompositionAudioMode, HyperFramesCompositeMode, LaneCue, LaneKind } from "./core/schema.js";
 import { parseTimeMs } from "./core/time.js";
 import { loadSequence, setLaneLockStatus } from "./core/workspace.js";
+import { commitVerifiedMutation, VerificationReport } from "./verify/gates.js";
 import {
   addLaneCue,
   exciseLaneCueRanges,
@@ -25,6 +26,42 @@ import {
   CliCommandResult,
   emitEnvelopeJson,
 } from "./cli_output.js";
+
+function parseCompositionAudioFlag(cueId: string, raw: string | undefined): CompositionAudioMode | undefined {
+  if (raw === undefined) return undefined;
+  const mode = raw.trim().toLowerCase();
+  if (mode !== "mix" && mode !== "off") {
+    throw new CutholError(
+      DIAGNOSTICS.INVALID_COMPOSITION_AUDIO(cueId, `got '--composition-audio ${raw}', want 'mix' or 'off'`)
+    );
+  }
+  return mode;
+}
+
+/** Journaled, undoable `composition_audio` switch on a composition cue. */
+function setCueCompositionAudio(
+  workspaceDir: string,
+  cueId: string,
+  mode: CompositionAudioMode
+): { cue: LaneCue; revision: number; verification: VerificationReport } {
+  const { result, revision, verification } = commitVerifiedMutation(workspaceDir, `lane.update-cue(${cueId})`, (seq) => {
+    const target = seq.lanes.flatMap((l) => l.cues).find((c) => c.id === cueId);
+    if (!target) {
+      throw new CutholError(DIAGNOSTICS.UNKNOWN_HANDLE(cueId));
+    }
+    if (target.kind !== "composition" || !target.composition) {
+      throw new CutholError(
+        DIAGNOSTICS.INVALID_COMPOSITION_AUDIO(
+          cueId,
+          `'composition_audio' applies to composition cues only (kind '${target.kind}')`
+        )
+      );
+    }
+    target.composition_audio = mode;
+    return target;
+  });
+  return { cue: result, revision, verification };
+}
 
 export function runLaneCommand(ctx: CliCommandContext): CliCommandResult {
   const { action, rest, flags, workspaceDir } = ctx;
@@ -156,9 +193,16 @@ export function runLaneCommand(ctx: CliCommandContext): CliCommandResult {
         mode,
       },
     });
+    // Absent `composition_audio` already means `mix`; only an explicit `off`
+    // needs a second journaled write at creation time.
+    const addCompAudio = parseCompositionAudioFlag(res.cue.id, strFlag(flags, "composition-audio"));
+    let emitted = res;
+    if (addCompAudio !== undefined && addCompAudio !== "mix") {
+      emitted = setCueCompositionAudio(workspaceDir, res.cue.id, addCompAudio);
+    }
     emitEnvelopeJson(workspaceDir, "lane.add-composition", {
       action: "lane.add-composition",
-      ...res,
+      ...emitted,
     });
     return;
   }
@@ -180,28 +224,55 @@ export function runLaneCommand(ctx: CliCommandContext): CliCommandResult {
           ? null
           : { ref: anchorRef, offset_ms: parseTimeMs(offsetRaw) }
         : undefined;
-    const res = updateLaneCue({
-      workspaceDir,
-      cueId,
-      atMs: atRaw ? parseTimeMs(atRaw) : undefined,
-      durationMs: durRaw ? parseTimeMs(durRaw) : undefined,
-      sourceInMs: inRaw ? parseTimeMs(inRaw) : undefined,
-      sourceOutMs: outRaw ? parseTimeMs(outRaw) : undefined,
-      rate,
-      preservePitch: boolFlag(flags, "preserve-pitch"),
-      zIndex: numFlag(flags, "z-index"),
-      anchor: anchorOpt,
-      xPct: strFlag(flags, "x"),
-      yPct: strFlag(flags, "y"),
-      scale: strFlag(flags, "scale"),
-      rotationDeg: strFlag(flags, "rotation") ?? strFlag(flags, "rotate"),
-      opacity: strFlag(flags, "opacity"),
-      text: strFlag(flags, "text"),
-      fontSizePx: numFlag(flags, "size"),
-      maxWidthPct: numFlag(flags, "max-width"),
-      gainDb: numFlag(flags, "gain-db"),
-      muted: boolFlag(flags, "muted"),
-    });
+    const compAudioMode = parseCompositionAudioFlag(cueId, strFlag(flags, "composition-audio"));
+    const wantsLaneUpdate =
+      compAudioMode === undefined ||
+      atRaw !== undefined ||
+      durRaw !== undefined ||
+      inRaw !== undefined ||
+      outRaw !== undefined ||
+      rateRaw !== undefined ||
+      flags["preserve-pitch"] !== undefined ||
+      flags["z-index"] !== undefined ||
+      anchorRef !== undefined ||
+      flags["x"] !== undefined ||
+      flags["y"] !== undefined ||
+      flags["scale"] !== undefined ||
+      flags["rotation"] !== undefined ||
+      flags["rotate"] !== undefined ||
+      flags["opacity"] !== undefined ||
+      flags["text"] !== undefined ||
+      flags["size"] !== undefined ||
+      flags["max-width"] !== undefined ||
+      flags["gain-db"] !== undefined ||
+      flags["muted"] !== undefined;
+    let res = wantsLaneUpdate
+      ? updateLaneCue({
+          workspaceDir,
+          cueId,
+          atMs: atRaw ? parseTimeMs(atRaw) : undefined,
+          durationMs: durRaw ? parseTimeMs(durRaw) : undefined,
+          sourceInMs: inRaw ? parseTimeMs(inRaw) : undefined,
+          sourceOutMs: outRaw ? parseTimeMs(outRaw) : undefined,
+          rate,
+          preservePitch: boolFlag(flags, "preserve-pitch"),
+          zIndex: numFlag(flags, "z-index"),
+          anchor: anchorOpt,
+          xPct: strFlag(flags, "x"),
+          yPct: strFlag(flags, "y"),
+          scale: strFlag(flags, "scale"),
+          rotationDeg: strFlag(flags, "rotation") ?? strFlag(flags, "rotate"),
+          opacity: strFlag(flags, "opacity"),
+          text: strFlag(flags, "text"),
+          fontSizePx: numFlag(flags, "size"),
+          maxWidthPct: numFlag(flags, "max-width"),
+          gainDb: numFlag(flags, "gain-db"),
+          muted: boolFlag(flags, "muted"),
+        })
+      : null;
+    if (compAudioMode !== undefined) {
+      res = setCueCompositionAudio(workspaceDir, cueId, compAudioMode);
+    }
     emitEnvelopeJson(workspaceDir, "lane.update-cue", { action: "lane.update-cue", ...res });
     return;
   }

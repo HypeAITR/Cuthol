@@ -1,6 +1,6 @@
 {
   "name": "cuthol",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Agent-first open-source non-linear video editor (NLE) powered by HyperFrames and open media standards.",
   "license": "MIT",
   "type": "module",
@@ -11,6 +11,8 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
+    "test": "node scripts/test.mjs",
+    "test:serial": "node --import ./dist/test/test_setup.js --test --test-concurrency=1 dist/test/*.test.js",
     "cuthol": "node dist/cli.js"
   },
   "engines": {

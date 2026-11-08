@@ -1,0 +1,73 @@
+{
+  "schema_version": "1.0.0",
+  "name": "speed-ramps",
+  "version": "1.0.0",
+  "description": "Example recipes: dip to slow motion or punch to double speed mid-clip, with a matching scale punch.",
+  "recipes": {
+    "slow_middle": {
+      "description": "Slow the middle of a clip to `rate` and punch the scale in while slow.",
+      "params": {
+        "clip": { "type": "string", "required": true, "description": "Spine clip id, e.g. sp_01." },
+        "a": { "type": "string", "default": "0s", "description": "Ramp start (source time)." },
+        "b": { "type": "string", "default": "1s", "description": "Full slow rate reached here." },
+        "c": { "type": "string", "default": "3s", "description": "Recovery starts here." },
+        "d": { "type": "string", "default": "4s", "description": "Back to 1x here; must fit the source span." },
+        "rate": { "type": "number", "default": 0.5, "min": 0.1, "max": 16 },
+        "zoom": { "type": "number", "default": 1.12, "min": 1, "max": 2 }
+      },
+      "steps": [
+        {
+          "id": "ramp",
+          "tool": "spine",
+          "action": "speed",
+          "args": { "clip": "{{clip}}", "ramp": "{{a}}:1,{{b}}:{{rate}},{{c}}:{{rate}},{{d}}:1", "preserve_pitch": true }
+        },
+        {
+          "id": "zoom_x",
+          "tool": "spine",
+          "action": "envelope",
+          "args": { "clip": "{{clip}}", "param": "placement.scale_x", "points": "{{a}}:1,{{b}}:{{zoom}},{{c}}:{{zoom}},{{d}}:1", "easing": "ease_in_out" }
+        },
+        {
+          "id": "zoom_y",
+          "tool": "spine",
+          "action": "envelope",
+          "args": { "clip": "{{clip}}", "param": "placement.scale_y", "points": "{{a}}:1,{{b}}:{{zoom}},{{c}}:{{zoom}},{{d}}:1", "easing": "ease_in_out" }
+        }
+      ]
+    },
+    "fast_middle": {
+      "description": "Rush the middle of a clip to `rate` and punch the scale in while fast.",
+      "params": {
+        "clip": { "type": "string", "required": true, "description": "Spine clip id, e.g. sp_01." },
+        "a": { "type": "string", "default": "0s", "description": "Ramp start (source time)." },
+        "b": { "type": "string", "default": "1s", "description": "Full fast rate reached here." },
+        "c": { "type": "string", "default": "3s", "description": "Recovery starts here." },
+        "d": { "type": "string", "default": "4s", "description": "Back to 1x here; must fit the source span." },
+        "rate": { "type": "number", "default": 2, "min": 0.1, "max": 16 },
+        "zoom": { "type": "number", "default": 1.12, "min": 1, "max": 2 }
+      },
+      "steps": [
+        {
+          "id": "ramp",
+          "tool": "spine",
+          "action": "speed",
+          "args": { "clip": "{{clip}}", "ramp": "{{a}}:1,{{b}}:{{rate}},{{c}}:{{rate}},{{d}}:1", "preserve_pitch": true }
+        },
+        {
+          "id": "zoom_x",
+          "tool": "spine",
+          "action": "envelope",
+          "args": { "clip": "{{clip}}", "param": "placement.scale_x", "points": "{{a}}:1,{{b}}:{{zoom}},{{c}}:{{zoom}},{{d}}:1", "easing": "ease_in_out" }
+        },
+        {
+          "id": "zoom_y",
+          "tool": "spine",
+          "action": "envelope",
+          "args": { "clip": "{{clip}}", "param": "placement.scale_y", "points": "{{a}}:1,{{b}}:{{zoom}},{{c}}:{{zoom}},{{d}}:1", "easing": "ease_in_out" }
+        }
+      ]
+    }
+  },
+  "guide": "README.md"
+}

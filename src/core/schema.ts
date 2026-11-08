@@ -280,6 +280,13 @@ export interface CuePlaybackSpec {
   preserve_pitch: boolean;
 }
 
+/**
+ * How a composition cue's own sound (the engine-rendered stem) joins the Cuthol mix.
+ * - `mix` (default when absent): the stem plays at the cue's lane time like a normal audio cue.
+ * - `off`: the stem is never produced and the composition stays silent in the mix.
+ */
+export type CompositionAudioMode = "mix" | "off";
+
 export interface LaneCue {
   id: string;
   kind: LaneKind;
@@ -296,6 +303,7 @@ export interface LaneCue {
   audio_chain?: AudioProcessingChain;
   typography?: TypographySpec;
   composition?: HyperFramesMountSpec;
+  composition_audio?: CompositionAudioMode;
   envelopes: ParameterEnvelope[];
 }
 

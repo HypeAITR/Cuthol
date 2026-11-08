@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveCueStartMs } from "../core/timeline.js";
+import { buildCueOverlayEnableExpr, cueOverlapsWindowMs, singleFrameInstantHitsCue } from "../core/frame_time.js";
 import { CutholSequence, getCuePlaybackRate, isStillGraphic, maxSourceDurationMs } from "../core/schema.js";
 import {
   probeStandaloneVideoColorMetadata,
@@ -179,8 +180,7 @@ function prepareCompositionCueInput(
   if (
     compileOptions?.singleFrameAtMs !== undefined &&
     compMode !== "scene_host" &&
-    compileOptions.singleFrameAtMs + frameDurMs >= cueStartMs &&
-    compileOptions.singleFrameAtMs <= cueEndMs
+    singleFrameInstantHitsCue(compileOptions.singleFrameAtMs, cueStartMs, cueEndMs, frameDurMs)
   ) {
     // Preserve exact floating-point `singleFrameAtMs` (without integer ms truncation)
     // so 30fps `frameIdx = 3k + 1` never drifts by 1 frame.
@@ -443,8 +443,7 @@ function compileCompositionLaneCue(
   const isSingleFrameHfPng =
     compileOptions?.singleFrameAtMs !== undefined &&
     compMode !== "scene_host" &&
-    compileOptions.singleFrameAtMs + frameDurMs >= cueStartMs &&
-    compileOptions.singleFrameAtMs <= cueEndMs;
+    singleFrameInstantHitsCue(compileOptions.singleFrameAtMs, cueStartMs, cueEndMs, frameDurMs);
   const hfLocalTimeExpr = isSingleFrameHfPng
     ? Math.max(0, (compileOptions!.singleFrameAtMs! - cueStartMs) / 1000).toFixed(6)
     : `((in-1)/${fps})`;
@@ -517,7 +516,7 @@ function compileCompositionLaneCue(
     const nextPad = `[vc_${ctx.vStepCounter}]`;
     ctx.filterChains.push(
       `${hfPad}${BT709_TO_YUVA420P}${ovYuvPad}`,
-      `${ctx.currentVideoPad}${ovYuvPad}overlay=x='${xExpr}':y='${yExpr}':eval=frame:enable='between(t,${cueStartSec},${cueEndSec})':eof_action=pass:repeatlast=0,${BT709_TO_YUV420P}${nextPad}`
+      `${ctx.currentVideoPad}${ovYuvPad}overlay=x='${xExpr}':y='${yExpr}':eval=frame:enable='${buildCueOverlayEnableExpr(cueStartSec, cueEndSec)}':eof_action=pass:repeatlast=0,${BT709_TO_YUV420P}${nextPad}`
     );
     ctx.currentVideoPad = nextPad;
   } else {
@@ -527,7 +526,7 @@ function compileCompositionLaneCue(
     ctx.filterChains.push(
       `${ctx.currentVideoPad}${BT709_TO_YUV444P10}${base10Pad}`,
       `${hfPad}${BT709_TO_YUVA444P10}${ov10Pad}`,
-      `${base10Pad}${ov10Pad}overlay=x='${xExpr}':y='${yExpr}':format=yuv444p10:alpha=straight:eval=frame:enable='between(t,${cueStartSec},${cueEndSec})':eof_action=pass:repeatlast=0,${BT709_TO_YUV420P}${nextPad}`
+      `${base10Pad}${ov10Pad}overlay=x='${xExpr}':y='${yExpr}':format=yuv444p10:alpha=straight:eval=frame:enable='${buildCueOverlayEnableExpr(cueStartSec, cueEndSec)}':eof_action=pass:repeatlast=0,${BT709_TO_YUV420P}${nextPad}`
     );
     ctx.currentVideoPad = nextPad;
   }
@@ -901,7 +900,7 @@ function compileAssetLaneCue(
 
     const nextPad = `[vc_${++ctx.vStepCounter}]`;
     ctx.filterChains.push(
-      `${ctx.currentVideoPad}${cuePad}overlay=x='${xExpr}':y='${yExpr}':eval=frame:enable='between(t,${cueStartSec},${cueEndSec})':eof_action=pass,${BT709_SETPARAMS}${nextPad}`
+      `${ctx.currentVideoPad}${cuePad}overlay=x='${xExpr}':y='${yExpr}':eval=frame:enable='${buildCueOverlayEnableExpr(cueStartSec, cueEndSec)}':eof_action=pass,${BT709_SETPARAMS}${nextPad}`
     );
     ctx.currentVideoPad = nextPad;
   }
@@ -973,7 +972,7 @@ export function compileLane(ctx: VideoGraphCompileContext, lane: LaneSpec): void
     const cueStartSec = (cueStartMs / 1000).toFixed(3);
     const cueEndSec = (cueEndMs / 1000).toFixed(3);
     const isCueInActiveWindow =
-      !ctx.activeWin || (cueEndMs > ctx.winStartMs - 1e-3 && cueStartMs < ctx.winEndMs + 1e-3);
+      !ctx.activeWin || cueOverlapsWindowMs(cueStartMs, cueEndMs, ctx.winStartMs, ctx.winEndMs);
 
     if (cue.typography && cue.typography.text.trim()) {
       ctx.drawnVisualLayers.push({

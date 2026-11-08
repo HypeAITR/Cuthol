@@ -7,6 +7,7 @@
  * reads it from here so they never disagree.
  */
 
+import { cueCoversTimeMs } from "./frame_time.js";
 import { CutholSequence, LaneCue } from "./schema.js";
 
 /**
@@ -99,7 +100,7 @@ export function activeVisualCueIdsAt(seq: CutholSequence, tMs: number): string[]
     if (lane.muted || isAudioOnlyKind(lane.kind)) continue;
     for (const cue of lane.cues) {
       const start = resolveCueStartMs(seq, cue);
-      if (tMs >= start && tMs < start + cue.duration_ms && isVisualCue(seq, cue)) {
+      if (cueCoversTimeMs(start, start + cue.duration_ms, tMs) && isVisualCue(seq, cue)) {
         ids.push(cue.id);
       }
     }
@@ -141,4 +142,59 @@ export function findBackdropOnlySpans(
   }
   if (durationMs - cursor >= minSpan) spans.push({ start_ms: cursor, end_ms: durationMs });
   return spans;
+}
+
+/**
+ * Stretches of a spine-less sequence whose on-screen picture comes only from
+ * the given cues (every covering visual cue is in `cueIds`, and at least one
+ * cue covers). Spans shorter than `minSpanMs` (default one frame) are ignored.
+ * Returns nothing when the spine has clips or `cueIds` is empty.
+ */
+export function findSpansCoveredOnlyByCues(
+  seq: CutholSequence,
+  cueIds: Set<string>,
+  minSpanMs?: number
+): Array<{ start_ms: number; end_ms: number }> {
+  if (seq.spine.clips.length > 0) return [];
+  if (cueIds.size === 0) return [];
+  const durationMs = computeSequenceDurationMs(seq);
+  if (durationMs <= 0) return [];
+  const minSpan = minSpanMs ?? 1000 / Math.max(1, seq.stage.fps);
+
+  const visuals: Array<{ start: number; end: number; id: string }> = [];
+  for (const lane of seq.lanes) {
+    if (lane.muted || isAudioOnlyKind(lane.kind)) continue;
+    for (const cue of lane.cues) {
+      if (!isVisualCue(seq, cue)) continue;
+      const start = Math.max(0, resolveCueStartMs(seq, cue));
+      const end = Math.min(durationMs, start + cue.duration_ms);
+      if (end > start) visuals.push({ start, end, id: cue.id });
+    }
+  }
+  const bounds = new Set<number>([0, durationMs]);
+  for (const v of visuals) {
+    bounds.add(v.start);
+    bounds.add(v.end);
+  }
+  const sorted = [...bounds].sort((a, b) => a - b);
+
+  const spans: Array<{ start_ms: number; end_ms: number }> = [];
+  let open: { start_ms: number; end_ms: number } | null = null;
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const a = sorted[i];
+    const b = sorted[i + 1];
+    if (b <= a) continue;
+    const covering = visuals.filter((v) => v.start <= a && v.end >= b);
+    if (covering.length > 0 && covering.every((v) => cueIds.has(v.id))) {
+      if (open && open.end_ms === a) {
+        open.end_ms = b;
+      } else {
+        open = { start_ms: a, end_ms: b };
+        spans.push(open);
+      }
+    } else {
+      open = null;
+    }
+  }
+  return spans.filter((s) => s.end_ms - s.start_ms >= minSpan);
 }

@@ -136,7 +136,7 @@ export function createCleanupAssetLoaders(options: {
       const doc: TranscriptDocument = loadCachedTranscriptForAsset(
         options.workspaceDir,
         clip.asset_handle,
-        options.language ?? "tr"
+        options.language ?? "auto"
       );
       spans = doc.disfluencies;
       words = doc.words ?? [];

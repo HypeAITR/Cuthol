@@ -121,6 +121,12 @@ Beats are analyzed automatically.
   renders). Size `<video>` with **pixel width and height** (and a pixel height
   on its box); when sizing by width, compute the height from that file's own
   aspect ratio.
+- Sound: audible `<audio>`/`<video>` in a composition (with `<hf-audio-group>`,
+  volume automation and fx) enters the Cuthol mix as a per-cue stem at the
+  cue's lane time and follows the cue's gain, mute and envelopes. Silent
+  compositions are untouched. Turn it off per cue with
+  `lane.update_cue(cue, composition_audio="off")`. Details, diagnostics
+  (G416/G435/G436): `cuthol-audio`.
 - Transparent VP9 webm (`yuva420p`, `-auto-alt-ref 0`) keeps its alpha on
   render, monitor and preview; past its end the last frame holds.
 - Overlays are cached by composition files + used data slices + backdrop; every

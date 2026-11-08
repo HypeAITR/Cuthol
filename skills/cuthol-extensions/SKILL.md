@@ -67,6 +67,19 @@ when the extension touches the network), `helper` (`.js` path), `assets`
 Details, contracts and a worked planner example: `references/capabilities.md`.
 Provider contracts, secrets and examples: `references/providers.md`.
 
+**Worked examples:** `examples/extensions/` in the Cuthol repository holds one
+small, tested extension per kind — `motion-transitions` (transitions: push,
+white flash dissolve, wipe reveal), `film-look` (`fx`: grain, vignette, RGB
+split, an envelope-driven brightness pulse), `freeze-fade` (`ffmpeg`
+processors: freeze frame with `audio: drop`, fade-in), `speed-ramps` (recipes
+over the core speed ramp), `montage` (planners: spine assembly, SFX on
+composition events), `caption-kit` (composition helper + asset pack, with a
+demo composition) and the `asr-command` / `tts-command` / `media-folder`
+providers. Copy a folder to `<project>/.cuthol/extensions/<name>/` and run
+`extension enable --name <name>`; the table is in
+`examples/extensions/README.md`, parameters and known limits in each folder's
+`README.md`.
+
 ## Commands
 
 | MCP call | CLI | Purpose |

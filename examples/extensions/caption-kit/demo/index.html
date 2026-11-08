@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>caption-kit demo</title>
+    <!-- Copy this file over a scaffolded composition's index.html after
+         `extension enable --name caption-kit`. The helper tag
+         (assets/cuthol-ext-caption-kit.js) is added by the sync, right after
+         cuthol-runtime.js; the stylesheet and SVG come from the asset pack. -->
+    <script src="assets/gsap.min.js"></script>
+    <script src="assets/cuthol-data.js"></script>
+    <script src="assets/cuthol-runtime.js"></script>
+    <link rel="stylesheet" href="assets/ext/caption-kit/caption-kit.css" />
+    <style>
+      body { margin: 0; background: transparent; }
+      #root { position: relative; width: 100%; height: 100%; overflow: hidden; }
+      .clip { position: absolute; inset: 0; }
+      .lt { position: absolute; left: 90px; top: 90px; width: 640px; height: 120px; }
+      .lt img { position: absolute; inset: 0; width: 100%; height: 100%; }
+      .lt span {
+        position: absolute; left: 40px; top: 30px;
+        font: 700 46px "DejaVu Sans", Verdana, sans-serif; color: #fff;
+      }
+      .count {
+        position: absolute; right: 120px; top: 90px;
+        font: 900 96px "DejaVu Sans", Verdana, sans-serif; color: #ffd54d;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-width="1920"
+         data-height="1080" data-fps="30" data-duration="4">
+      <section id="slot" class="clip" data-start="0" data-duration="4">
+        <div class="lt">
+          <img src="assets/ext/caption-kit/pill.svg" alt="" />
+          <span id="typed"></span>
+        </div>
+        <div id="count" class="count">0</div>
+        <div id="cap" class="ck-caption"></div>
+      </section>
+    </div>
+    <script>
+      const C = window.__cuthol;
+      const kit = C.ext["caption-kit"];
+      // Fixed demo timings (seconds, composition-local). With a transcript,
+      // use C.words instead.
+      const words = [
+        { text: "every", start: 0.2, end: 0.8 },
+        { text: "word", start: 0.8, end: 1.4 },
+        { text: "lights", start: 1.4, end: 2.2 },
+        { text: "up", start: 2.2, end: 3.6 },
+      ];
+      const cap = document.getElementById("cap");
+      const spans = words.map((w) => {
+        const s = document.createElement("span");
+        s.className = "ck-word";
+        s.textContent = w.text + " ";
+        cap.appendChild(s);
+        return s;
+      });
+      const typed = document.getElementById("typed");
+      const count = document.getElementById("count");
+      const tl = gsap.timeline({ paused: true });
+      tl.to({}, { duration: 4 });
+      C.drive(tl, (t) => {
+        const i = kit.activeWord(words, t);
+        spans.forEach((s, k) => s.classList.toggle("ck-active", k === i));
+        typed.textContent = kit.typewriter("LOWER THIRD", t, 8);
+        count.textContent = String(kit.counter(250, t, 2));
+      });
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

@@ -12,12 +12,18 @@ description: >
 
 ## Transcription
 
-`speech.transcribe(handle, lang="tr")` sends the asset to the ASR provider once
+`speech.transcribe(handle, lang="auto")` sends the asset to the ASR provider once
 and caches the result by file content (re-running is free). It returns a
 digest: word count, words per minute, low-confidence spans, a short preview and
 query hints. Read words with `library.query(handle, kind="transcript",
 range="3s..6s" | text="moonstar", format="default" | "compact")` — the text
 search ignores case and diacritics.
+
+- The language defaults to `"auto"` (detected from the audio; the digest shows
+  it as `language`). Pass `lang="tr"` / `"en"` to force one — an explicit
+  language only ever reads that language's cache record. `refresh=true`
+  re-transcribes and replaces the stored record. A provider that cannot detect
+  the language fails with `[CUTHOL-G213]` unless `lang` is given.
 
 - Transcribe the **asset** (`vid_01`, `aud_01`), not a clip. Words project onto
   every clip and voiceover cue using that asset, and stay correct after trims,
@@ -36,7 +42,10 @@ itself (no ASR pass needed, spelling preserved). Default provider `elevenlabs`
 gives placeholder tones (`is_placeholder_audio: true`) — fine for timing tests,
 not for delivery. `provider="ext:<extension>"` uses an extension TTS provider;
 without alignment it reports `has_alignment: false` plus a warning instead of
-inventing timings.
+inventing timings. Pass `lang` with the text's language: it is recorded with the
+voiceover's transcript. Without it, text with Turkish-only letters is recorded as
+`tr` and anything else as `und` (undetermined), so a later
+`speech.transcribe(lang="en")` re-transcribes instead of reusing a mislabelled record.
 
 To use an existing narration file instead: `library.ingest` it, place it with
 `lane.add_cue(lane="ln_vo", kind="voiceover", asset=…, at=…, duration=<its

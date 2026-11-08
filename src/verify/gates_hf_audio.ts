@@ -1,7 +1,15 @@
-// G416: a composition cue that plays audio HyperFrames itself would mix,
-// but Cuthol renders overlays as picture-only blobs, so that sound never enters the Cuthol mix.
+// G416: a composition cue that plays audio the engine itself mixes. Cuthol takes
+// that sound into its own mix as a per-cue stem (engine-neutral composition
+// audio contract); the cue stays silent only while no stem exists yet, when the
+// cue opts out with `composition_audio: "off"`, or when extraction fails (G435).
 import fs from "node:fs";
 import path from "node:path";
+import {
+  compositionAudioRequestForCue,
+  readCompositionStemState,
+  resolveCompositionAudioMode,
+} from "../compositor/composition_audio.js";
+import { hyperFramesCompositionAudioAdapter } from "../compositor/composition_audio_hf.js";
 import { CutholDiagnostic, DIAGNOSTICS } from "../core/diagnostics.js";
 import { CutholSequence } from "../core/schema.js";
 import { spawnWatchedSync } from "../core/subprocess.js";
@@ -256,7 +264,7 @@ export function detectCompositionAudioNotInMix(
   return markers;
 }
 
-/** G4_STAGE verify pass: emits CUTHOL-G416 per composition cue with unmixed audio. */
+/** G4_STAGE verify pass: reports each composition cue's stem state (never renders). */
 export function verifyCompositionAudio(
   seq: CutholSequence,
   paths: WorkspacePaths | undefined,
@@ -268,6 +276,7 @@ export function verifyCompositionAudio(
     if (lane.muted) continue;
     for (const cue of lane.cues) {
       if (cue.kind !== "composition" || !cue.composition) continue;
+      if (cue.audio_chain?.muted) continue;
       const compDir = path.isAbsolute(cue.composition.composition_dir)
         ? cue.composition.composition_dir
         : path.resolve(paths.rootDir, cue.composition.composition_dir);
@@ -281,7 +290,32 @@ export function verifyCompositionAudio(
         markers.length === 1
           ? markers[0].detail
           : `${markers[0].detail} (+${markers.length - 1} more audio elements)`;
-      diagnostics.push(DIAGNOSTICS.COMPOSITION_AUDIO_SILENT(cue.id, detail));
+      if (resolveCompositionAudioMode(cue) === "off") {
+        diagnostics.push(DIAGNOSTICS.COMPOSITION_AUDIO_OFF(cue.id, detail));
+        continue;
+      }
+      const request = compositionAudioRequestForCue(cue, paths, {
+        fps: seq.stage.fps,
+        width: seq.stage.width,
+        height: seq.stage.height,
+      });
+      if (!request) continue;
+      const state = readCompositionStemState(cue, request, hyperFramesCompositionAudioAdapter);
+      if (state.kind === "mixed") {
+        diagnostics.push(
+          DIAGNOSTICS.COMPOSITION_AUDIO_IN_MIX(
+            cue.id,
+            state.stemDurationMs,
+            `The stem follows this cue's gain, mute, envelopes and ducking; to drop it, run 'cuthol lane update-cue --cue ${cue.id} --composition-audio off'.`
+          )
+        );
+      } else if (state.kind === "error") {
+        diagnostics.push(DIAGNOSTICS.COMPOSITION_STEM_FAILED(cue.id, state.reason));
+      } else if (state.kind === "silent") {
+        diagnostics.push(DIAGNOSTICS.COMPOSITION_RENDER_SILENT(cue.id, detail));
+      } else if (state.kind === "pending") {
+        diagnostics.push(DIAGNOSTICS.COMPOSITION_AUDIO_SILENT(cue.id, detail));
+      }
     }
   }
 }

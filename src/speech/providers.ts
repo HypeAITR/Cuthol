@@ -285,7 +285,7 @@ export async function transcribeWithDeepgram(options: {
   return {
     provider: "deepgram",
     model: "nova-3",
-    language: ch?.detected_language ?? options.language ?? "tr",
+    language: ch?.detected_language ?? options.language ?? "auto",
     duration_ms: options.durationMs,
     text: alt?.transcript ?? words.map((w) => w.punctuated_word).join(" "),
     words,
@@ -296,6 +296,7 @@ export async function transcribeWithDeepgram(options: {
 /**
  * Local ASR Provider Door:
  * - If `CUTHOL_LOCAL_ASR_CMD` is set (e.g. `faster-whisper` or `whisper-cli`), invokes it and parses JSON output.
+ *   The JSON may carry an optional top-level `language`; without it, auto-detection asks for an explicit `--lang`.
  * - If a sidecar `<audioFilePath>.transcript.json` exists, loads it directly.
  */
 export async function transcribeWithLocalProvider(options: {
@@ -344,10 +345,14 @@ export async function transcribeWithLocalProvider(options: {
         confidence: Number.isFinite(Number(w.confidence)) ? Number(w.confidence) : 0.99,
       }));
     const { words, disfluencies } = annotateWordsAndDisfluencies(sanitizedWords, options.durationMs);
+    const sidecarLang =
+      typeof raw.language === "string" && raw.language.trim()
+        ? raw.language.trim().toLowerCase()
+        : (options.language ?? "auto");
     return {
       provider: "local",
       model: "local-sidecar",
-      language: raw.language ?? options.language ?? "tr",
+      language: sidecarLang,
       duration_ms: options.durationMs,
       text: raw.text ?? words.map((w) => w.punctuated_word).join(" "),
       words,
@@ -370,6 +375,7 @@ export async function transcribeWithLocalProvider(options: {
       );
     }
     let parsed: {
+      language?: string;
       words?: Array<{ word: string; punctuated_word?: string; source_start_ms: number; source_end_ms: number }>;
     };
     try {
@@ -399,10 +405,14 @@ export async function transcribeWithLocalProvider(options: {
         source_end_ms: Number.isFinite(Number(w.source_end_ms)) ? Math.round(Number(w.source_end_ms)) : 100,
       }));
     const { words, disfluencies } = annotateWordsAndDisfluencies(sanitizedWords, options.durationMs);
+    const cmdLang =
+      typeof parsed.language === "string" && parsed.language.trim()
+        ? parsed.language.trim().toLowerCase()
+        : (options.language ?? "auto");
     return {
       provider: "local",
       model: "custom-cli",
-      language: options.language ?? "tr",
+      language: cmdLang,
       duration_ms: options.durationMs,
       text: words.map((w) => w.punctuated_word).join(" "),
       words,

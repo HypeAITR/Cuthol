@@ -55,6 +55,12 @@ function isAudioOnlyKind(kind: string): boolean {
   return kind === "music" || kind === "sfx" || kind === "voiceover";
 }
 
+/** Composition cue one-liner with its stem switch (`mix` is the default when absent). */
+function describeCompositionCueSummary(cue: LaneCue): string {
+  const mode = cue.composition_audio ?? "mix";
+  return `HyperFrames(${sanitizeMdCell(cue.composition!.composition_dir)}, comp-audio: ${mode})`;
+}
+
 /** Short ramp shape for lenses (`ramp 1->3x, 2 pts`), or null when unramped. */
 function describeSpeedRampShape(clip: SpineClip): string | null {
   const ramp = clip.playback.speed_ramp;
@@ -214,7 +220,7 @@ function renderFlowLens(seq: CutholSequence, winStart?: number, winEnd?: number)
             const summary = cue.typography
               ? `"${sanitizeMdCell(cue.typography.text)}"`
               : cue.composition
-              ? `HyperFrames(${sanitizeMdCell(cue.composition.composition_dir)})`
+              ? describeCompositionCueSummary(cue)
               : cue.asset_handle ?? cue.kind;
             lines.push(
               `  - Anchored \`${cue.id}\` on \`${lane.id}\`${muteTag} (+${cue.anchor.offset_ms}ms => ${cueStart}..${cueEnd}ms): ${summary}`
@@ -248,7 +254,7 @@ function renderFlowLens(seq: CutholSequence, winStart?: number, winEnd?: number)
       const summary = cue.typography
         ? `"${sanitizeMdCell(cue.typography.text)}"`
         : cue.composition
-        ? `HyperFrames(${sanitizeMdCell(cue.composition.composition_dir)})`
+        ? describeCompositionCueSummary(cue)
         : cue.asset_handle ?? cue.kind;
       lines.push(
         `- [WARN: DANGLING ANCHOR \`${cue.anchor?.ref}\`] \`${cue.id}\` (\`${laneId}\`, z=${zIndex}${muted ? ", MUTED" : ""}): \`${cueStart}..${cueEnd}ms\` | ${summary}`
@@ -270,7 +276,7 @@ function renderFlowLens(seq: CutholSequence, winStart?: number, winEnd?: number)
       const summary = cue.typography
         ? `"${sanitizeMdCell(cue.typography.text)}"`
         : cue.composition
-        ? `HyperFrames(${sanitizeMdCell(cue.composition.composition_dir)})`
+        ? describeCompositionCueSummary(cue)
         : cue.asset_handle ?? cue.kind;
       lines.push(`- \`${cue.id}\` (\`${lane.id}\`, z=${lane.z_index}${muteTag}): \`${cueStart}..${cueEnd}ms\` | ${summary}`);
     }

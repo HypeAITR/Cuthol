@@ -25,7 +25,7 @@ export function printHelp(): void {
       "  cuthol spine transition --clip <sp_01> --kind <dissolve|fade|wipe_left|wipe_right|slide_up|zoom_in|ext:<ext>/<name>|none> [--duration 400ms] [--easing linear|ease_in|ease_out|ease_in_out|\"cubic-bezier(x1,y1,x2,y2)\"] [--param name=value,...] [--params '{\"name\":\"value\"}']",
       "  cuthol spine envelope --clip <sp_XX|cue_XX> --param <name> --points <0ms:1.0,4s:1.15> [--easing linear|ease_in|ease_out|ease_in_out|\"cubic-bezier(x1,y1,x2,y2)\"]",
       "  cuthol spine fx [add|set|remove|list] --clip <sp_XX> [--kind ext:<ext>/<name>|--filter \"<chain>\"] [--param k=v] [--fx <fx_XX>]",
-      "  cuthol lane [add-cue|add-composition|update-cue|remove-cue|lock|unlock] ...",
+      "  cuthol lane [add-cue|add-composition|update-cue|remove-cue|lock|unlock|mute|unmute] ...",
       "  cuthol composition [scaffold|sync|preview|check] --comp-dir <dir> ...",
       "  cuthol composition coords --cue <cue_XX> | --all [--frames <a..b> | --at <s>[,<s>...]] [--refresh] [--dir <dir>]",
       "  cuthol composition coords --at <1500ms|1.5s|45f> [--cue <cue_XX>] [--elements <ref>[,<ref>...]] [--refresh] [--dir <dir>] (geometry query)",

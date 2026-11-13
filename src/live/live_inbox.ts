@@ -137,7 +137,7 @@ export function drainLiveInbox(projectDir: string): LiveNotesPayload | null {
 
 /** Line telling the agent it was paused (null when not paused or when the human's own edit runs). */
 export const LIVE_PAUSED_LINE =
-  "PAUSED: the user paused you in Cuthol Live to edit the timeline. Do not start another edit; run `cuthol live wait` (MCP: workspace live_wait) now. It returns when they resume, with their changes.";
+  "PAUSED: the user paused you in Cuthol Live to edit the timeline. The write you already started is still applied as the last allowed one; further writes are refused with G601. Run `cuthol live wait` (MCP: workspace live_wait) now. It returns when they resume, with their changes.";
 
 function pausedNotice(projectDir: string): { line: string; since: string } | null {
   if (process.env[LIVE_ACTOR_ENV] === "human") return null;

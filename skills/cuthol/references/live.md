@@ -25,8 +25,9 @@ After opening, stop thinking about the window.
   field (MCP). Handle those notes first: each line points at exact item refs
   (`cue_12/#title`) — use them directly instead of searching.
 - Notes arrive with your next command result; you cannot be woken while idle.
-- When the user presses Pause in the window, the step you are on still
-  completes; from then on every response starts with a `PAUSED:` line. Stop
+- When the user presses Pause in the window, the first write command after
+  Pause is still applied as the last allowed one; the second write is refused
+  with `G601`. From then on every response starts with a `PAUSED:` line. Stop
   editing and run `live_wait` (CLI: `cuthol live wait`): it returns when they
   resume, with a summary of their edits. Read-only commands still work.
 - If you keep writing after the `PAUSED:` line, writes are refused with `G601`

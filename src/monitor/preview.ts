@@ -13,6 +13,7 @@
  *      checks every cell for `G5_SIGNAL` blank frames, and composites a high-resolution Contact Sheet PNG.
  */
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnWatchedSync } from "../core/subprocess.js";
@@ -677,6 +678,18 @@ export function captureMonitorFrame(options: {
   };
 }
 
+/** Default sheet file: unique per requested time list, stable for the same list. */
+export function buildDefaultSheetPath(
+  monitorDir: string,
+  cols: number,
+  rows: number,
+  revision: number,
+  cellTimestampsMs: number[]
+): string {
+  const atHash = createHash("sha1").update(cellTimestampsMs.join(",")).digest("hex").slice(0, 8);
+  return path.join(monitorDir, `sheet_${cols}x${rows}_r${revision}_${atHash}.png`);
+}
+
 export function captureMonitorSheet(options: {
   workspaceDir: string;
   startMs?: number;
@@ -831,7 +844,13 @@ export function captureMonitorSheet(options: {
     );
   }
 
-  const defaultOut = path.join(paths.monitorDir, `sheet_${cols}x${rows}_r${sequence.meta.revision}.png`);
+  const defaultOut = buildDefaultSheetPath(
+    paths.monitorDir,
+    cols,
+    rows,
+    sequence.meta.revision,
+    cellTimestampsMs
+  );
   const resolvedOut = options.outputPath
     ? path.isAbsolute(options.outputPath)
       ? options.outputPath

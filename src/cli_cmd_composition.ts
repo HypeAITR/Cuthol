@@ -7,8 +7,20 @@ import {
   HyperFramesPresetKind,
   scaffoldHyperFramesComposition,
 } from "./compositor/hyperframes_bridge.js";
-import { CutholError, DIAGNOSTICS } from "./core/diagnostics.js";
+import { CutholDiagnostic, CutholError, DIAGNOSTICS } from "./core/diagnostics.js";
 import { parseTimeMs } from "./core/time.js";
+
+const BARE_DURATION = /^[+-]?\d+(?:\.\d+)?$/;
+
+/** WARN when a bare `--duration` under 100 is read as milliseconds (value unchanged). */
+export function bareDurationWarning(durRaw: string | undefined): CutholDiagnostic | null {
+  if (durRaw === undefined) return null;
+  const raw = durRaw.trim();
+  if (!BARE_DURATION.test(raw)) return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value >= 100) return null;
+  return DIAGNOSTICS.BARE_DURATION_AS_MS(raw);
+}
 import { measureCompositionCues, parseCoordsFrameSelector } from "./compositor/coords_extract.js";
 import { geometryMisuseError, isGeometryAtValue, runGeometryQuery } from "./compositor/coords_query.js";
 import { formatEnvelopeCompact, resolveActionSpecForCommand } from "./mcp/server.js";
@@ -77,7 +89,8 @@ export function runCompositionCommand(ctx: CliCommandContext): CliCommandResult 
     const absCompDir = path.isAbsolute(compDir)
       ? compDir
       : path.resolve(workspaceDir, compDir);
-    const durationMs = parseTimeMs(strFlag(flags, "duration", "3000ms")!);
+    const durRaw = strFlag(flags, "duration", "3000ms")!;
+    const durationMs = parseTimeMs(durRaw);
     const preset = (strFlag(flags, "preset", "counter") as HyperFramesPresetKind) ?? "counter";
     const props = parsePropsJsonFlag(strFlag(flags, "props", "{}")!, "composition.scaffold");
     const transparent = boolFlag(flags, "transparent", true) ?? true;
@@ -91,9 +104,11 @@ export function runCompositionCommand(ctx: CliCommandContext): CliCommandResult 
       props,
       transparent,
     });
+    const durationWarning = bareDurationWarning(strFlag(flags, "duration"));
     emitEnvelopeJson(workspaceDir, "composition.scaffold", {
       action: "composition.scaffold",
       ...res,
+      ...(durationWarning ? { diagnostics: [durationWarning] } : {}),
     });
     return;
   }

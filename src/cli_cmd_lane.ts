@@ -20,6 +20,7 @@ import {
   updateLaneCue,
 } from "./sequence/lanes.js";
 import { boolFlag, numFlag, parseExciseRanges, parsePropsJsonFlag, strFlag } from "./cli_args.js";
+import { bareDurationWarning } from "./cli_cmd_composition.js";
 import {
   CLI_NOT_HANDLED,
   CliCommandContext,
@@ -213,9 +214,11 @@ export function runLaneCommand(ctx: CliCommandContext): CliCommandResult {
     if (addCompAudio !== undefined && addCompAudio !== "mix") {
       emitted = setCueCompositionAudio(workspaceDir, res.cue.id, addCompAudio);
     }
+    const durationWarning = bareDurationWarning(strFlag(flags, "duration"));
     emitEnvelopeJson(workspaceDir, "lane.add-composition", {
       action: "lane.add-composition",
       ...emitted,
+      ...(durationWarning ? { diagnostics: [durationWarning] } : {}),
     });
     return;
   }

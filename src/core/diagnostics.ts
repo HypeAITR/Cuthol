@@ -249,6 +249,14 @@ export const DIAGNOSTICS = {
     ),
   // [script-ext G433, G438–G439]
   // [monitor-scaffold G214–G216]
+  BARE_DURATION_AS_MS: (raw: string) =>
+    createDiagnostic(
+      "CUTHOL-G214",
+      "G1_SCHEMA",
+      "WARN",
+      `Duration '${raw}' was read as ${raw} milliseconds; did you mean seconds? (e.g. ${raw}s)`,
+      `Add a unit to the duration (e.g. '${raw}s' or '${Number(raw) * 1000}ms'). Bare numbers stay milliseconds.`
+    ),
 
   // --- Environment: CUTHOL-G212 ---
   FFMPEG_VERSION_BELOW_SUPPORTED: (tool: string, found: string) =>

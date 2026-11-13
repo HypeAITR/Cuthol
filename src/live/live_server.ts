@@ -463,6 +463,14 @@ export async function runLiveServer(projectDir: string, opts: { port?: number } 
   };
 
   // --- HTTP ---------------------------------------------------------------
+  const tokenBuf = Buffer.from(token, "utf8");
+  /** Constant-time comparison so the token cannot be guessed byte by byte from response timing. */
+  const tokenMatches = (candidate: unknown): boolean => {
+    if (typeof candidate !== "string") return false;
+    const buf = Buffer.from(candidate, "utf8");
+    return buf.length === tokenBuf.length && crypto.timingSafeEqual(buf, tokenBuf);
+  };
+
   const isDataRoute = (pathname: string): boolean =>
     pathname === "/events" || pathname.startsWith("/api/") || pathname.startsWith("/media/") || pathname.startsWith("/comp/");
 
@@ -531,6 +539,9 @@ export async function runLiveServer(projectDir: string, opts: { port?: number } 
     void (async () => {
       const port = (server.address() as { port: number }).port;
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      // Never sniff a served file into another type; only this server may frame its pages.
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Content-Security-Policy", "frame-ancestors 'self'");
       if (!checkHost(req, port)) {
         res.writeHead(403).end("forbidden");
         return;
@@ -541,7 +552,7 @@ export async function runLiveServer(projectDir: string, opts: { port?: number } 
         (url.pathname.startsWith("/comp/") ? (compCookieToken(req) ?? refererToken(req)) : null);
       // Static window files are public (they carry no project data); everything
       // else needs the per-server token.
-      if (isDataRoute(url.pathname) && tok !== token) {
+      if (isDataRoute(url.pathname) && !tokenMatches(tok)) {
         res.writeHead(403).end("forbidden");
         return;
       }
@@ -718,12 +729,14 @@ export async function runLiveServer(projectDir: string, opts: { port?: number } 
         res.writeHead(404).end();
         return;
       }
-      if (url.pathname === "/" && url.searchParams.get("t") === token) {
+      if (url.pathname === "/" && tokenMatches(url.searchParams.get("t"))) {
         res.setHeader("Set-Cookie", `${COMP_COOKIE}=${token}; Path=/comp/; HttpOnly; SameSite=Strict`);
       }
       const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
       const file = path.resolve(LIVE_UI_DIR, rel);
-      if (!file.startsWith(LIVE_UI_DIR) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+      // Separator-aware containment: a sibling folder whose name starts with the UI folder's name is outside.
+      const uiRoot = path.resolve(LIVE_UI_DIR);
+      if (!file.startsWith(uiRoot + path.sep) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
         res.writeHead(404).end();
         return;
       }

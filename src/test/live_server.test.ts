@@ -100,7 +100,7 @@ function httpRequest(
   port: number,
   reqPath: string,
   opts: { method?: string; headers?: Record<string, string>; body?: string } = {}
-): Promise<{ status: number; body: string }> {
+): Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const req = http.request(
       { host: "127.0.0.1", port, path: reqPath, method: opts.method ?? "GET", headers: opts.headers },
@@ -109,7 +109,7 @@ function httpRequest(
         res.on("data", (c: Buffer) => {
           body += c.toString("utf8");
         });
-        res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, body, headers: res.headers }));
       }
     );
     req.on("error", reject);
@@ -228,6 +228,17 @@ test("rejects missing token and forged Host/Origin", async () => {
     const ok = await httpRequest(info.port, `/api/snapshot?t=${info.token}`);
     assert.equal(ok.status, 200);
     assert.equal((JSON.parse(ok.body) as LiveSnapshot).schema, "cuthol.live/1");
+    assert.equal(ok.headers["x-content-type-options"], "nosniff");
+    assert.equal(ok.headers["content-security-policy"], "frame-ancestors 'self'");
+    // a token of the right length but wrong value, and one of another length, are both refused
+    const flipped = (info.token[0] === "a" ? "b" : "a") + info.token.slice(1);
+    assert.equal((await httpRequest(info.port, `/api/snapshot?t=${flipped}`)).status, 403);
+    assert.equal((await httpRequest(info.port, `/api/snapshot?t=${info.token}x`)).status, 403);
+    // static files never resolve outside the window folder (dot segments, encoded or not)
+    for (const p of ["/../live_server.js", "/%2e%2e/live_server.js", "/..%2flive_server.js", "/..%5clive_server.js"]) {
+      const r = await httpRequest(info.port, p);
+      assert.notEqual(r.status, 200, `served ${p}`);
+    }
     // a second ensure reuses the same server
     const again = await ensureLiveServer(dir);
     assert.equal(again.pid, info.pid);

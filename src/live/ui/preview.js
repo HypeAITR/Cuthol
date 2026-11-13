@@ -1094,12 +1094,11 @@ export function mount(root, ctx) {
   store.on("snapshot", (s) => takeSequence(s.sequence, s.snapshot?.project ?? s.project ?? null));
   store.on("delta", (d) => {
     // New revision at the same time, playback continues without a flicker.
-    const project = store.state.snapshot?.project ?? null;
-    if (project) {
-      const clips = d.sequence?.spine?.clips ?? [];
-      let dur = 0;
-      for (const c of clips) dur = Math.max(dur, (c.timeline_in_ms ?? 0) + (c.duration_ms ?? 0));
-      project.duration_ms = dur;
+    // Duration comes from the server (spine and lanes); never recompute it here.
+    const snapshotProject = store.state.snapshot?.project ?? null;
+    const project = snapshotProject ? { ...snapshotProject } : null;
+    if (project && typeof d.duration_ms === "number" && Number.isFinite(d.duration_ms)) {
+      project.duration_ms = d.duration_ms;
     }
     takeSequence(d.sequence, project);
   });

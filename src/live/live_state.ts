@@ -326,5 +326,6 @@ export function buildDelta(args: {
     paths: diffSequenceJson(args.oldSequence, args.newSequence),
     sequence: args.newSequence,
     scenes: buildScenes(args.newSequence, args.token, args.projectDir),
+    duration_ms: computeSequenceDurationMs(args.newSequence as any),
   };
 }

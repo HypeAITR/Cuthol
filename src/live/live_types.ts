@@ -124,6 +124,8 @@ export interface LiveDelta {
   /** The new sequence document (small enough to send whole; the window replaces its copy). */
   sequence: unknown;
   scenes: LiveSceneSummary[];
+  /** Sequence duration at this revision (spine and lanes), the window's single source of truth. */
+  duration_ms: number;
 }
 
 export interface LiveProgressStage {

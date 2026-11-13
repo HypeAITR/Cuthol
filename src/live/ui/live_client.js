@@ -68,6 +68,7 @@ function applyDelta(store, d) {
       const project = { ...(snapshot.project ?? {}) };
       if (sequence.meta?.title != null) project.title = sequence.meta.title;
       if (sequence.stage?.backdrop?.color != null) project.backdrop = sequence.stage.backdrop.color;
+      if (typeof d.duration_ms === "number" && Number.isFinite(d.duration_ms)) project.duration_ms = d.duration_ms;
       snapshot.project = project;
     }
   }

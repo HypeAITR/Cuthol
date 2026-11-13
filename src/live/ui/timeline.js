@@ -132,11 +132,14 @@ export function mount(root, ctx) {
   function rebuild() {
     const seq = ctx.store.state.sequence;
     tracks = [];
-    durationMs = 1000;
+    // Duration is the server's single source of truth (snapshot project header,
+    // kept current by deltas); fall back to the local extent while none arrived.
+    const serverDur = ctx.store.state.snapshot?.project?.duration_ms;
+    let extent = 0;
     const clips = seq?.spine?.clips ?? [];
     const items = clips.map((c) => {
       const end = (c.timeline_in_ms ?? 0) + (c.duration_ms ?? 0);
-      durationMs = Math.max(durationMs, end);
+      extent = Math.max(extent, end);
       return { id: c.id, kind: "clip", start: c.timeline_in_ms ?? 0, end, label: c.asset_handle ?? c.id, ref: c };
     });
     tracks.push({ key: "spine", label: "V1", sub: "Spine", kind: "spine", locked: false, muted: false, items });
@@ -146,11 +149,14 @@ export function mount(root, ctx) {
       const laneItems = cues.map((q) => {
         const start = cueStartMs(seq, q);
         const end = start + (q.duration_ms ?? 0);
-        durationMs = Math.max(durationMs, end);
+        extent = Math.max(extent, end);
         return { id: q.id, kind: "cue", cueKind: q.kind, start, end, label: cueLabel(q), ref: q, lane: lane.id };
       });
       tracks.push({ key: lane.id, label: "", sub: laneTitle(lane.kind), kind: lane.kind, locked: !!lane.locked, muted: !!lane.muted, items: laneItems });
     }
+    durationMs = typeof serverDur === "number" && Number.isFinite(serverDur) && serverDur > 0
+      ? serverDur
+      : Math.max(1000, extent);
     // Short codes (V2/A1/T1…) count visible tracks only.
     let v = 2, a = 1, t = 1;
     for (const tr of showEmpty ? tracks : tracks.filter((x) => x.key === "spine" || x.items.length > 0)) {

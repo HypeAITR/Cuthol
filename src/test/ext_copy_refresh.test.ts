@@ -104,4 +104,10 @@ test("stale Cuthol-written copies refresh on next sync; user edits are left alon
   const drift = detectCompositionExtensionCopyDrift(seq, "kit", paths);
   assert.equal(drift.drifted, true);
   assert.ok(drift.driftedCompositions.includes("compositions/cmp"));
+
+  // An edit below the marker line (the marker survives) is still the user's.
+  fs.writeFileSync(helperCopy, hashV2 + "// user tweak below the marker\n", "utf8");
+  const keptBody = syncEnabledExtensionAssetsToComposition(seq, compDir, "index.html", paths);
+  assert.ok(!keptBody.updatedFiles.includes("assets/cuthol-ext-kit.js"));
+  assert.ok(fs.readFileSync(helperCopy, "utf8").endsWith("// user tweak below the marker\n"));
 });

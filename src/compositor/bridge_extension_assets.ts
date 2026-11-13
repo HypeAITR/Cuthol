@@ -157,8 +157,16 @@ export function syncEnabledExtensionAssetsToComposition(
             } else if (existingHelper === wrappedHelper) {
               recordSyncedFile(ext.name, ext.contentHash, relHelper, wrappedHash);
             } else if (
-              existingHelper.startsWith(CUTHOL_EXT_HELPER_MARKER) ||
-              sidecar.extensions[ext.name]?.files[relHelper] === sha256Hex(existingHelper)
+              (() => {
+                const recorded = sidecar.extensions[ext.name]?.files[relHelper];
+                // With a sync record, only the exact bytes Cuthol last wrote count as
+                // Cuthol-written; an edit anywhere in the file (marker line kept) is the user's.
+                // Without one (copies seeded before the record existed) the marker line is
+                // the only proof available.
+                return recorded !== undefined
+                  ? recorded === sha256Hex(existingHelper)
+                  : existingHelper.startsWith(CUTHOL_EXT_HELPER_MARKER);
+              })()
             ) {
               // Cuthol-written copy from an older pinned hash: refresh in place.
               fs.writeFileSync(destHelperPath, wrappedHelper, "utf8");

@@ -9,7 +9,10 @@ import {
   loadSequence
 } from "../core/workspace.js";
 import { commitVerifiedMutation } from "../verify/gates.js";
-import { syncAllCompositionBridges } from "../compositor/bridge_exporter.js";
+import {
+  syncAllCompositionBridges,
+  syncEnabledExtensionAssetsToComposition,
+} from "../compositor/bridge_exporter.js";
 import { ExtensionScope, EXTENSION_NAME_RE, ExtensionManifest, EXTENSION_MANIFEST_FILENAME } from "./ext_manifest.js";
 import { resolveExtensionRoots, loadExtensionFromDir, resolveExtension } from "./ext_registry.js";
 
@@ -425,6 +428,28 @@ export function enableExtensionInWorkspace(options: {
       syncAllCompositionBridges(seq, paths, { explicit: true });
     } catch {
       // non-blocking bridge sync
+    }
+    try {
+      // The pin just moved to the new content hash: refresh Cuthol-written
+      // extension copies inside every mounted composition. Copies the user
+      // edited are left alone (drift keeps G205).
+      for (const lane of seq.lanes) {
+        for (const cue of lane.cues) {
+          if (cue.kind !== "composition" || !cue.composition) continue;
+          try {
+            syncEnabledExtensionAssetsToComposition(
+              seq,
+              cue.composition.composition_dir,
+              cue.composition.entry_html,
+              paths
+            );
+          } catch {
+            // per-composition refresh is best-effort
+          }
+        }
+      }
+    } catch {
+      // non-blocking extension copy refresh
     }
   });
 

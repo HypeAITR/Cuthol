@@ -98,6 +98,19 @@ export function dedupeScriptErrors(errors: CompositionScriptError[]): Compositio
  * but missing timeline is ERROR (the overlay cannot render; render stops with CUTHOL-G503).
  * Anything else recorded (post-timeline throw, console message) is WARN. No errors is NONE.
  */
+/**
+ * True when a console log line only carries shader/compiler *warnings* (no error,
+ * failure, or exception signal). Such lines come from GPU driver info logs that a
+ * page library forwards to the console (e.g. a "Program Info Log" carrying only
+ * `warning X...` lines while the program links and draws fine). Generic on purpose:
+ * it matches the warning-only shape, not any library name.
+ */
+export function isWarningOnlyCompilerLog(text: string): boolean {
+  if (!/warning/i.test(text)) return false;
+  if (/error|failed|failure|exception|uncaught|rejected/i.test(text)) return false;
+  return /program|shader|compile|link|glsl|angle|d3d|driver|warning\s*x\d+/i.test(text);
+}
+
 export function classifyScriptErrors(
   errors: CompositionScriptError[],
   timelineExpected: boolean,
@@ -216,6 +229,9 @@ export function scriptRecordToDiagnostic(
   if (thrownKind) {
     return DIAGNOSTICS.COMPOSITION_SCRIPT_FAILED_AFTER_TIMELINE(cueId, text, where);
   }
+  if (isWarningOnlyCompilerLog(first.text)) {
+    return DIAGNOSTICS.COMPOSITION_CONSOLE_WARNING_ONLY(cueId, text, where);
+  }
   return DIAGNOSTICS.COMPOSITION_CONSOLE_ERROR(cueId, text, where);
 }
 
@@ -246,9 +262,12 @@ export function parseCheckRuntimeScriptErrors(checkJson: unknown): CompositionSc
   for (const f of findings) {
     if (!f || typeof f !== "object") continue;
     const code = String(f.code ?? "");
-    const kind: ScriptErrorKind = code === "console_error" ? "console" : "pageerror";
     const message = typeof f.message === "string" ? f.message : "";
     if (!message.trim()) continue;
+    // A renderer finding that only carries compiler warnings is console noise even
+    // when the renderer files it under a page-error code: it never "threw".
+    const kind: ScriptErrorKind =
+      code === "console_error" || isWarningOnlyCompilerLog(message) ? "console" : "pageerror";
     const rawFile = typeof f.sourceFile === "string" ? f.sourceFile : typeof f.file === "string" ? f.file : "";
     const flat = rawFile.replace(/\\/g, "/");
     const file = !flat ? undefined : /:\/\/|^[A-Za-z]:\//.test(flat) ? flat.split("/").pop() || undefined : flat;

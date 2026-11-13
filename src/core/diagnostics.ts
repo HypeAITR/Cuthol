@@ -1386,7 +1386,7 @@ export const DIAGNOSTICS = {
   // --- end of provider block ---
 
   // --- Composition script errors: CUTHOL-G430 .. CUTHOL-G434 ---
-  // (G433 and G434 are reserved for future composition page diagnostics.)
+  // (G434 is reserved for future composition page diagnostics.)
 
   COMPOSITION_SCRIPT_FAILED_BEFORE_TIMELINE: (cueId: string, error: string, where: string | null) =>
     createDiagnostic(
@@ -1415,6 +1415,16 @@ export const DIAGNOSTICS = {
       "WARN",
       `Composition '${cueId}' page logged a console error ('${error}'${where ? ` at ${where}` : ""}); the render output is unaffected, but the message signals a real page problem (for example a failed shader compile or a missing asset).`,
       `Inspect the cause${where ? ` (${where})` : ""}, then re-check with 'cuthol composition preview --cue ${cueId}'.`,
+      cueId
+    ),
+
+  COMPOSITION_CONSOLE_WARNING_ONLY: (cueId: string, warning: string, where: string | null) =>
+    createDiagnostic(
+      "CUTHOL-G433",
+      "G4_STAGE",
+      "INFO",
+      `Composition '${cueId}' page logged only shader/compiler warnings ('${warning}'${where ? ` at ${where}` : ""}); nothing threw and the render output is unaffected.`,
+      `No action needed; re-check with 'cuthol composition preview --cue ${cueId}' if the message changes.`,
       cueId
     ),
 

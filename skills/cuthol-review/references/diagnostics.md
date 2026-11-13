@@ -89,6 +89,7 @@ and never reused; they may appear in old projects and logs.
 | G430 | G4 ERROR | Composition script threw before its timeline registered: the overlay cannot render (render stops with G503) and monitor frames show the static unanimated page — don't trust them. `file:line` when known → fix, then `cuthol composition preview --cue <cue_XX>` to refresh; `verify` stays red while the recorded error matches. |
 | G431 | G4 WARN | Composition script threw while the timeline was running (e.g. a `tl.call` callback). Render output unaffected → fix, then re-preview. |
 | G432 | G4 WARN | Composition page logged a `console.error` (e.g. a failed shader compile). Render output unaffected → inspect, then re-preview. |
+| G433 | G4 INFO | Composition page logged only shader/compiler warnings (nothing threw; render output unaffected) → no action needed. |
 | G501 | G5 WARN | True peak above −1 dBTP → lower gain or `mix.normalize`. |
 | G502 | G5 WARN | Blank or backdrop-filled frame (even with a caption/small overlay on top); also emitted after `render` with event timestamps if a spine clip drops to backdrop outside intentional fades. Without spine clips only frames with no visual cue count: dark frames a composition draws itself are not reported. |
 | G503 | G5 ERROR | HyperFrames could not render an overlay; the render stops with `ok:false` and nothing is substituted → open the composition with `composition.preview`, fix it, render again. Renders have no time limit (MCP reports progress and can be cancelled). |

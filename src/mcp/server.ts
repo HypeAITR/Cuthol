@@ -43,6 +43,7 @@ import { detectExternalChanges, formatExternalNotice, formatExternalReminder } f
 import { resolveExtension } from "../extensions/manager.js";
 import { CUTHOL_PROGRESS_PREFIX } from "../core/progress.js";
 import { repairToolArguments, readRevision, tryParseJson, formatEnvelopeCompact, findValuesByKey, stripCutholProgress } from "./mcp_format.js";
+import { drainLiveInbox, formatLiveNotesBlock, LIVE_NOTES_HEADER } from "../live/live_inbox.js";
 export { repairToolArguments, readWorkspaceRevision, translateCliHint, resolveActionSpecForCommand, formatEnvelopeCompact } from "./mcp_format.js";
 export type { FormatEnvelopeCompactOptions } from "./mcp_format.js";
 
@@ -472,7 +473,16 @@ export class CutholMcpServer {
           verbose: false,
           ...(extNote ? { noticeLine: extNote } : {}),
         });
-        return this.textResult(`OK workspace.open · session project is now ${dir}\n\n${summary}`, false);
+        // Opening runs in-process (no CLI envelope), so queued Live notes are delivered here.
+        const live = drainLiveInbox(dir);
+        const openText = `OK workspace.open · session project is now ${dir}\n\n${summary}`;
+        if (!live) return this.textResult(openText, false);
+        const result = this.textResult([openText, ...formatLiveNotesBlock(live.lines)].join("\n"), false);
+        for (const p of live.images) {
+          const img = this.loadImage(path.isAbsolute(p) ? p : path.resolve(dir, p));
+          if (img) result.content.push(img);
+        }
+        return result;
       }
 
       if (spec.tool === "composition" && (spec.action === "write" || spec.action === "read")) {
@@ -765,7 +775,9 @@ export class CutholMcpServer {
     }
 
     if (spec.textOutput && run.code === 0) {
-      return this.textResult(run.stdout.trim(), false);
+      const plain = this.textResult(run.stdout.trim(), false);
+      this.attachLiveSheetsFromText(plain.content, run.stdout, dir);
+      return plain;
     }
 
     const strippedErr = stripCutholProgress(run.stderr);
@@ -794,7 +806,32 @@ export class CutholMcpServer {
         }
       }
     }
+    // Cuthol Live: contact sheets ride along as inline images (same path as monitor images).
+    const liveNotes = (env as Record<string, unknown>).live_notes as { images?: unknown } | undefined;
+    if (liveNotes && Array.isArray(liveNotes.images)) {
+      for (const p of liveNotes.images) {
+        if (typeof p !== "string") continue;
+        const abs = path.isAbsolute(p) ? p : path.resolve(dir, p);
+        const img = this.loadImage(abs);
+        if (img) content.push(img);
+      }
+    } else {
+      this.attachLiveSheetsFromText(content, text, dir);
+    }
     return { content, isError, envelope: env };
+  }
+
+  /**
+   * Markdown answers (brief) carry Live notes as text only; their `sheet:` lines
+   * name the contact sheets, which ride along as inline images too.
+   */
+  private attachLiveSheetsFromText(content: McpContent[], text: string, dir: string): void {
+    const at = text.indexOf(LIVE_NOTES_HEADER);
+    if (at < 0) return;
+    for (const m of text.slice(at).matchAll(/^\s*sheet:\s*(\S+\.png)\s*$/gm)) {
+      const img = this.loadImage(path.isAbsolute(m[1]) ? m[1] : path.resolve(dir, m[1]));
+      if (img) content.push(img);
+    }
   }
 
   /** Downscales a PNG to a JPEG preview (keeps tokens bounded) and returns it as MCP image content. */

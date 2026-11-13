@@ -1,6 +1,6 @@
 # Cuthol
 
-> Cuthol is a local, open-source non-linear video editor built for AI agents. An agent edits through a CLI (`cuthol`) or an MCP server (`cuthol mcp`, 14 tools): a magnetic spine and typed lanes, speech transcription and cleanup, captions, voiceover, loudness and ducking, clip effects and speed ramps, HyperFrames motion graphics composited with alpha, per-frame layout geometry, verification gates, frame previews that match the render, and a journaled undo for every change.
+> Cuthol is a local, open-source non-linear video editor built for AI agents. An agent edits through a CLI (`cuthol`) or an MCP server (`cuthol mcp`, 14 tools): a magnetic spine and typed lanes, speech transcription and cleanup, captions, voiceover, loudness and ducking, clip effects and speed ramps, HyperFrames motion graphics composited with alpha, per-frame layout geometry, verification gates, frame previews that match the render, and a journaled undo for every change. Cuthol Live is a local window where the user watches the edit as it happens, leaves notes on frames that reach the agent with its next result, and can pause the agent to edit the timeline themselves.
 
 Start an agent with `guide(topic="cuthol")` over MCP, or load the `cuthol` skill (installed automatically into detected agent tools on first run). Diagnostics read `[CUTHOL-Gxxx] what | Suggestion: next step`.
 
@@ -17,6 +17,7 @@ Start an agent with `guide(topic="cuthol")` over MCP, or load the `cuthol` skill
 - [cuthol-render](https://github.com/HypeAITR/Cuthol/blob/main/skills/cuthol-render/SKILL.md): presets, overlay cache, encoders, long timelines, post-render checks
 - [cuthol-extensions](https://github.com/HypeAITR/Cuthol/blob/main/skills/cuthol-extensions/SKILL.md): helpers, processors, effects, transitions, recipes, planners, speech and media providers
 - [MCP reference](https://github.com/HypeAITR/Cuthol/blob/main/skills/cuthol/references/mcp.md): tool and argument reference
+- [Cuthol Live](https://github.com/HypeAITR/Cuthol/blob/main/skills/cuthol/references/live.md): the live window — when to open it, user notes, pause and resume
 
 ## Optional
 

@@ -5,10 +5,85 @@ import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import {
   spawnWatchedSync
 } from "../core/subprocess.js";
-import { isPngSequenceBlobDir, resolveCachedCompositionVideoBlob, stageCompositionRenderDir, isValidVideoBlobOnDisk, inspectPngSequenceDir } from "./hf_blobs.js";
+import { isPngSequenceBlobDir, resolveCachedCompositionVideoBlob, stageCompositionRenderDir, isValidVideoBlobOnDisk, inspectPngSequenceDir, readCompositionTimelineSec } from "./hf_blobs.js";
 import { syncScalarVarsAndComputeCompositionHash } from "./hf_cache_state.js";
-import { findLocalHyperFramesCliMjs, hyperFramesProcessEnv } from "./hf_common.js";
+import { copyDirRecursiveSync, findLocalHyperFramesCliMjs, hyperFramesProcessEnv } from "./hf_common.js";
 import { renderHyperFramesCompositionToMp4 } from "./hf_render.js";
+
+/**
+ * Applies render-time scalar variable overrides to a staged composition copy by
+ * rewriting the `default` of each matching `data-composition-variables`
+ * declaration, mirroring how `hyperframes render --variables-file` merges
+ * values over the authored defaults. Only the staged copy is touched.
+ */
+export function applyScalarVarsToStagedHtml(
+  html: string,
+  scalarVars: Record<string, string | number | boolean>
+): string {
+  const keys = Object.keys(scalarVars);
+  if (keys.length === 0) return html;
+  return html.replace(
+    /data-composition-variables\s*=\s*(["'])([\s\S]*?)\1/i,
+    (whole: string, quote: string, raw: string) => {
+      let decls: Array<{ id?: unknown; type?: unknown; default?: unknown } & Record<string, unknown>>;
+      try {
+        const decoded = raw.replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'");
+        decls = JSON.parse(decoded);
+      } catch {
+        return whole;
+      }
+      if (!Array.isArray(decls)) return whole;
+      let changed = false;
+      for (const decl of decls) {
+        if (!decl || typeof decl !== "object" || typeof decl.id !== "string") continue;
+        if (!(decl.id in scalarVars)) continue;
+        const next = scalarVars[decl.id];
+        if (decl.type === "string" && typeof next !== "string") continue;
+        if (decl.type === "number" && typeof next !== "number") continue;
+        if (decl.type === "boolean" && typeof next !== "boolean") continue;
+        if (decl.default !== next) {
+          decl.default = next;
+          changed = true;
+        }
+      }
+      if (!changed) return whole;
+      const serialized = JSON.stringify(decls).replace(/'/g, "&#39;");
+      return `data-composition-variables=${quote}${serialized}${quote}`;
+    }
+  );
+}
+
+/**
+ * Stages a snapshot source directory that carries the render-time scalar
+ * variables: copies the composition and rewrites the variable defaults in the
+ * staged entry HTML so `hyperframes snapshot` (which has no variables option)
+ * sees the same values the render uses via `--variables-file`.
+ * Returns the staged directory, or null when there is nothing to override.
+ */
+export function stageSnapshotDirWithScalarVars(options: {
+  absCompDir: string;
+  entryHtml: string;
+  blobsDir: string;
+  hash: string;
+  scalarVars: Record<string, string | number | boolean>;
+}): string | null {
+  if (Object.keys(options.scalarVars).length === 0) return null;
+  const stagedDir = path.join(
+    options.blobsDir,
+    `hf_snap_vars_${options.hash}_${process.pid}_${Date.now()}`
+  );
+  fs.rmSync(stagedDir, { recursive: true, force: true });
+  copyDirRecursiveSync(options.absCompDir, stagedDir);
+  const stagedEntryPath = path.join(stagedDir, options.entryHtml);
+  if (fs.existsSync(stagedEntryPath)) {
+    const stagedHtml = fs.readFileSync(stagedEntryPath, "utf8");
+    const nextHtml = applyScalarVarsToStagedHtml(stagedHtml, options.scalarVars);
+    if (nextHtml !== stagedHtml) {
+      fs.writeFileSync(stagedEntryPath, nextHtml, "utf8");
+    }
+  }
+  return stagedDir;
+}
 
 export function resolveFramePngInPngSequenceDir(dirPath: string, frameIdx: number): string | null {
   try {
@@ -224,7 +299,9 @@ export function renderHyperFramesSingleFramePng(options: {
   }
 
   const durationSec = Math.max(0.1, Number((options.durationMs / 1000).toFixed(3)));
-  const totalFrames = Math.max(1, Math.round(durationSec * options.fps));
+  // Past the composition's own timeline the cue holds its last frame.
+  const compTimelineSec = readCompositionTimelineSec(htmlSource);
+  const totalFrames = Math.max(1, Math.round(Math.min(durationSec, compTimelineSec ?? durationSec) * options.fps));
   const frameIdx = Math.max(
     0,
     Math.min(totalFrames - 1, Math.floor(options.localSec * options.fps + 1e-6))
@@ -246,7 +323,7 @@ export function renderHyperFramesSingleFramePng(options: {
     opaqueBackdropColor: options.opaqueBackdropColor,
     backdropImagePath: options.backdropImagePath,
   });
-  const { hash, nativeHash, legacyHash, isSceneHost, nativeWidth, nativeHeight, targetWidth, targetHeight } =
+  const { hash, nativeHash, legacyHash, scalarVars, isSceneHost, nativeWidth, nativeHeight, targetWidth, targetHeight } =
     hashInfo;
 
   fs.mkdirSync(options.blobsDir, { recursive: true });
@@ -310,6 +387,7 @@ export function renderHyperFramesSingleFramePng(options: {
       targetWidth !== nativeWidth ||
       targetHeight !== nativeHeight;
     let tempSceneHostDir: string | null = null;
+    let tempVarsDir: string | null = null;
     try {
       let targetSnapDir = absCompDir;
       if (needsStage) {
@@ -330,6 +408,27 @@ export function renderHyperFramesSingleFramePng(options: {
           backdropImagePath: options.backdropImagePath,
         });
         targetSnapDir = tempSceneHostDir;
+      }
+      if (Object.keys(scalarVars).length > 0) {
+        if (targetSnapDir === absCompDir) {
+          tempVarsDir = stageSnapshotDirWithScalarVars({
+            absCompDir,
+            entryHtml: options.entryHtml,
+            blobsDir: options.blobsDir,
+            hash,
+            scalarVars,
+          });
+          if (tempVarsDir) targetSnapDir = tempVarsDir;
+        } else {
+          const stagedEntryPath = path.join(targetSnapDir, options.entryHtml);
+          if (fs.existsSync(stagedEntryPath)) {
+            const stagedHtml = fs.readFileSync(stagedEntryPath, "utf8");
+            const nextHtml = applyScalarVarsToStagedHtml(stagedHtml, scalarVars);
+            if (nextHtml !== stagedHtml) {
+              fs.writeFileSync(stagedEntryPath, nextHtml, "utf8");
+            }
+          }
+        }
       }
       const snapProc = spawnWatchedSync(
         process.execPath,
@@ -378,6 +477,13 @@ export function renderHyperFramesSingleFramePng(options: {
       if (tempSceneHostDir && fs.existsSync(tempSceneHostDir)) {
         try {
           fs.rmSync(tempSceneHostDir, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
+      if (tempVarsDir && fs.existsSync(tempVarsDir)) {
+        try {
+          fs.rmSync(tempVarsDir, { recursive: true, force: true });
         } catch {
           // ignore
         }
@@ -459,9 +565,11 @@ export function renderHyperFramesBatchFramesPng(options: {
   }
 
   const durationSec = Math.max(0.1, Number((options.durationMs / 1000).toFixed(3)));
-  const totalFrames = Math.max(1, Math.round(durationSec * options.fps));
+  // Past the composition's own timeline the cue holds its last frame.
+  const compTimelineSec = readCompositionTimelineSec(htmlSource);
+  const totalFrames = Math.max(1, Math.round(Math.min(durationSec, compTimelineSec ?? durationSec) * options.fps));
 
-  const { hash, nativeHash, isSceneHost, nativeWidth, nativeHeight, targetWidth, targetHeight } =
+  const { hash, nativeHash, scalarVars, isSceneHost, nativeWidth, nativeHeight, targetWidth, targetHeight } =
     syncScalarVarsAndComputeCompositionHash({
       absCompDir,
       entryHtml: options.entryHtml,
@@ -560,6 +668,7 @@ export function renderHyperFramesBatchFramesPng(options: {
       targetWidth !== nativeWidth ||
       targetHeight !== nativeHeight;
     let tempSceneHostDir: string | null = null;
+    let tempVarsDir: string | null = null;
     try {
       let targetSnapDir = absCompDir;
       if (needsStage) {
@@ -580,6 +689,27 @@ export function renderHyperFramesBatchFramesPng(options: {
           backdropImagePath: options.backdropImagePath,
         });
         targetSnapDir = tempSceneHostDir;
+      }
+      if (Object.keys(scalarVars).length > 0) {
+        if (targetSnapDir === absCompDir) {
+          tempVarsDir = stageSnapshotDirWithScalarVars({
+            absCompDir,
+            entryHtml: options.entryHtml,
+            blobsDir: options.blobsDir,
+            hash,
+            scalarVars,
+          });
+          if (tempVarsDir) targetSnapDir = tempVarsDir;
+        } else {
+          const stagedEntryPath = path.join(targetSnapDir, options.entryHtml);
+          if (fs.existsSync(stagedEntryPath)) {
+            const stagedHtml = fs.readFileSync(stagedEntryPath, "utf8");
+            const nextHtml = applyScalarVarsToStagedHtml(stagedHtml, scalarVars);
+            if (nextHtml !== stagedHtml) {
+              fs.writeFileSync(stagedEntryPath, nextHtml, "utf8");
+            }
+          }
+        }
       }
 
       const snapProc = spawnWatchedSync(
@@ -650,6 +780,13 @@ export function renderHyperFramesBatchFramesPng(options: {
       if (tempSceneHostDir && fs.existsSync(tempSceneHostDir)) {
         try {
           fs.rmSync(tempSceneHostDir, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
+      if (tempVarsDir && fs.existsSync(tempVarsDir)) {
+        try {
+          fs.rmSync(tempVarsDir, { recursive: true, force: true });
         } catch {
           // ignore
         }

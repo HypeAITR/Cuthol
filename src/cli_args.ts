@@ -37,10 +37,16 @@ const BOOLEAN_FLAGS = new Set([
   "all",
   "refresh",
   "force",
+  // cuthol live
+  "global",
+  "no-window",
 ]);
 
 export const KNOWN_CLI_FLAGS = new Set([
   ...BOOLEAN_FLAGS,
+  // cuthol live
+  "port",
+  "timeout",
   "format",
   "dir",
   "project",
@@ -393,6 +399,12 @@ const REST_BUDGETS: Record<string, RestBudget> = {
 
   "mix.polish-voice": { max: 1, occupiedBy: ["clips", "clip"] },
   "mix.beat-align": { max: 1, occupiedBy: ["bgm-handle"] },
+
+  "settings": { max: 0 },
+  "settings.list": { max: 0 },
+  "settings.get": { max: 1 },
+  "settings.set": { max: 2 },
+  "settings.reset": { max: 1 },
 
   "monitor.frame": { max: 1, occupiedBy: ["at"] },
 

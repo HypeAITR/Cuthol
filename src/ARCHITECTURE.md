@@ -44,6 +44,7 @@ monitor/     frame / sheet / timeline images
 verify/      the five gates
 brief/       lens-based project summary
 extensions/  manager (facade): manifest, registry, lifecycle, processor, recipe, events, planner
+live/        Cuthol Live: local server + window (src/live/ui, plain HTML/CSS/JS), write lock, notes inbox
 ```
 
 ## Directory map
@@ -174,3 +175,15 @@ extensions/  manager (facade): manifest, registry, lifecycle, processor, recipe,
 | Monitor differs from render | `render/render_frames.ts`, `compositor/hf_frames.ts` |
 | Cleanup cut edges | `speech/cleanup_acoustic.ts`, `speech/cleanup_plan.ts` |
 | Extension behaviour | `extensions/ext_*.ts` |
+
+### live/
+| File | Responsibility |
+|---|---|
+| `live_types.ts` | The `cuthol.live/1` contract: files under `.cuthol/live/`, server events, note packets. |
+| `live_paths.ts` | Paths under `.cuthol/live/`; the window's static files (`src/live/ui/`, served from source). |
+| `live_lock.ts` | `assertLiveWriteAllowed`: every sequence write checks it; G601 while the user holds the lock. |
+| `live_inbox.ts` | Notes from the window: write, peek, drain into the next CLI/MCP response (`live_notes`). |
+| `live_server.ts` | Local HTTP/SSE server: state feed, notes, lock, human edits. |
+| `live_window.ts` | Opens the window (app-mode Chromium, else default browser). |
+| `live_config.ts` | Open mode `ask|on|off` (env > project > user). |
+| `ui/` | The window: `app.js` shell + store, one `<region>.js/.css` per panel, `live_client.js` connection. |

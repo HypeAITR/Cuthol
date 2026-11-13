@@ -1,0 +1,12 @@
+/* Tab panel: Clip Info | Notes. The existing inspector and notes regions mount
+   into the panes below; this module only owns the tab bar and switching. */
+.kt-tabs { display: flex; gap: var(--s-1); padding: var(--s-2) var(--s-3) 0; flex: none; }
+.kt-tab { border: 0; background: transparent; color: var(--text-3); font-size: var(--fs-13); font-weight: var(--fw-semibold); padding: var(--s-2) var(--s-2); cursor: pointer; border-bottom: 2px solid transparent; }
+.kt-tab[aria-selected="true"] { color: var(--text-1); border-bottom-color: var(--text-1); }
+.kt-tab:hover { color: var(--text-1); }
+.kt-panes { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.kt-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.kt-pane[hidden] { display: none; }
+.kt-pane .panel-head { display: none; }
+.kt-pane .panel-body { flex: 1; }
+/* The notes panel already draws its own list; the tab keeps its head hidden. */

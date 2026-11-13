@@ -1,0 +1,30 @@
+.tl-toolbar { display: flex; align-items: center; gap: var(--s-1); padding: var(--s-2) var(--s-3); flex: none; }
+.tl-toolbar .spacer { flex: 1; }
+.tl-toolbar .tl-mode { display: none; }
+.tl-zoom { width: 160px; accent-color: var(--accent); }
+.tl-body { flex: 1; min-height: 0; display: flex; }
+.tl-labels { flex: none; width: var(--track-label-w); overflow: hidden; border-right: 1px solid var(--line); }
+.tl-labels-inner { display: flex; flex-direction: column; padding-top: var(--ruler-h); }
+.tl-label { height: var(--track-h); flex: none; display: flex; align-items: center; gap: var(--s-1); padding: 0 var(--s-2); border-bottom: 1px solid var(--line); min-width: 0; }
+.tl-label-text { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: var(--s-2); overflow: hidden; }
+.tl-label-code { color: var(--text-1); font-size: var(--fs-12); flex: none; }
+.tl-label-sub { color: var(--text-3); font-size: var(--fs-11); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-head-btn { width: 26px; height: 26px; display: grid; place-items: center; border-radius: var(--r-sm); border: 0; background: transparent; color: var(--text-3); cursor: pointer; flex: none; }
+.tl-head-btn .icon { width: 14px; height: 14px; }
+.tl-head-btn:disabled { cursor: default; opacity: .7; }
+.tl-head-btn:not(:disabled):hover { background: var(--bg-hover); color: var(--text-1); }
+.tl-head-btn[aria-pressed="true"] { color: var(--amber); }
+.tl-scroll { flex: 1; min-width: 0; overflow: auto; }
+.tl-content { position: relative; min-height: 100%; }
+/* The view is one viewport wide and redrawn on scroll: it must stay pinned to the visible area. */
+.tl-view { position: sticky; left: 0; top: 0; display: flex; flex-direction: column; }
+.tl-ruler { display: block; position: sticky; top: 0; z-index: 3; background: var(--bg-panel); cursor: ew-resize; }
+.tl-tracks { display: flex; flex-direction: column; }
+.tl-track { display: block; cursor: pointer; }
+/* playhead: blue triangle handle + straight line */
+.tl-playhead { position: absolute; top: 0; bottom: 0; left: 0; width: 0; border-left: 2px solid var(--playhead); pointer-events: none; z-index: 5; }
+.tl-playhead::before { content: ""; position: absolute; top: 2px; left: -7px; border: 6px solid transparent; border-top: 8px solid var(--playhead); }
+/* agent line: amber dashed, click to follow */
+.tl-agent { position: absolute; top: 0; bottom: 0; left: 0; width: 0; border: 0; border-left: 2px dashed var(--amber); background: transparent; padding: 0; cursor: pointer; z-index: 4; }
+.tl-agent-tag { position: absolute; top: 3px; left: 5px; font-size: 9px; font-weight: var(--fw-semibold); color: #0b0d0f; background: var(--amber); border-radius: 3px; padding: 2px 4px; white-space: nowrap; }
+.tl-agent.following .tl-agent-tag { outline: 2px solid #fff; }

@@ -1,0 +1,36 @@
+/* Human editing (region F). Tokens only; no new colours. */
+.ed-pause svg { flex: none; }
+.ed-sep { width: 1px; height: 20px; background: var(--line); margin: 0 var(--s-1); flex: none; }
+
+/* drag-handle layer over the timeline content (content coordinates) */
+.ed-layer { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
+.ed-handle { position: absolute; pointer-events: auto; border-radius: var(--r-sm); touch-action: none; }
+.ed-edge { background: var(--accent-weak); border: 1px solid var(--accent); }
+.ed-edge:hover { background: var(--accent); opacity: 0.75; }
+.ed-body { background: transparent; border: 1px dashed transparent; }
+.ed-body:hover { border-color: var(--accent); }
+.ed-ghost { position: absolute; background: var(--accent-weak); border: 1px dashed var(--accent-strong); border-radius: var(--r-sm); pointer-events: none; }
+
+/* short status/error lines */
+.ed-toast {
+  position: fixed; left: 50%; bottom: var(--s-6); transform: translateX(-50%);
+  max-width: min(640px, 80vw); padding: var(--s-2) var(--s-4);
+  background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  color: var(--text-1); font-size: var(--fs-12); z-index: 60; display: none;
+}
+.ed-toast.show { display: block; }
+
+/* Edit tools are inert while the agent holds the timeline: dimmed, and the
+   pointer passes through so the toolbar can show why. */
+.icon-btn[data-edit-action]:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
+body:not([data-mode="human"]) [data-region="timeline"] .tl-tracks,
+body:not([data-mode="human"]) [data-region="timeline"] .tl-labels { opacity: 0.6; transition: opacity 160ms ease; }
+body[data-mode="human"] [data-region="timeline"] .tl-tracks,
+body[data-mode="human"] [data-region="timeline"] .tl-labels { transition: opacity 160ms ease; }
+.ed-hint {
+  position: fixed; z-index: 60; display: none; align-items: center; gap: var(--s-2);
+  padding: var(--s-1) var(--s-3); background: var(--bg-raised); border: 1px solid var(--line-strong);
+  border-radius: var(--r-md); color: var(--text-1); font-size: var(--fs-12); white-space: nowrap; pointer-events: none;
+}
+.ed-hint.show { display: inline-flex; }
+.ed-hint svg { width: 14px; height: 14px; flex: none; color: var(--accent-strong); }

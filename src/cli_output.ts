@@ -1,6 +1,7 @@
 // CLI output state, command handler context, and envelope emission helpers (split out of cli.ts).
 import { buildWorkspaceEnvelopeHeader } from "./core/workspace.js";
 import { formatEnvelopeCompact } from "./mcp/server.js";
+import { drainLiveInbox } from "./live/live_inbox.js";
 
 export const CLI_NOT_HANDLED = Symbol("CLI_NOT_HANDLED");
 export type CliCommandResult = void | typeof CLI_NOT_HANDLED;
@@ -53,6 +54,14 @@ export function emitEnvelopeObject(
   command: string,
   envObj: Record<string, unknown>
 ): void {
+  // Cuthol Live: notes the user queued in the window ride along with the next response.
+  let liveNotes: ReturnType<typeof drainLiveInbox> = null;
+  try {
+    liveNotes = drainLiveInbox(workspaceDir);
+  } catch {
+    liveNotes = null;
+  }
+  if (liveNotes) envObj = { ...envObj, live_notes: liveNotes };
   if (activeCliCompactMode) {
     const { text } = formatEnvelopeCompact({
       envelope: envObj,

@@ -25,12 +25,29 @@ import {
 import {
   CutholError,
   DIAGNOSTICS,
+  type CutholDiagnostic,
 } from "../core/diagnostics.js";
+import { beginLiveRender, failLiveRender, finishLiveRender } from "../live/live_progress.js";
 import {
   resolveHyperFramesWorkers,
   resolveMaxClipsPerRenderSegment,
   resolveOverlayConcurrency,
 } from "../core/env.js";
+import { storedSetting } from "../core/settings.js";
+
+/** Default render output folder: `render.output_dir` (project scope) or `<root>/output`. */
+export function resolveRenderOutputDir(rootDir: string): string {
+  try {
+    const stored = storedSetting(rootDir, "render.output_dir");
+    if (stored && typeof stored.value === "string" && stored.value.trim()) {
+      const v = stored.value.trim();
+      return path.isAbsolute(v) ? v : path.resolve(rootDir, v);
+    }
+  } catch {
+    // Unreadable settings: keep the built-in default.
+  }
+  return path.join(rootDir, "output");
+}
 import { progressBegin, progressStop } from "../core/progress.js";
 import { CutholSequence } from "../core/schema.js";
 import { loadSequence, WorkspacePaths } from "../core/workspace.js";
@@ -132,7 +149,7 @@ function prepareSequenceRender(options: {
   const activeEncoder: VideoEncoderCodec = encDecision.encoder;
   const encoderFallback: RenderEncoderFallback | null = encDecision.fallback;
 
-  const defaultOut = path.join(paths.rootDir, "output", `render_r${sequence.meta.revision}_${preset}.mp4`);
+  const defaultOut = path.join(resolveRenderOutputDir(paths.rootDir), `render_r${sequence.meta.revision}_${preset}.mp4`);
   const resolvedOut = options.outputPath
     ? path.isAbsolute(options.outputPath)
       ? options.outputPath
@@ -159,6 +176,18 @@ function prepareSequenceRender(options: {
     concurrency: overlayConcurrency,
     workers,
     nativeCaptureForMasterReuse: nativeCapture,
+  });
+  // Live hook only: mirrors stages into .cuthol/live/progress.json (plan/output untouched).
+  beginLiveRender({
+    projectDir: paths.rootDir,
+    preset,
+    frames: Math.max(1, Math.round((totalDurationMs / 1000) * Math.max(1, sequence.stage.fps))),
+    comps: uniqueCompCount,
+    footageSec: totalDurationMs / 1000,
+    expectOverlay: uniqueCompCount > 0,
+    encoder: activeEncoder,
+    workers,
+    output: resolvedOut,
   });
   if (uniqueCompCount > 0) progressBegin("overlay", uniqueCompCount);
 
@@ -298,6 +327,22 @@ function buildRenderOutputSummary(params: {
   };
 }
 
+/** Short codes of the post-render scan diagnostics for the live window. */
+const LIVE_SCAN_FINDINGS = new Map([
+  ["CUTHOL-G502", "G502"],
+  ["CUTHOL-G506", "G506"],
+  ["CUTHOL-G508", "G508"],
+]);
+
+function collectLiveScanFindings(diagnostics: CutholDiagnostic[]): string[] {
+  const out = new Set<string>();
+  for (const d of diagnostics) {
+    const short = LIVE_SCAN_FINDINGS.get(d.code);
+    if (short) out.add(short);
+  }
+  return [...out].sort();
+}
+
 export function renderSequenceToMp4(options: {
   workspaceDir: string;
   outputPath?: string;
@@ -316,6 +361,7 @@ export function renderSequenceToMp4(options: {
 
     fs.renameSync(prep.tmpOut, prep.resolvedOut);
     const stat = fs.statSync(prep.resolvedOut);
+    const diagsBeforeScans = prep.verification.diagnostics.length;
     const {
       blankScan,
       blankScanMs,
@@ -330,6 +376,7 @@ export function renderSequenceToMp4(options: {
       maxItemsPerSegment: prep.maxItemsPerSegment,
       verification: prep.verification,
     });
+    finishLiveRender(collectLiveScanFindings(prep.verification.diagnostics.slice(diagsBeforeScans)));
 
     return buildRenderOutputSummary({
       prep,
@@ -341,6 +388,16 @@ export function renderSequenceToMp4(options: {
       audioHealth,
       audioHealthMs,
     });
+  } catch (e) {
+    // Live mirror only: the stopping diagnostic rides the progress document so
+    // the window can name the failure (the render itself still throws).
+    if (e instanceof CutholError) {
+      const d = e.diagnostic;
+      failLiveRender({ code: d.code, message: d.what.slice(0, 300), suggestion: d.suggestion.slice(0, 300) });
+    } else {
+      failLiveRender({ code: "ERROR", message: String((e as Error)?.message ?? e).slice(0, 300) });
+    }
+    throw e;
   } finally {
     setDraftNativeOverlayCapture(false);
     progressStop();

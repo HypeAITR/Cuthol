@@ -48,6 +48,12 @@ export function printHelp(): void {
       "  cuthol skills check [--agent <id>[,<id>]] [--dir <skills-dir>]",
       "  cuthol skills remove [--agent <id>[,<id>]] [--dir <skills-dir>]",
       "  cuthol mcp",
+      "  cuthol live open [--no-window] [--dir <dir>]",
+      "  cuthol live status [--dir <dir>]",
+      "  cuthol live wait [--timeout <sec>] [--dir <dir>]",
+      "  cuthol live config [--mode ask|on|off] [--global] [--dir <dir>]",
+      "  cuthol live stop [--dir <dir>]",
+      "  cuthol settings [list | get <key> | set <key> <value> | reset <key>] [--dir <dir>]",
       "",
       "Global output flags: [--compact | --format text|json]",
     ].join("\n")

@@ -33,6 +33,7 @@ import {
   refreshManifestIfWasClean,
   restoreForJournalTraversal,
 } from "./external_changes.js";
+import { assertLiveWriteAllowed } from "../live/live_lock.js";
 
 export const SEQUENCE_FILENAME = "cuthol.sequence.json";
 export const STATE_DIRNAME = ".cuthol";
@@ -225,6 +226,7 @@ export function commitSequenceMutation<T>(
   mutator: (seq: CutholSequence, paths: WorkspacePaths) => T,
   options: CommitSequenceMutationOptions = {}
 ): { result: T; sequence: CutholSequence; revision: number } {
+  assertLiveWriteAllowed(dir, operation);
   const { paths, sequence } = loadSequence(dir);
   const cloned: CutholSequence = structuredClone(sequence);
   const extPrestate = captureCommitPrestate(paths, sequence, { stashPending: true });
@@ -336,6 +338,7 @@ export function updateSequenceInPlace(
   dir: string,
   mutator: (seq: CutholSequence, paths: WorkspacePaths) => void
 ): CutholSequence {
+  assertLiveWriteAllowed(dir, "sequence.update");
   const { paths, sequence } = loadSequence(dir);
   const cloned: CutholSequence = structuredClone(sequence);
   const extPrestate = captureCommitPrestate(paths, sequence);
@@ -485,6 +488,7 @@ export function stepJournal(
   const opts: StepJournalOptions =
     typeof stepsOrOpts === "number" ? { steps: stepsOrOpts } : stepsOrOpts;
 
+  if (!opts.dryRun) assertLiveWriteAllowed(dir, `journal.${direction}`);
   const { paths, sequence: currentSeq } = loadSequence(dir);
   const manifest = loadJournalManifest(paths);
   const idx = manifest.entries.findIndex((e) => e.revision === manifest.cursor_revision);

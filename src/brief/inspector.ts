@@ -6,6 +6,8 @@
  */
 
 import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
+import { activeCliGroup, activeCliWorkspaceDir } from "../cli_output.js";
+import { drainLiveInbox, formatLiveNotesBlock } from "../live/live_inbox.js";
 import { CutholSequence, LaneCue, SpineClip } from "../core/schema.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
 import { formatTimecode } from "../core/time.js";
@@ -92,7 +94,23 @@ export function renderSequenceBrief(seq: CutholSequence, options: BriefOptions =
       md = renderDetailLens(seq, options.targetIds ?? []);
       break;
   }
-  return options.noticeLine ? `${options.noticeLine}\n${md}` : md;
+  const out = options.noticeLine ? `${options.noticeLine}\n${md}` : md;
+  return appendLiveNotesIfCliBrief(out);
+}
+
+// Cuthol Live: the markdown brief path prints this string directly, so queued
+// user notes are attached here. Only for a real `brief` CLI run (tests and
+// library callers leave activeCliGroup empty); untouched when inbox is empty.
+function appendLiveNotesIfCliBrief(md: string): string {
+  if (activeCliGroup !== "brief") return md;
+  let notes: ReturnType<typeof drainLiveInbox> = null;
+  try {
+    notes = drainLiveInbox(activeCliWorkspaceDir);
+  } catch {
+    return md;
+  }
+  if (!notes) return md;
+  return [md, ...formatLiveNotesBlock(notes.lines)].join("\n");
 }
 
 function renderOverviewLens(seq: CutholSequence): string {

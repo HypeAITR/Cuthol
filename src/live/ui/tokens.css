@@ -1,0 +1,60 @@
+/* Cuthol Live design tokens.
+   Every size is a multiple of 4; layout spacing uses 8/16/24. Do not introduce new colours in modules —
+   add a token here if one is missing. No gradients, glows or purple. */
+:root {
+  /* surfaces (darkest → lightest) */
+  --bg-app: #0b0d0f;        /* window background */
+  --bg-topbar: #1a1d21;     /* top bar: one tone lighter than the work area */
+  --bg-canvas: #101214;     /* area between panels */
+  --bg-panel: #15171a;      /* panels */
+  --bg-raised: #1b1e21;     /* rows, inputs, cards inside panels */
+  --bg-hover: #22252a;
+  --bg-track: #121417;      /* timeline track lane */
+  --line: #24272c;          /* hairline separators, panel borders */
+  --line-strong: #30343a;
+
+  /* text */
+  --text-1: #e7e9ec;        /* primary */
+  --text-2: #9ba0a7;        /* secondary labels */
+  --text-3: #6b7079;        /* tertiary, timecodes */
+  --text-inverse: #0b0d0f;
+
+  /* accent (reference blue) and states */
+  --accent: #5b8def;
+  --accent-strong: #79a3f5;
+  --accent-weak: rgba(91, 141, 239, 0.16);
+  --amber: #d29922;
+  --amber-weak: rgba(210, 153, 34, 0.16);
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f05a4f;
+  --playhead: #5b8def;
+
+  /* timeline item fills (muted, never saturated) */
+  --clip-video: #2a2e35;
+  --clip-title: #2b2e3d;
+  --clip-caption: #263238;
+  --clip-audio: #262a2e;
+  --wave: #5a6069;
+
+  /* type */
+  --font: "Inter", "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", ui-monospace, Consolas, monospace;
+  --fs-11: 11px; --fs-12: 12px; --fs-13: 13px; --fs-14: 14px; --fs-16: 16px;
+  --fw-regular: 400; --fw-medium: 500; --fw-semibold: 600;
+
+  /* spacing / shape */
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 20px; --s-6: 24px; --s-8: 32px;
+  --r-sm: 4px; --r-md: 6px; --r-lg: 10px;
+
+  /* layout */
+  --topbar-h: 52px;
+  --scenes-w: 232px;
+  --side-w: 320px;
+  --tl-h: 300px;
+  --pv-tall-w: 420px;
+  --gutter: 16px;
+  --track-h: 44px;
+  --track-label-w: 190px;
+  --ruler-h: 46px;
+}

@@ -224,7 +224,7 @@ export async function transcribeLibraryAsset(options: {
               "pcm_s16le",
               tmpWav,
             ],
-            { encoding: "utf8" }
+            { encoding: "utf8", windowsHide: true }
           );
           const tmpOk =
             proc.status === 0 &&

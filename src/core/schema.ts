@@ -383,11 +383,13 @@ export interface CutholSequence {
     tts?: string;
   };
   /**
-   * Retired reviewer keys (`coords_suppress`, `coords_rules`) from the removed layout
-   * warning system: ignored, but preserved so old projects keep opening and undo
-   * stays consistent (no migration rewrites the file outside the journal).
+   * Reviewer scratch space. Retired keys (`coords_suppress`, `coords_rules`)
+   * from the removed layout warning system are ignored but preserved so old
+   * projects keep opening and undo stays consistent (no migration rewrites the
+   * file outside the journal). `live_mode` is the Cuthol Live window opening
+   * behaviour for this project (`live config` to change; G1 ignores it).
    */
-  review?: Record<string, unknown>;
+  review?: Record<string, unknown> & { live_mode?: "ask" | "on" | "off" };
 }
 
 export function resolveAspectDimensions(aspect: AspectPreset): { width: number; height: number } {

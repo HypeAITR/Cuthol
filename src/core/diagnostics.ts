@@ -70,6 +70,174 @@ export const DIAGNOSTICS = {
       `First inspect the diff with 'cuthol workspace changes show', then run 'cuthol workspace changes adopt' or 'cuthol workspace changes revert' and retry the operation.`
     ),
 
+  // --- Cuthol Live: CUTHOL-G601..G619 ---
+  // Blocks: G601 lock (contract) · G602–G605 server/inbox · G606–G608 window/timeline ·
+  // G609–G612 live preview/proxies · G613–G615 progress/config · G616–G617 notes · G618–G619 human edits.
+  LIVE_PAUSED_BY_USER: (operation: string, since: string) =>
+    createDiagnostic(
+      "CUTHOL-G601",
+      "G1_SCHEMA",
+      "ERROR",
+      `The user paused the agent in the Cuthol Live window (since ${since}) and is editing the timeline; '${operation}' was not applied.`,
+      `Do not retry yet. Run 'cuthol live wait' (MCP: workspace action=live_wait); it returns when the user resumes, with a summary of their edits. Read-only commands still work.`
+    ),
+  // [live:A G602–G605]
+  LIVE_SERVER_START_FAILED: (dir: string) =>
+    createDiagnostic(
+      "CUTHOL-G602",
+      "SYS",
+      "ERROR",
+      `The Cuthol Live server for '${dir}' did not start within 10 s.`,
+      `Check '.cuthol/live/server.log' in the project, stop any stale server with 'cuthol live stop --dir "${dir}"', and retry 'cuthol live open'.`
+    ),
+  // [live:B G606–G608]
+  LIVE_WINDOW_OPEN_FAILED: (detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G606",
+      "SYS",
+      "WARN",
+      `The Cuthol Live window could not be opened (${detail}). The live server keeps running; the agent's work continues.`,
+      `Open the URL from 'cuthol live open' manually in Edge or Chrome, or retry once the browser is installed.`
+    ),
+  LIVE_THUMB_FAILED: (sceneId: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G607",
+      "SYS",
+      "WARN",
+      `Scene thumbnail for '${sceneId}' could not be rendered (${detail}); the scene list shows a placeholder.`,
+      `Check that the scene's source media exists and 'monitor frame' works for the project, then re-open the Live window.`,
+      sceneId
+    ),
+  // [live:C G609–G612]
+  LIVE_PROXY_ENCODE_FAILED: (handle: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G609",
+      "G2_ASSETS",
+      "WARN",
+      `Preview proxy for '${handle}' could not be encoded (${detail}); the window plays the original media instead.`,
+      `Check that ffmpeg is on PATH and the source file is readable, then re-open the Live window to retry.`
+    ),
+  LIVE_PROXY_SOURCE_MISSING: (handle: string) =>
+    createDiagnostic(
+      "CUTHOL-G610",
+      "G2_ASSETS",
+      "WARN",
+      `Preview proxy for '${handle}' was requested but the library asset file is missing.`,
+      `Relink or re-import the asset; the preview falls back to the original media path.`
+    ),
+  LIVE_COMP_SERVE_BLOCKED: (cueId: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G611",
+      "G1_SCHEMA",
+      "WARN",
+      `Composition files for cue '${cueId}' could not be served to the Live preview (${detail}).`,
+      `Check that the cue's composition_dir exists inside the project and entry_html is present.`
+    ),
+  LIVE_EXACT_FRAME_FAILED: (atMs: number, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G612",
+      "G5_SIGNAL",
+      "WARN",
+      `Exact preview frame at ${atMs}ms could not be rendered (${detail}).`,
+      `Run 'cuthol monitor frame --at ${atMs}ms' to see the full error.`
+    ),
+  // [live:D G613–G615]
+  LIVE_CONFIG_INVALID_MODE: (where: string, value: string) =>
+    createDiagnostic(
+      "CUTHOL-G613",
+      "G1_SCHEMA",
+      "ERROR",
+      `Invalid Cuthol Live mode '${value}' in ${where}; expected 'ask', 'on' or 'off'.`,
+      `Run 'cuthol live config --mode ask|on|off' (add '--global' for the user-level setting) to fix it.`
+    ),
+  LIVE_CONFIG_WRITE_FAILED: (file: string, reason: string) =>
+    createDiagnostic(
+      "CUTHOL-G614",
+      "SYS",
+      "ERROR",
+      `Could not write the Cuthol Live user setting to '${file}': ${reason}.`,
+      `Check that the folder exists and is writable, or set the project-level mode instead ('cuthol live config --mode ask|on|off').`
+    ),
+  // [live:E G616–G617]
+  LIVE_NOTE_COORDS_FAILED: (detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G616",
+      "G5_SIGNAL",
+      "WARN",
+      `Live note coordinate lookup failed or timed out (${detail}); the note is kept without element names.`,
+      `Wait for the coordinate cache to warm up (the window retries automatically), or send the note without elements.`
+    ),
+  LIVE_NOTE_SHEET_FAILED: (detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G617",
+      "G5_SIGNAL",
+      "WARN",
+      `Live note contact sheet could not be rendered (${detail}); the packet is queued without an image.`,
+      `Run 'cuthol monitor frame' for the note's timestamp to see the full error; the note text still reaches the agent.`
+    ),
+  // [live:F G618–G619]
+  LIVE_EDIT_REVISION_CONFLICT: (
+    action: string,
+    detail: string,
+    suggestion = "The timeline changed under the Live window; it refreshes automatically. Retry the edit, and use undo only for your own edits made while the agent is paused."
+  ) =>
+    createDiagnostic(
+      "CUTHOL-G618",
+      "SYS",
+      "ERROR",
+      `Live edit '${action}' was not applied: ${detail}.`,
+      suggestion
+    ),
+  LIVE_EDIT_COMMAND_FAILED: (action: string, target: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G619",
+      "SYS",
+      "ERROR",
+      `Live edit '${action}' on '${target}' failed: ${detail}.`,
+      `Fix the underlying problem (see the command diagnostic above) and retry. If the timeline looks wrong, undo the paused session's edits one step at a time.`
+    ),
+  // [settings G620–G624]
+  SETTINGS_UNKNOWN_KEY: (key: string) =>
+    createDiagnostic(
+      "CUTHOL-G620",
+      "G1_SCHEMA",
+      "ERROR",
+      `Unknown settings key '${key}'.`,
+      `Run 'cuthol settings list' to see the available keys.`
+    ),
+  SETTINGS_INVALID_VALUE: (key: string, value: string, expected: string) =>
+    createDiagnostic(
+      "CUTHOL-G621",
+      "G1_SCHEMA",
+      "ERROR",
+      `Invalid value ${value} for setting '${key}'; expected ${expected}.`,
+      `Run 'cuthol settings get ${key}' to see the current value and source.`
+    ),
+  SETTINGS_AGENT_READONLY: (key: string) =>
+    createDiagnostic(
+      "CUTHOL-G622",
+      "G1_SCHEMA",
+      "ERROR",
+      `Setting '${key}' cannot be changed by the agent; it is window-only.`,
+      `Change it in the Live window (Settings > Shortcuts) instead.`
+    ),
+  SETTINGS_WRITE_FAILED: (file: string, reason: string) =>
+    createDiagnostic(
+      "CUTHOL-G623",
+      "SYS",
+      "ERROR",
+      `Could not write the setting to '${file}': ${reason}.`,
+      `Check that the folder exists and is writable.`
+    ),
+  SETTINGS_ENV_LOCKED: (key: string, variable: string) =>
+    createDiagnostic(
+      "CUTHOL-G624",
+      "G1_SCHEMA",
+      "ERROR",
+      `Setting '${key}' is locked by environment variable ${variable}; unset it to change the stored value.`,
+      `Unset ${variable} and re-run, or keep the environment value.`
+    ),
+
   // --- Environment: CUTHOL-G212 ---
   FFMPEG_VERSION_BELOW_SUPPORTED: (tool: string, found: string) =>
     createDiagnostic(

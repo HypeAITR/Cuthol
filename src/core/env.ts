@@ -9,6 +9,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CutholError, DIAGNOSTICS } from "./diagnostics.js";
+import { settingsProjectDir, storedSetting, type SettingKey } from "./settings.js";
+
+/** Stored (project/user file) value for a key; undefined keeps the built-in default path. */
+function storedSettingValue(key: SettingKey): unknown {
+  try {
+    const stored = storedSetting(settingsProjectDir(), key);
+    if (!stored || stored.value === "auto") return undefined;
+    return stored.value;
+  } catch {
+    return undefined;
+  }
+}
 
 let sqliteWarningFilterInstalled = false;
 
@@ -111,6 +123,16 @@ export function resolveStallWatchdogConfig(overrides?: {
     }
   }
 
+  if (rawStall === undefined || rawStall.trim() === "") {
+    const stored = storedSettingValue("render.stall_timeout_sec");
+    if (typeof stored === "number" && Number.isFinite(stored)) {
+      if (stored <= 0) {
+        return { enabled: false, stallTimeoutMs: 0, startupTimeoutMs: 0, pollIntervalMs: 250 };
+      }
+      stallTimeoutMs = Math.max(100, Math.round(stored * 1000));
+    }
+  }
+
   let startupTimeoutMs = stallTimeoutMs;
   if (
     typeof overrides?.startupTimeoutMs === "number" &&
@@ -170,6 +192,11 @@ export function resolveHyperFramesWorkers(overrideWorkers?: number | null): numb
     }
   }
 
+  const storedWorkers = storedSettingValue("render.workers");
+  if (typeof storedWorkers === "number" && Number.isFinite(storedWorkers) && storedWorkers >= 1) {
+    return Math.max(1, Math.min(32, Math.floor(storedWorkers)));
+  }
+
   if (process.platform === "win32" || process.platform === "darwin") {
     return 1;
   }
@@ -213,6 +240,12 @@ export function resolveOverlayConcurrency(options?: {
       const explicit = Math.max(1, Math.min(32, Math.floor(parsed)));
       return coldCap !== null ? Math.min(explicit, coldCap) : explicit;
     }
+  }
+
+  const storedConcurrency = storedSettingValue("render.overlay_concurrency");
+  if (typeof storedConcurrency === "number" && Number.isFinite(storedConcurrency) && storedConcurrency >= 1) {
+    const explicit = Math.max(1, Math.min(32, Math.floor(storedConcurrency)));
+    return coldCap !== null ? Math.min(explicit, coldCap) : explicit;
   }
 
   const w = Math.max(1, resolveHyperFramesWorkers(options?.workersPerOverlay));
@@ -308,15 +341,19 @@ export function resolveAlphaOverlayFormat(expectedFrames?: number): AlphaOverlay
 export function resolveVideoEncoderPreference(
   overrideEncoder?: string | null
 ): VideoEncoderPreference {
+  const storedEncoder = storedSettingValue("render.encoder");
   const candidates = [
     overrideEncoder ?? undefined,
     process.env.CUTHOL_ENCODER,
     process.env.CUTHOL_VIDEO_ENCODER,
+    typeof storedEncoder === "string" ? storedEncoder : undefined,
   ];
 
+  const storedGpuOff = storedSettingValue("render.gpu") === false;
   const disableGpu =
-    Boolean(process.env.CUTHOL_DISABLE_GPU) &&
-    ENABLED_TOKENS.has(process.env.CUTHOL_DISABLE_GPU!.trim().toLowerCase());
+    (Boolean(process.env.CUTHOL_DISABLE_GPU) &&
+      ENABLED_TOKENS.has(process.env.CUTHOL_DISABLE_GPU!.trim().toLowerCase())) ||
+    ((!process.env.CUTHOL_DISABLE_GPU || !process.env.CUTHOL_DISABLE_GPU.trim()) && storedGpuOff);
   const disableNvenc =
     Boolean(process.env.CUTHOL_DISABLE_NVENC) &&
     ENABLED_TOKENS.has(process.env.CUTHOL_DISABLE_NVENC!.trim().toLowerCase());
@@ -430,6 +467,30 @@ export function resolveSharedCacheConfig(overrideDir?: string | false | null): S
       continue;
     }
     const resolved = path.resolve(trimmed);
+    if (/\.(sqlite|sqlite3|db)$/i.test(resolved)) {
+      const dir = path.dirname(resolved);
+      return {
+        enabled: true,
+        cacheDir: dir,
+        sqlitePath: resolved,
+        blobsDir: path.join(dir, "blobs"),
+      };
+    }
+    return {
+      enabled: true,
+      cacheDir: resolved,
+      sqlitePath: path.join(resolved, "ledger.sqlite"),
+      blobsDir: path.join(resolved, "blobs"),
+    };
+  }
+
+  const storedCacheDir = storedSettingValue("cache.dir");
+  if (typeof storedCacheDir === "string" && storedCacheDir.trim()) {
+    const clean = storedCacheDir.trim();
+    if (DISABLED_TOKENS.has(clean.toLowerCase())) {
+      return { enabled: false, cacheDir: null, sqlitePath: null, blobsDir: null };
+    }
+    const resolved = path.resolve(clean);
     if (/\.(sqlite|sqlite3|db)$/i.test(resolved)) {
       const dir = path.dirname(resolved);
       return {

@@ -11,7 +11,7 @@ import { progressWatch } from "../core/progress.js";
 import {
   spawnWatchedSync
 } from "../core/subprocess.js";
-import { OverlayBlobExt, resolveCachedCompositionVideoBlob, inspectPngSequenceDir, isValidVideoBlobOnDisk, stageCompositionRenderDir } from "./hf_blobs.js";
+import { OverlayBlobExt, resolveCachedCompositionVideoBlob, inspectPngSequenceDir, isValidVideoBlobOnDisk, stageCompositionRenderDir, readCompositionTimelineSec } from "./hf_blobs.js";
 import { syncScalarVarsAndComputeCompositionHash, readCompositionCacheState, writeCompositionCacheState, clearBridgeMetaLastDataChangeReason } from "./hf_cache_state.js";
 import { findLocalHyperFramesCliMjs, hyperFramesProcessEnv, renameWithRetrySync } from "./hf_common.js";
 import { recordCompositionAlphaBboxSidecar } from "./hf_frames.js";
@@ -228,7 +228,15 @@ export function renderHyperFramesCompositionToMp4(options: {
   const watchTargetPath = tmpWorkDir ?? tmpBlob;
   const workers = resolveHyperFramesWorkers(options.workers);
 
+  // A cue longer than its composition holds the end state; the staged
+  // copy stretches the composition's timeline so HyperFrames renders every frame.
+  const compTimelineSec = readCompositionTimelineSec(htmlSource);
+  const extendTimeline =
+    compTimelineSec !== null && durationSec > compTimelineSec + 1 / Math.max(1, options.fps)
+      ? { fromSec: compTimelineSec, toSec: durationSec, fps: options.fps }
+      : undefined;
   const needsStage =
+    Boolean(extendTimeline) ||
     (isSceneHost && Boolean(options.backdropVideoPath)) ||
     (!useTrueAlpha && Boolean(options.opaqueBackdropColor || options.backdropImagePath)) ||
     targetWidth !== nativeWidth ||
@@ -394,6 +402,7 @@ export function renderHyperFramesCompositionToMp4(options: {
         transparent: useTrueAlpha,
         opaqueBackdropColor: options.opaqueBackdropColor,
         backdropImagePath: options.backdropImagePath,
+        extendTimeline,
       });
       targetRenderDir = tempSceneHostDir;
     }
@@ -543,7 +552,13 @@ export function renderHyperFramesCompositionToMp4(options: {
       }
     }
 
-    throw buildHyperFramesFailureError(options.compositionDir, renderArgs, finalHfProc);
+    throw buildHyperFramesFailureError(options.compositionDir, renderArgs, {
+      ...finalHfProc,
+      outputCheck: {
+        expectedFrames: expectedFramesCheck,
+        gotFrames: fs.existsSync(tmpBlob) && fs.statSync(tmpBlob).isDirectory() ? inspectPngSequenceDir(tmpBlob).frameCount : undefined,
+      },
+    });
   } finally {
     if (!deferredToCollector) {
       if (tmpWorkDir && fs.existsSync(tmpWorkDir)) {

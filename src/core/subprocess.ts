@@ -650,7 +650,7 @@ export function spawnWatchedSync(
   const cmdSummary = summarizeCommandForDiagnostic(executable, args);
 
   if (!watchdogCfg.enabled) {
-    const cleanOpts: SpawnSyncOptions = { ...options };
+    const cleanOpts: SpawnSyncOptions = { windowsHide: true, ...options };
     delete (cleanOpts as Record<string, unknown>).timeout;
     delete (cleanOpts as Record<string, unknown>).step;
     delete (cleanOpts as Record<string, unknown>).watchedPaths;

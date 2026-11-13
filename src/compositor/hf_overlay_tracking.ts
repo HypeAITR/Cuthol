@@ -12,7 +12,7 @@ import {
   spawnWatchedSync,
 } from "../core/subprocess.js";
 import { progressSetStage, progressWatch } from "../core/progress.js";
-import { isValidVideoBlobOnDisk } from "./hf_blobs.js";
+import { inspectPngSequenceDir, isValidVideoBlobOnDisk } from "./hf_blobs.js";
 import { ensureHyperFramesRenderLockDefault, hyperFramesProcessEnv } from "./hf_common.js";
 
 export type OverlayCacheReason =
@@ -505,6 +505,14 @@ export function stripHyperFramesProgressLine(line: string): string | null {
   return kept.join(" ").replace(WHITESPACE_RUN_RE, " ").trim();
 }
 
+function countBlobFrames(blobPath: string): number | undefined {
+  try {
+    return fs.statSync(blobPath).isDirectory() ? inspectPngSequenceDir(blobPath).frameCount : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function buildHyperFramesFailureError(
   compositionDir: string,
   renderArgs: string[],
@@ -519,8 +527,25 @@ export function buildHyperFramesFailureError(
     stallThresholdMs?: number;
     lastProgress?: string;
     commandSummary?: string;
+    /** Frame counts when the process succeeded but the blob check failed. */
+    outputCheck?: { expectedFrames?: number; gotFrames?: number };
   }
 ): CutholError {
+  // HyperFrames finished cleanly but the output fell short (e.g. fewer frames
+  // than the cue needs): say that instead of quoting the run's lint notes.
+  if (proc.status === 0 && !proc.error && !proc.stalled) {
+    const check = proc.outputCheck;
+    const counts =
+      check && typeof check.expectedFrames === "number" && check.expectedFrames > 0
+        ? ` (${typeof check.gotFrames === "number" ? check.gotFrames : "fewer"} of ${check.expectedFrames} frames)`
+        : "";
+    return new CutholError(
+      DIAGNOSTICS.HYPERFRAMES_RENDER_FAILED(
+        compositionDir,
+        `HyperFrames exited 0 but its output is incomplete${counts}; compare the composition's data-duration with the cue's duration`
+      )
+    );
+  }
   const stdoutStr =
     typeof proc.stdout === "string"
       ? proc.stdout
@@ -729,6 +754,7 @@ export function runCollectedOverlays(options?: {
         });
       } else if (!firstFailure) {
         firstFailure = buildHyperFramesFailureError(j.compositionDir, j.args, {
+          outputCheck: { expectedFrames: j.expectedFrames, gotFrames: countBlobFrames(j.tmpBlob) },
           status,
           stdout: stdoutStr,
           stderr: stderrStr,

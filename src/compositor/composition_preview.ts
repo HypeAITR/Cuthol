@@ -27,9 +27,11 @@ import { CutholSequence, isStillGraphic } from "../core/schema.js";
 import { loadSequence } from "../core/workspace.js";
 import {
   compositionUsesAudio,
+  extractScalarHyperFramesVariables,
   syncCompositionBridgeFiles,
   syncEnabledExtensionAssetsToComposition,
 } from "./bridge_exporter.js";
+import { applyScalarVarsToStagedHtml } from "./hf_frames.js";
 import { compileSequenceRenderPlan } from "./compiler.js";
 import {
   detectSceneHostFeaturesInComposition,
@@ -455,6 +457,28 @@ export function previewAndCheckComposition(options: {
       );
       fs.writeFileSync(path.join(transparentBuildDir, entryHtml), sanitizedHtml, "utf8");
       snapshotTargetDir = transparentBuildDir;
+    }
+
+    // Feed the render-time scalar variables to `hyperframes snapshot` (which has
+    // no variables option) by rewriting the variable defaults in a staged copy,
+    // mirroring the `--variables-file` merge the render applies.
+    const previewScalarVars = extractScalarHyperFramesVariables(
+      targetCue?.composition?.props as Record<string, unknown> | undefined
+    );
+    if (Object.keys(previewScalarVars).length > 0) {
+      if (snapshotTargetDir === absCompDir) {
+        const varsBuildDir = path.join(workRoot, "vars_build");
+        copyDirClean(absCompDir, varsBuildDir);
+        snapshotTargetDir = varsBuildDir;
+      }
+      const stagedEntryPath = path.join(snapshotTargetDir, entryHtml);
+      if (fs.existsSync(stagedEntryPath)) {
+        const stagedHtml = fs.readFileSync(stagedEntryPath, "utf8");
+        const nextHtml = applyScalarVarsToStagedHtml(stagedHtml, previewScalarVars);
+        if (nextHtml !== stagedHtml) {
+          fs.writeFileSync(stagedEntryPath, nextHtml, "utf8");
+        }
+      }
     }
 
     spawnWatchedSync(

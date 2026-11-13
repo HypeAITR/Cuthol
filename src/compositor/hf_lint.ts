@@ -19,6 +19,7 @@ const LINT_IGNORED_BRIDGE_FILES = new Set([
   "assets/cuthol-vars.json",
   "assets/cuthol-runtime.js",
   "assets/cuthol-bbox.json",
+  "assets/.cuthol-bridge-meta.json",
   "cuthol-bbox.json",
 ]);
 

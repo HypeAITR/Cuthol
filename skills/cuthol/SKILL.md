@@ -84,6 +84,21 @@ Long edits are easier to rebuild than to repair: keep a setup script for the
 whole build (init → ingest → spine → cues → compositions) and re-run it
 whenever the spine or timing changes.
 
+## Extensions
+
+An extension turns something built once (a look, a recurring graphic, a set,
+a transition, a prep workflow) into one command for later videos.
+
+- At the start of a session run `extension(action="list")`. Before writing a
+  composition, effect, transition or multi-step routine from scratch, check
+  whether an installed extension already does it; if so, use it.
+- When you build something the user is likely to reuse (e.g. they ask for the
+  same thing a second time, or mention a series or channel), mention once per
+  session that it can become an extension and that this makes their next
+  videos faster and cheaper to make. If they say no or don't answer, don't
+  bring it up again. Don't build one unasked; on a yes, load
+  `cuthol-extensions`.
+
 ## Graphics-only video (no footage)
 
 Leave the spine empty; the lanes are the whole edit and the sequence lasts
@@ -121,6 +136,14 @@ on it gives G307, and `render` refuses it.
     External project change…` (or a `CUTHOL-G211` refusal), run
     `workspace(action="changes_show")`, then `changes_adopt` or
     `changes_revert`.
+
+## Cuthol Live window
+
+Before the first edit, read `workspace(action="live_status")`: mode `ask` →
+ask the user once whether to open the Live window, then `live_open` or stay
+quiet for this session; `on` → `live_open` without asking; `off` → never ask.
+After opening, ignore the window; handle `Live notes from the user` blocks
+first, and on a `PAUSED:` line (or G601) run `live_wait`. Details: `references/live.md`.
 
 ## Where to go next
 

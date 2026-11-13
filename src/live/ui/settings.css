@@ -1,0 +1,159 @@
+/* Settings panel. Modal over the workspace; same tokens as the window. Prefix: .st- */
+.st-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+.st-modal {
+  width: min(720px, calc(100vw - 48px));
+  max-height: min(600px, calc(100vh - 48px));
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  color: var(--text-1);
+  font-size: var(--fs-13);
+}
+.st-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--line);
+}
+.st-title { font-size: var(--fs-14); font-weight: var(--fw-semibold); }
+.st-main { display: flex; min-height: 0; flex: 1; }
+.st-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  min-width: 132px;
+  padding: var(--s-3);
+  border-right: 1px solid var(--line);
+}
+.st-nav button {
+  text-align: left;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+.st-nav button[aria-current="true"] {
+  background: var(--bg-raised);
+  color: var(--text-1);
+  border-color: var(--line);
+}
+.st-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--s-3) var(--s-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+.st-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding: var(--s-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+.st-row:last-child { border-bottom: none; }
+.st-label { font-weight: var(--fw-medium); flex: 1 1 auto; min-width: 0; max-width: 340px; }
+.st-hint { color: var(--text-2); font-weight: var(--fw-regular); font-size: var(--fs-12); margin-top: var(--s-1); }
+.st-note { color: var(--text-2); font-size: var(--fs-12); }
+.st-control { display: flex; flex-direction: column; align-items: flex-end; gap: var(--s-1); flex: 0 0 auto; min-width: 200px; max-width: 50%; }
+.st-control select,
+.st-control input[type="text"],
+.st-control input[type="number"] {
+  background: var(--bg-raised);
+  color: var(--text-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  font: inherit;
+  padding: var(--s-2) var(--s-3);
+  min-width: 200px;
+}
+.st-control select:disabled,
+.st-control input:disabled,
+.st-toggle:disabled { opacity: 0.55; cursor: not-allowed; }
+.st-toggle {
+  width: 40px;
+  height: 22px;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  background: var(--bg-raised);
+  cursor: pointer;
+  padding: 0;
+  position: relative;
+}
+.st-toggle i {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-3);
+  transition: left 0.12s ease-out, background 0.12s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .st-toggle i { transition: none; }
+}
+.st-toggle[data-on="1"] i { left: 20px; background: var(--accent); }
+.st-err { color: var(--danger); font-size: var(--fs-12); max-width: 260px; text-align: right; }
+.st-warn { color: var(--warn); font-size: var(--fs-12); }
+.st-static { color: var(--text-2); }
+.st-agent,
+.st-lock {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: var(--s-1);
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  font-size: var(--fs-11);
+  color: var(--text-2);
+  cursor: help;
+  vertical-align: 1px;
+}
+.st-shortcut { cursor: pointer; }
+.st-shortcut kbd {
+  font-family: var(--font-mono);
+  background: var(--bg-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: var(--s-1) var(--s-2);
+}
+.st-reset {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  font: inherit;
+  padding: var(--s-2) var(--s-3);
+  cursor: pointer;
+  margin-top: var(--s-2);
+}
+.st-empty { color: var(--text-2); padding: var(--s-4) 0; }
+.st-toast {
+  margin: var(--s-3) var(--s-4);
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  border: 1px solid var(--line-strong);
+  font-size: var(--fs-12);
+}
+.st-toast[data-state="error"] { color: var(--danger); border-color: var(--danger); }

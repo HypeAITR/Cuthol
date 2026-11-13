@@ -1,0 +1,26 @@
+.ac-list { display: flex; flex-direction: column; }
+.ac-empty { padding: var(--s-4); }
+.ac-row { display: flex; align-items: center; gap: var(--s-1); width: 100%; border: 0; background: transparent; color: var(--text-1); text-align: left; padding: var(--s-2) var(--s-3); cursor: pointer; font-size: var(--fs-12); }
+.ac-tc { font-size: var(--fs-11); }
+.ac-row:hover { background: var(--bg-hover); }
+.ac-row:disabled { cursor: default; }
+.ac-row:disabled:hover { background: transparent; }
+.ac-rev { color: var(--text-2); flex: none; }
+.ac-tag { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ac-tc { flex: none; }
+/* agent state dot: shape + color, never color alone */
+.ac-dot { display: inline-grid; place-items: center; width: 16px; height: 16px; flex: none; }
+.ac-dot svg { width: 12px; height: 12px; }
+.ac-dot .ac-ring, .ac-dot .ac-fill, .ac-dot .ac-bars, .ac-dot .ac-tri { display: none; }
+.ac-dot[data-acstate="working"] .ac-fill { display: block; fill: var(--amber); }
+.ac-dot[data-acstate="paused"] .ac-fill { display: block; fill: var(--text-3); animation: ac-blink 1.2s ease-in-out infinite; }
+.ac-dot[data-acstate="paused"] .ac-bars { display: block; stroke: var(--bg-panel); stroke-width: 1.6; }
+.ac-dot[data-acstate="error"] .ac-tri { display: block; fill: var(--danger); }
+.ac-dot[data-acstate="idle"] .ac-ring { display: block; fill: none; stroke: var(--text-3); stroke-width: 1.5; }
+@keyframes ac-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .ac-dot[data-acstate="paused"] .ac-glyph { animation: none; } }
+/* gray blinking circle over the latest row while paused */
+.ac-paused { width: 10px; height: 10px; border-radius: 50%; background: var(--text-3); flex: none; animation: ac-blink 1.2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .ac-paused { animation: none; } }
+/* pause glyph inside the dot when paused: two bars over the gray circle */
+.ac-dot[data-acstate="paused"] svg { position: relative; }

@@ -27,6 +27,7 @@ import {
   numFlag,
 } from "./cli_args.js";
 import { printHelp } from "./cli_help.js";
+import { drainLiveInbox } from "./live/live_inbox.js";
 import {
   activeCliAction,
   activeCliCompactMode,
@@ -58,6 +59,8 @@ import {
 } from "./cli_cmd_output.js";
 import { runExtensionCommand } from "./cli_cmd_extension.js";
 import { runSkillsCommand } from "./cli_cmd_skills.js";
+import { runLiveCommand } from "./cli_cmd_live.js";
+import { runSettingsCommand } from "./cli_cmd_settings.js";
 import { maybeAutoInstallSkills } from "./core/skills_install.js";
 
 async function main(): Promise<void> {
@@ -125,6 +128,7 @@ async function main(): Promise<void> {
     limit: numFlag(flags, "limit"),
   });
   loadDotEnvIfNeeded(workspaceDir);
+  if (!process.env.CUTHOL_PROJECT_DIR) process.env.CUTHOL_PROJECT_DIR = workspaceDir;
 
   if (!group || group === "help" || flags["help"]) {
     if (flags["json"]) {
@@ -210,6 +214,12 @@ async function main(): Promise<void> {
     case "skills":
       if (runSkillsCommand(ctx) !== CLI_NOT_HANDLED) return;
       break;
+    case "live":
+      if ((await runLiveCommand(ctx)) !== CLI_NOT_HANDLED) return;
+      break;
+    case "settings":
+      if (runSettingsCommand(ctx) !== CLI_NOT_HANDLED) return;
+      break;
   }
 
   printHelp();
@@ -229,6 +239,15 @@ main().catch((err: unknown) => {
           schema_version: "cuthol.envelope/1",
           error: err instanceof Error ? err.message : String(err),
         };
+
+  // Cuthol Live: queued user notes ride the error response too (failed commands
+  // still deliver; untouched when the inbox is empty).
+  try {
+    const liveNotes = drainLiveInbox(activeCliWorkspaceDir);
+    if (liveNotes) errEnvelope.live_notes = liveNotes;
+  } catch {
+    // never break error reporting
+  }
 
   if (activeCliCompactMode) {
     const spec = resolveActionSpecForCommand(activeCliGroup, activeCliAction, activeCliSub);

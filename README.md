@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-0D1117?style=flat-square"></a>
-  <img alt="Version 0.3.1" src="https://img.shields.io/badge/version-0.3.1-FF5A1F?style=flat-square">
+  <img alt="Version 0.3.5" src="https://img.shields.io/badge/version-0.3.5-FF5A1F?style=flat-square">
   <img alt="MCP: 14 tools" src="https://img.shields.io/badge/MCP-14%20tools-FF5A1F?style=flat-square">
   <img alt="Node.js 22.5+" src="https://img.shields.io/badge/node-%E2%89%A522.5-0D1117?style=flat-square">
   <img alt="FFmpeg 8" src="https://img.shields.io/badge/ffmpeg-8.x-0D1117?style=flat-square">
@@ -27,6 +27,8 @@
 <p align="center">
   <a href="#install">Install</a> ·
   <a href="#what-you-can-ask">What you can ask</a> ·
+  <a href="#cuthol-live">Cuthol Live</a> ·
+  <a href="#why-cuthol">Why Cuthol</a> ·
   <a href="#features">Features</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="skills/cuthol/SKILL.md">Agent skills</a> ·
@@ -113,7 +115,48 @@ Once Cuthol is connected, talk to your agent the way you would brief an editor:
 
 The agent works through typed commands, reads the result as text, looks at real preview frames when it needs to, and every change can be undone.
 
+## Cuthol Live
+
+Watch your agent edit, and step in when you want to. Cuthol Live is a window on your machine that follows the edit as it happens: a preview player, the timeline with every lane, the scene list and a feed of what the agent just changed.
+
+<p align="center">
+  <img src="assets/live/cuthol-live.png" alt="The Cuthol Live window: preview player, scene list, activity feed and the timeline with every lane" width="820">
+</p>
+
+- **Leave notes on the picture.** Press `N`, click the frame and write what you want changed. The agent receives the note, with the frame, alongside the result of its next command, and handles it first.
+- **Pause and edit yourself.** Pause the agent and split, delete, trim, duplicate, mute or undo on the timeline. When you resume, the agent gets a summary of your changes; while it works, the edit tools stay dimmed so the two of you never edit at once.
+- **See the render.** Render stages, progress and an estimate of the time left show in the window.
+- **Settings in one place.** Hardware acceleration and which graphics card encodes, render workers, the output and cache folders, which browser draws the window, and keyboard shortcuts. A setting the agent changed is marked, and a change you make is passed on to the agent.
+
+Nothing to install. By default the agent asks once at the start of a session whether to open the window; you can also open it yourself with `cuthol live open`, or set the window mode to `on` or `off` in its settings (or `CUTHOL_LIVE=on|off`). It opens in your default browser as an app window — Chrome, Edge, Brave and other Chromium browsers; others open it as a normal window — with its own profile and no extensions. Everything runs locally.
+
 ## Why Cuthol
+
+### Every video makes the next one cheaper.
+
+Generating a whole video as code works for a short clip. On a real production every late change means regenerating, and every new video starts from zero. Cuthol keeps the edit on a timeline and lets the agent turn what it built once — a 3D set, a caption style, a transition, a prep workflow — into an [extension](skills/cuthol-extensions/SKILL.md) it reuses next time. We measured one 6:35 video on our channel from the agent's own session logs:
+
+<p align="center">
+  <img src="assets/why/extensions-make-videos-cheaper.png" alt="Extensions make every next video cheaper: from about $29 to $6.38 per minute of video, $2.36 in agent spend alone — 4.6× to 12× cheaper per minute" width="720">
+</p>
+
+- **Extensions compound.** On the same 3D desk set, cost per minute of finished video fell from ~$29 for the first scene built from scratch to $6.38 with the extension, even counting every 3D model at full price, and to $2.36 for the agent's own spend: **4.6× to 12× cheaper per minute**.
+
+<p align="center">
+  <img src="assets/why/edit-dont-regenerate.png" alt="Edit the timeline, don't regenerate the video: a late change to a finished 6:35 edit was one line, a two-minute rebuild and $4.67" width="720">
+</p>
+
+- **Edit, don't regenerate.** Cutting one sentence from the finished edit was a one-line change, a ~2-minute rebuild and $4.67 of agent time. 525 sound cues and 49 camera moves re-timed themselves; voice sync held at 0.00 s drift at 56 of 56 checkpoints.
+
+<p align="center">
+  <img src="assets/why/agent-checks-its-work.png" alt="The agent checks its own work: 134 frames inspected, 12 issues fixed before a preview render, 2 errors stopped before a render started" width="720">
+</p>
+
+- **The agent checks its own work.** It looked at 134 frames, fixed 12 issues before a preview was ever rendered, and had 2 errors stopped by the verification gates before a render started. The master: verify 0 errors, 0.00 s sync drift, −14.0 LUFS.
+
+<sub>Costs are API-equivalent at Claude Opus 5.5 list prices, measured from Claude Code session logs. A 3D model's value is the first scene's whole cost divided by its 8 models — an upper bound that counts against us.</sub>
+
+### Built for how an agent works
 
 Editing software is built around a person with a mouse and a timeline they can see. An agent has neither. Cuthol gives an agent the whole workspace of an editor in a form it can use:
 
@@ -121,7 +164,7 @@ Editing software is built around a person with a mouse and a timeline they can s
 - **Text views of the edit.** Compact lenses (overview, flow, canvas, detail), transcripts with word timings, and exact per-frame geometry of every motion-graphics element.
 - **Images only where they help.** Frame previews and contact sheets come from the same pipeline as the final render: what the agent sees is what ships.
 - **Nothing is lost.** An atomic journal with undo previews; verification gates before every render; results reported as short diffs.
-- **Light on context.** The entry skill is about 9 KB; each category skill (6–9 KB) is loaded only when its task comes up. The MCP server exposes 14 tools whose schemas cost about 13k tokens once per session (measured).
+- **Light on context.** The entry skill is about 10 KB; each category skill (6–9 KB) is loaded only when its task comes up. The MCP server exposes 14 tools whose schemas cost about 13k tokens once per session (measured).
 
 ## Features
 
@@ -213,6 +256,9 @@ Each command prints a full JSON result; add `--compact` for the short text an ag
 | `CUTHOL_WORKERS`, `CUTHOL_OVERLAY_CONCURRENCY` | Overlay capture parallelism (defaults from CPU cores and memory). |
 | `CUTHOL_STALL_TIMEOUT_SEC` | Stop an external process that makes no progress (default 300, `0` off). |
 | `CUTHOL_MCP_PROGRESSIVE`, `CUTHOL_MCP_STRUCTURED` | Progressive tool discovery; full JSON as structured content. |
+| `CUTHOL_LIVE` | Cuthol Live window: `ask` (default), `on` or `off`. |
+
+The same render, cache and window settings can be changed in the Cuthol Live settings screen or with `cuthol settings list | get | set | reset`; an environment variable always wins over a saved setting.
 
 Rendering presets: `draft_480p` (a fast proxy for checking) and `master_1080p` (the deliverable). Diagnostics read `[CUTHOL-Gxxx] what | Suggestion: next step`.
 

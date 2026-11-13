@@ -365,6 +365,7 @@ export async function transcribeWithLocalProvider(options: {
     const quotedAudioPath = `"${options.audioFilePath.replace(/"/g, '\\"')}"`;
     const proc = spawnSync(`${customCmd} ${quotedAudioPath}`, {
       shell: true,
+      windowsHide: true,
       encoding: "utf8",
       maxBuffer: 16 * 1024 * 1024,
       env: { ...process.env, CUTHOL_LOCAL_ASR_AUDIO_FILE: options.audioFilePath },
@@ -622,6 +623,7 @@ export async function synthesizeWithLocalProvider(options: {
     const quotedOut = `"${options.tempWavPath.replace(/"/g, '\\"')}"`;
     const proc = spawnSync(`${customTtsCmd} ${quotedOut}`, {
       shell: true,
+      windowsHide: true,
       input: options.text,
       encoding: "utf8",
       env: {

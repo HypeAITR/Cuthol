@@ -104,7 +104,7 @@ export function extractSceneHostBackdropSlice(
         "tv",
         tmpMp4,
       ],
-      { cwd: paths.rootDir, encoding: "utf8" }
+      { cwd: paths.rootDir, encoding: "utf8", windowsHide: true }
     );
     if (proc.status === 0 && fs.existsSync(tmpMp4) && fs.statSync(tmpMp4).size > 500) {
       fs.renameSync(tmpMp4, outMp4);
@@ -192,7 +192,7 @@ export function extractSceneHostBackdropSlice(
       "tv",
       tmpMp4,
     ],
-    { encoding: "utf8" }
+    { encoding: "utf8", windowsHide: true }
   );
   if (proc.status === 0 && fs.existsSync(tmpMp4) && fs.statSync(tmpMp4).size > 500) {
     fs.renameSync(tmpMp4, outMp4);
@@ -288,7 +288,7 @@ export function extractStaticBackdropPngSlice(
       "1",
       tmpPng,
     ],
-    { cwd: paths.rootDir, encoding: "utf8" }
+    { cwd: paths.rootDir, encoding: "utf8", windowsHide: true }
   );
   if (proc.status === 0 && fs.existsSync(tmpPng) && fs.statSync(tmpPng).size > 200) {
     fs.renameSync(tmpPng, outPng);

@@ -1,6 +1,6 @@
 {
   "name": "cuthol",
-  "version": "0.3.1",
+  "version": "0.3.5",
   "description": "Agent-first open-source non-linear video editor (NLE) powered by HyperFrames and open media standards.",
   "license": "MIT",
   "type": "module",

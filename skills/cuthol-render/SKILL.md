@@ -59,6 +59,7 @@ failure (`encoder_fallback` records why). All paths output Rec. ITU-R BT.709
 BT.2020 sources convert with a G208 note. Workers: `--workers <W>`
 (`CUTHOL_WORKERS`); concurrent overlays: `CUTHOL_OVERLAY_CONCURRENCY=<K>`
 (`1` forces sequential). Pipeline details: `references/pipeline.md`.
+Stored settings behind the same variables: `references/settings.md`.
 
 ## Progress, watchdog, long timelines
 

@@ -355,6 +355,41 @@ export function resolveCachedCompositionVideoBlob(params: {
   return { cachedBlobPath: null, isExactTargetRes: false, missReason: "new" };
 }
 
+/**
+ * The composition's own timeline length: `data-duration` on the element that
+ * carries `data-composition-id` (seconds). Null when absent or unreadable.
+ */
+export function readCompositionTimelineSec(html: string): number | null {
+  const tag = /<[a-zA-Z0-9_-]+\b[^>]*\bdata-composition-id\s*=\s*(["'])[^"']+\1[^>]*>/i.exec(html)?.[0];
+  if (!tag) return null;
+  const m = /\bdata-duration\s*=\s*(["'])([0-9.]+)\1/i.exec(tag);
+  const v = m ? Number(m[2]) : NaN;
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
+/**
+ * A cue longer than its composition holds the composition's end state.
+ * Rewrites the staged copy only: the root's `data-duration` becomes `toSec`,
+ * and every timed element that ran until the old end (start + duration within
+ * one frame of it) now runs until `toSec`. Inner animations clamp at their end.
+ */
+export function extendCompositionHtmlDuration(html: string, fromSec: number, toSec: number, fps: number): string {
+  const tol = 1 / Math.max(1, fps) + 1e-6;
+  return html.replace(
+    /<([a-zA-Z0-9_-]+)(\s[^>]*\bdata-duration\s*=\s*(["'])([0-9.]+)\3[^>]*)>/gi,
+    (whole: string, name: string, attrs: string, q: string, durRaw: string) => {
+      const dur = Number(durRaw);
+      const startMatch = /\bdata-start\s*=\s*(["'])([0-9.]+)\1/i.exec(attrs);
+      const start = startMatch ? Number(startMatch[2]) : 0;
+      const isRoot = /\bdata-composition-id\s*=/i.test(attrs);
+      if (!isRoot && Math.abs(start + dur - fromSec) > tol) return whole;
+      const next = Number((toSec - start).toFixed(3));
+      if (!(next > dur)) return whole;
+      return `<${name}${attrs.replace(/(\bdata-duration\s*=\s*)(["'])[0-9.]+\2/i, `$1${q}${next}${q}`)}>`;
+    }
+  );
+}
+
 export function stageCompositionRenderDir(options: {
   absCompDir: string;
   entryHtml: string;
@@ -370,6 +405,8 @@ export function stageCompositionRenderDir(options: {
   transparent: boolean;
   opaqueBackdropColor?: string;
   backdropImagePath?: string;
+  /** Stretch the composition's timeline to the cue (hold the end state). */
+  extendTimeline?: { fromSec: number; toSec: number; fps: number };
 }): string {
   const tempStageDir = path.join(
     options.blobsDir,
@@ -380,6 +417,10 @@ export function stageCompositionRenderDir(options: {
 
   const stagedHtmlPath = path.join(tempStageDir, options.entryHtml);
   let stagedHtml = fs.readFileSync(stagedHtmlPath, "utf8");
+  if (options.extendTimeline) {
+    const { fromSec, toSec, fps } = options.extendTimeline;
+    stagedHtml = extendCompositionHtmlDuration(stagedHtml, fromSec, toSec, fps);
+  }
 
   if (options.isSceneHost && options.backdropVideoPath) {
     const bgDest = path.join(tempStageDir, "assets/cuthol_scene_host_bg.mp4");

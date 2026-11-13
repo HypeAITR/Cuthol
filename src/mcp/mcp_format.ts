@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CUTHOL_PROGRESS_PREFIX } from "../core/progress.js";
+import { formatLiveNotesBlock } from "../live/live_inbox.js";
 import {
   ActionSpec, findActionSpec,
   TOOL_SPECS
@@ -162,6 +163,7 @@ const ENVELOPE_KEYS = new Set([
   "diagnostics",
   "diagnostic",
   "error",
+  "live_notes",
 ]);
 
 /** Keys of edit results that only repeat what the `Changed:` line already says. */
@@ -1049,6 +1051,12 @@ export function formatEnvelopeCompact(options: FormatEnvelopeCompactOptions): {
 
   const payload = compactPayload(env, spec, dryRun || values.verbose === true, values);
   if (payload) lines.push(`Result: ${payload}`);
+
+  // Cuthol Live: queued user notes ride every response (CLI compact, CLI error, MCP).
+  const liveNotes = env.live_notes as { lines?: unknown } | undefined;
+  if (liveNotes && Array.isArray(liveNotes.lines) && liveNotes.lines.length > 0) {
+    lines.push(...formatLiveNotesBlock(liveNotes.lines.filter((l): l is string => typeof l === "string")));
+  }
 
   return { text: lines.join("\n"), isError: !ok };
 }

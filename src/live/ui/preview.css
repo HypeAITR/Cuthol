@@ -1,0 +1,32 @@
+/* preview region styles. Prefix: .pv- */
+.pv-wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg-panel); }
+.pv-stage-outer { flex: 1; min-height: 0; display: grid; place-items: center; padding: var(--s-3); background: var(--bg-canvas); }
+.pv-stage-outer:fullscreen { padding: 0; background: #000; }
+.pv-stage-outer:fullscreen .pv-stage { width: 100%; height: 100%; max-width: none; max-height: none; border-radius: 0; }
+.pv-stage { position: relative; overflow: hidden; border-radius: var(--r-md); background: #000; max-width: 100%; max-height: 100%; }
+.pv-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: transparent; }
+.pv-comp-layer, .pv-caption-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.pv-comp-frame { position: absolute; left: 0; top: 0; border: 0; background: transparent; transform-origin: top left; }
+.pv-caption { position: absolute; transform: translate(-50%, -50%); text-align: center; line-height: 1.25; white-space: pre-wrap; pointer-events: none; }
+.pv-caption .pv-word { display: inline-block; }
+.pv-badge { position: absolute; top: var(--s-2); right: var(--s-2); padding: 2px var(--s-2); border-radius: var(--r-sm); background: rgba(0, 0, 0, 0.65); border: 1px solid var(--line-strong); color: var(--text-2); font-size: var(--fs-11); }
+.pv-exact-btn { position: absolute; top: var(--s-2); left: var(--s-2); height: 26px; padding: 0 var(--s-2); border-radius: var(--r-sm); border: 1px solid var(--line-strong); background: rgba(0, 0, 0, 0.65); color: var(--text-1); font-size: var(--fs-11); cursor: pointer; }
+.pv-exact-btn:hover { background: var(--bg-hover); }
+.pv-exact-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; cursor: zoom-out; }
+.pv-loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-3); font-size: var(--fs-12); }
+.pv-loading[hidden], .pv-badge[hidden], .pv-exact-btn[hidden], .pv-exact-img[hidden], .pv-exact-loading[hidden], .pv-proxy[hidden] { display: none; }
+.pv-still { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.pv-exact-loading { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) var(--s-3); border-radius: var(--r-sm); background: rgba(0, 0, 0, 0.65); border: 1px solid var(--line-strong); color: var(--text-1); font-size: var(--fs-12); white-space: nowrap; }
+.pv-spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--line-strong); border-top-color: var(--text-1); animation: pv-spin 0.8s linear infinite; }
+@keyframes pv-spin { to { transform: rotate(360deg); } }
+.pv-proxy { position: absolute; left: var(--s-2); bottom: var(--s-2); display: flex; align-items: center; gap: var(--s-2); padding: var(--s-1) var(--s-2); border-radius: var(--r-sm); background: rgba(0, 0, 0, 0.65); border: 1px solid var(--line-strong); color: var(--text-2); font-size: var(--fs-11); white-space: nowrap; }
+.pv-proxy-bar { width: 80px; height: 3px; border-radius: 2px; background: var(--line-strong); overflow: hidden; }
+.pv-proxy-bar i { display: block; height: 100%; width: 0; background: var(--accent); }
+.pv-bar { flex: none; display: flex; align-items: center; gap: 2px; height: 44px; padding: 0 var(--s-3); border-top: 1px solid var(--line); background: var(--bg-panel); }
+.pv-time { margin: 0 var(--s-2); font-family: var(--font-mono); font-size: var(--fs-12); color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pv-spacer { flex: 1; }
+.pv-speed { min-width: 44px; height: 28px; padding: 0 var(--s-2); border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--bg-raised); color: var(--text-2); font-size: var(--fs-12); font-family: var(--font-mono); cursor: pointer; }
+.pv-speed:hover { background: var(--bg-hover); color: var(--text-1); }
+.pv-vol { width: 72px; accent-color: var(--accent); }
+.pv-bar .icon-btn { width: 30px; height: 30px; }
+.pv-bar .icon-btn svg { width: 16px; height: 16px; }

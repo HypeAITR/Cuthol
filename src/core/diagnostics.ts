@@ -237,6 +237,9 @@ export const DIAGNOSTICS = {
       `Setting '${key}' is locked by environment variable ${variable}; unset it to change the stored value.`,
       `Unset ${variable} and re-run, or keep the environment value.`
     ),
+  // [lane-mute G125–G126]
+  // [script-ext G433, G438–G439]
+  // [monitor-scaffold G214–G216]
 
   // --- Environment: CUTHOL-G212 ---
   FFMPEG_VERSION_BELOW_SUPPORTED: (tool: string, found: string) =>

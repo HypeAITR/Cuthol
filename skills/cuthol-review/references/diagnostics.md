@@ -28,6 +28,7 @@ and never reused; they may appear in old projects and logs.
 | G122 | G1 ERROR | Extension transition unavailable, or its easing unsupported → check install, manifest `transitions`, and enabled state. |
 | G123 | G1 ERROR | Transition params invalid (builtins take none) → fix per the manifest. |
 | G124 | G1 ERROR | Colour temperature outside 1000..40000 K → `--temperature 6500` (neutral, no filter). |
+| G125 | G1 ERROR | `lane mute` targeting `spine` → the spine is not a lane; `spine mute --clip <id>` for a clip, `lane mute --lane <id>` for a lane. |
 | G201 | G2 ERROR | File missing on disk. |
 | G202 | G2 ERROR | Source range beyond the media length. |
 | G203 | G2 ERROR | Audio operation on an asset without audio. |

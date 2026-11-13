@@ -28,7 +28,7 @@ export interface LiveEditResult {
   json: Record<string, unknown>;
 }
 
-const EDIT_ACTIONS = ["split", "trim", "delete", "move-cue", "cue-duration", "mute", "lane-lock", "undo", "redo"] as const;
+const EDIT_ACTIONS = ["split", "trim", "delete", "move-cue", "cue-duration", "mute", "lane-lock", "lane-mute", "undo", "redo"] as const;
 export type LiveEditAction = (typeof EDIT_ACTIONS)[number];
 
 /** Resume summary shows one line per operation, then `+N more`. */
@@ -108,6 +108,7 @@ export function buildEditCliArgs(body: LiveEditBody, seq: unknown): string[] {
   }
 
   if (action === "lane-lock") return buildLaneLockArgs({ ...body, action, target }, seq);
+  if (action === "lane-mute") return buildLaneMuteArgs({ ...body, action, target }, seq);
 
   if (!target) throw new Error(`'${action}' needs a target handle`);
   const isCue = target.startsWith("cue_");
@@ -216,6 +217,19 @@ function buildLaneLockArgs(body: LiveEditBody, seq: unknown): string[] {
   const lanes = lanesOf(seq);
   if (lanes.length > 0 && !lanes.some((l) => l?.id === rawLane)) throw new Error(`unknown lane '${rawLane}'`);
   return ["lane", locked ? "lock" : "unlock", "--lane", rawLane];
+}
+
+function buildLaneMuteArgs(body: LiveEditBody, seq: unknown): string[] {
+  const params = asRecord(body.params);
+  const target = typeof body.target === "string" ? body.target : "";
+  const rawLane = typeof params.lane === "string" && params.lane ? params.lane : target;
+  const muted = params.muted;
+  if (typeof rawLane !== "string" || !rawLane) throw new Error(`'lane-mute' needs a lane id (target or params.lane)`);
+  if (typeof muted !== "boolean") throw new Error(`'lane-mute' needs params.muted true or false`);
+  if (rawLane === "spine") throw new Error(`'lane-mute' cannot target the spine (mute a spine clip instead)`);
+  const lanes = lanesOf(seq);
+  if (lanes.length > 0 && !lanes.some((l) => l?.id === rawLane)) throw new Error(`unknown lane '${rawLane}'`);
+  return ["lane", muted ? "mute" : "unmute", "--lane", rawLane];
 }
 
 function cliPath(): string {

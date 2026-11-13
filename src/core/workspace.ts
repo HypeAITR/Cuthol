@@ -694,6 +694,29 @@ export function setLaneLockStatus(options: {
   return { ...result, revision };
 }
 
+export function setLaneMuteStatus(options: {
+  workspaceDir: string;
+  laneId: string;
+  muted: boolean;
+}): { laneId: string; muted: boolean; revision: number } {
+  const { result, revision } = commitSequenceMutation(
+    options.workspaceDir,
+    `lane.${options.muted ? "mute" : "unmute"}(${options.laneId})`,
+    (seq) => {
+      if (options.laneId === "spine") {
+        throw new CutholError(DIAGNOSTICS.LANE_MUTE_SPINE());
+      }
+      const lane = seq.lanes.find((l) => l.id === options.laneId);
+      if (!lane) {
+        throw new CutholError(DIAGNOSTICS.UNKNOWN_HANDLE(options.laneId));
+      }
+      lane.muted = options.muted;
+      return { laneId: lane.id, muted: lane.muted };
+    }
+  );
+  return { ...result, revision };
+}
+
 export function tagCurrentRevision(dir: string, tag: string): JournalEntry {
   const { paths } = loadSequence(dir);
   const manifest = loadJournalManifest(paths);

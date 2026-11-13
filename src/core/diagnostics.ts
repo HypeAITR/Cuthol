@@ -238,6 +238,15 @@ export const DIAGNOSTICS = {
       `Unset ${variable} and re-run, or keep the environment value.`
     ),
   // [lane-mute G125–G126]
+  LANE_MUTE_SPINE: () =>
+    createDiagnostic(
+      "CUTHOL-G125",
+      "G1_SCHEMA",
+      "ERROR",
+      "The spine is not a lane: 'lane mute' cannot target 'spine'.",
+      "Mute a spine clip with 'cuthol spine mute --clip <id>', or pass a lane id ('ln_*') to 'cuthol lane mute --lane <id>'.",
+      "spine"
+    ),
   // [script-ext G433, G438–G439]
   // [monitor-scaffold G214–G216]
 

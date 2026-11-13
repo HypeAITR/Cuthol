@@ -377,6 +377,8 @@ const REST_BUDGETS: Record<string, RestBudget> = {
 
   "lane.lock": { max: 1, occupiedBy: ["lane"] },
   "lane.unlock": { max: 1, occupiedBy: ["lane"] },
+  "lane.mute": { max: 1, occupiedBy: ["lane"] },
+  "lane.unmute": { max: 1, occupiedBy: ["lane"] },
   "lane.add-composition": { max: 1, occupiedBy: ["comp-dir", "composition-dir", "dir-comp"] },
   "lane.update-cue": { max: 1, occupiedBy: ["cue", "id"] },
   "lane.excise": { max: 1, occupiedBy: ["cue", "id", "clip"], suggest: EXCISE_RANGES_SUGGEST },

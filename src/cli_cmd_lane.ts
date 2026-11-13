@@ -10,7 +10,7 @@ import {
 import { CutholError, DIAGNOSTICS } from "./core/diagnostics.js";
 import { CompositionAudioMode, HyperFramesCompositeMode, LaneCue, LaneKind } from "./core/schema.js";
 import { parseTimeMs } from "./core/time.js";
-import { loadSequence, setLaneLockStatus } from "./core/workspace.js";
+import { loadSequence, setLaneLockStatus, setLaneMuteStatus } from "./core/workspace.js";
 import { commitVerifiedMutation, VerificationReport } from "./verify/gates.js";
 import {
   addLaneCue,
@@ -71,6 +71,19 @@ export function runLaneCommand(ctx: CliCommandContext): CliCommandResult {
       workspaceDir,
       laneId,
       locked: action === "lock",
+    });
+    emitEnvelopeJson(workspaceDir, `lane.${action}`, {
+      action: `lane.${action}`,
+      ...res,
+    });
+    return;
+  }
+  if (action === "mute" || action === "unmute") {
+    const laneId = strFlag(flags, "lane") ?? rest[0] ?? "ln_titles";
+    const res = setLaneMuteStatus({
+      workspaceDir,
+      laneId,
+      muted: action === "mute",
     });
     emitEnvelopeJson(workspaceDir, `lane.${action}`, {
       action: `lane.${action}`,

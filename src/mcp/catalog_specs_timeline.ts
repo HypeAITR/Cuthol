@@ -411,5 +411,21 @@ export const TIMELINE_ACTION_SPECS: ActionSpec[] = [
     mutates: true,
     params: [{ name: "lane", type: "string", description: "Lane id.", required: true }],
   },
+  {
+    tool: "lane",
+    action: "mute",
+    argv: ["lane", "mute"],
+    summary: "Mute a lane: its cues are skipped by render, preview, mix, captions and audio health.",
+    mutates: true,
+    params: [{ name: "lane", type: "string", description: "Lane id.", required: true }],
+  },
+  {
+    tool: "lane",
+    action: "unmute",
+    argv: ["lane", "unmute"],
+    summary: "Unmute a lane.",
+    mutates: true,
+    params: [{ name: "lane", type: "string", description: "Lane id.", required: true }],
+  },
 
 ];

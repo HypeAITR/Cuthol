@@ -7,8 +7,7 @@
 // Ruler tiers: the top band carries the playhead triangle handle, the amber
 // AGENT label and white note diamonds; the lower band carries ticks and time
 // labels. The ruler row has no track header. Each track header (fixed
-// 180–200 px) shows the lane name, a mute indicator (lane-level mute is not
-// available in the CLI, so it never activates) and a working lane lock.
+// 180–200 px) shows the lane name, a working lane mute toggle and a working lane lock.
 /** @param {HTMLElement|null} root  @param {import('./app.js').LiveContext} ctx */
 export function mount(root, ctx) {
   if (!root) return;
@@ -184,14 +183,15 @@ export function mount(root, ctx) {
         `<span class="tl-label-text"><span class="tl-label-code mono">${escapeHtml(tr.label)}</span>` +
         `<span class="tl-label-sub dim">${escapeHtml(tr.sub)}</span></span>` +
         (isSpine ? "" :
-          `<button class="tl-head-btn tl-mute" type="button" disabled title="Lane mute is not available yet" aria-label="Lane muted" aria-pressed="${tr.muted}">` +
+          `<button class="tl-head-btn tl-mute" type="button" data-lane="${escapeHtml(tr.key)}" title="${tr.muted ? "Unmute lane" : "Mute lane"}" aria-label="${tr.muted ? "Unmute lane" : "Mute lane"}" aria-pressed="${tr.muted}" disabled>` +
           `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${ICONS.mute}</svg></button>` +
           `<button class="tl-head-btn tl-lock" type="button" data-lane="${escapeHtml(tr.key)}" title="${tr.locked ? "Unlock lane" : "Lock lane"}" aria-label="${tr.locked ? "Unlock lane" : "Lock lane"}" aria-pressed="${tr.locked}" disabled>` +
           `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${tr.locked ? ICONS.lock : ICONS.unlock}</svg></button>`);
+      if (!isSpine && tr.muted) lab.classList.add("tl-label-muted");
       lab.title = isSpine ? "Spine" : `${tr.sub} (${tr.key})`;
       labelsInner.appendChild(lab);
       const cv = document.createElement("canvas");
-      cv.className = "tl-track";
+      cv.className = "tl-track" + (!isSpine && tr.muted ? " tl-track-muted" : "");
       cv.dataset.track = tr.key;
       tracksBox.appendChild(cv);
       cv.addEventListener("click", (ev) => onTrackClick(ev, tr));
@@ -199,7 +199,11 @@ export function mount(root, ctx) {
     for (const b of labelsInner.querySelectorAll(".tl-lock")) {
       b.addEventListener("click", () => void toggleLaneLock(b.dataset.lane));
     }
+    for (const b of labelsInner.querySelectorAll(".tl-mute")) {
+      b.addEventListener("click", () => void toggleLaneMute(b.dataset.lane));
+    }
     syncLockButtons();
+    syncMuteButtons();
     sizeCanvases();
   }
 
@@ -229,6 +233,35 @@ export function mount(root, ctx) {
     for (const b of labelsInner.querySelectorAll(".tl-lock")) {
       if (document.activeElement !== b) b.disabled = !human;
       b.title = human ? (b.getAttribute("aria-pressed") === "true" ? "Unlock lane" : "Lock lane") : "Pause the agent to lock a lane";
+    }
+  }
+
+  async function toggleLaneMute(laneId) {
+    const b = labelsInner.querySelector(`.tl-mute[data-lane="${CSS.escape(laneId)}"]`);
+    const tr = tracks.find((t) => t.key === laneId);
+    const muted = !(tr?.muted ?? false);
+    if (b) b.disabled = true;
+    try {
+      const res = await ctx.api.post("/api/edit", {
+        action: "lane-mute",
+        target: laneId,
+        params: { lane: laneId, muted },
+        expect_rev: ctx.store.state.revision,
+      });
+      if (!res || !res.ok) {
+        if (b) b.title = String(res?.message ?? "Mute failed — pause the agent first");
+      }
+    } catch {
+      if (b) b.title = "Mute failed — no response from the server";
+    }
+    if (b) b.disabled = ctx.store.state.mode !== "human";
+  }
+
+  function syncMuteButtons() {
+    const human = ctx.store.state.mode === "human";
+    for (const b of labelsInner.querySelectorAll(".tl-mute")) {
+      if (document.activeElement !== b) b.disabled = !human;
+      b.title = human ? (b.getAttribute("aria-pressed") === "true" ? "Unmute lane" : "Mute lane") : "Pause the agent to mute a lane";
     }
   }
 
@@ -659,6 +692,7 @@ export function mount(root, ctx) {
       b.title = `${b.getAttribute("aria-label")}${human ? "" : " (disabled while the agent edits)"}`;
     }
     syncLockButtons();
+    syncMuteButtons();
   }
 
   new ResizeObserver(() => layout()).observe(scroll);

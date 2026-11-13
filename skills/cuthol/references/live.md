@@ -40,3 +40,5 @@ After opening, stop thinking about the window.
   Precedence: `CUTHOL_LIVE` env > project > user > `ask`.
 - `live_stop` (CLI: `cuthol live stop`) stops the server (the window shows
   "disconnected").
+- When paused, the user can mute/unmute a lane from its track header; their
+  edit reaches you like any other human edit after `live_wait`.

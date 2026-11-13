@@ -97,7 +97,8 @@ Default lanes (higher z is on top; negative = audio-only): `ln_captions`
   duration and projects word times at the new speed (`atempo` by default).
 - Overlapping composition cues stack by lane `z_index`, then cue `z_index`,
   then cue order. `lane.remove_cue(cues=[...])`, `lane.lock(lane)`,
-  `lane.unlock(lane)`. Cues running past the spine give G306.
+  `lane.unlock(lane)`, `lane.mute(lane)` / `lane.unmute(lane)` (muted lanes are
+  skipped by render, preview, mix and captions). Cues running past the spine give G306.
 - A cue is visible on exactly the frames with `start <= t < end` (the end instant starts the next frame and is never part of the cue).
 
 ## Undo, journal, outside edits

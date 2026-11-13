@@ -6,6 +6,7 @@ import {
   ParameterEnvelope,
   SpineClip,
 } from "../core/schema.js";
+
 import { computeSequenceDurationMs, resolveCueStartMs } from "../core/timeline.js";
 import { SceneAnalysisResult } from "../library/scenes.js";
 import { WaveformAnalysisResult } from "../library/waveform.js";
@@ -333,6 +334,160 @@ function compileGlobalAudioEnvelope(
       };
 }
 
+/**
+ * Full-sequence beat grid in absolute sequence seconds — the same music source the
+ * local per-cue grid comes from (music lane `ln_bgm` first, spine audio fallback),
+ * but collected across the whole sequence instead of clipped to one cue window.
+ * Trimming the music moves this grid (its times are sequence-mapped through the
+ * cue/clip trims); `C.beats` stays window-local.
+ */
+function compileGlobalBeats(
+  ctx: BridgeCueExportContext,
+  seqDurationSec: number
+): CutholBridgeGlobalV1["beats"] {
+  const { seq, libMap, ledger } = ctx;
+  const toGlobalSec = (seqMs: number): number => Number((seqMs / 1000).toFixed(4));
+
+  let bpm = 0;
+  const beatEntries: Array<{ t: number; strength: number; down: boolean }> = [];
+  const gridEntries: Array<{ t: number; down: boolean }> = [];
+
+  if (ledger) {
+    const musicSources: Array<{
+      handle: string;
+      digest: string;
+      seqStartMs: number;
+      durMs: number;
+      srcInMs: number;
+      isMusicLane: boolean;
+      clipRef?: SpineClip;
+    }> = [];
+
+    for (const lane of seq.lanes) {
+      if (lane.muted || lane.kind !== "music") continue;
+      for (const mCue of lane.cues) {
+        if (!mCue.asset_handle || mCue.audio_chain?.muted) continue;
+        const mStart = resolveCueStartMs(seq, mCue);
+        const asset = libMap.get(mCue.asset_handle);
+        if (asset) {
+          musicSources.push({
+            handle: asset.handle,
+            digest: asset.digest_sha256,
+            seqStartMs: mStart,
+            durMs: mCue.duration_ms,
+            srcInMs: mCue.source_in_ms ?? 0,
+            isMusicLane: true,
+          });
+        }
+      }
+    }
+
+    if (musicSources.length === 0) {
+      for (const clip of seq.spine.clips) {
+        if (clip.audio_chain.muted) continue;
+        const asset = libMap.get(clip.asset_handle);
+        if (asset) {
+          musicSources.push({
+            handle: asset.handle,
+            digest: asset.digest_sha256,
+            seqStartMs: clip.timeline_in_ms,
+            durMs: clip.duration_ms,
+            srcInMs: clip.source_in_ms,
+            isMusicLane: false,
+            clipRef: clip,
+          });
+        }
+      }
+    }
+
+    for (const src of musicSources) {
+      const beatData = ctx.getOrAnalyzeBeats(src);
+      if (!beatData) continue;
+      const effectiveBpm = beatData.grid_bpm ?? beatData.estimated_bpm;
+      if (bpm === 0 && effectiveBpm > 0) {
+        const rate = src.clipRef ? src.clipRef.playback.rate : 1;
+        bpm = Number((effectiveBpm * rate).toFixed(2));
+      }
+
+      const projectSrcMsToSeqMs = (bSrcMs: number): number | null => {
+        if (src.clipRef) {
+          if (bSrcMs < src.clipRef.source_in_ms || bSrcMs > src.clipRef.source_out_ms) return null;
+          return sourceMsToSequenceMs(src.clipRef, bSrcMs);
+        }
+        if (bSrcMs < src.srcInMs || bSrcMs > src.srcInMs + src.durMs) return null;
+        return src.seqStartMs + (bSrcMs - src.srcInMs);
+      };
+
+      const rawGridMs = Array.isArray(beatData.grid_ms) ? beatData.grid_ms : [];
+      rawGridMs.forEach((gSrcMs, idx) => {
+        const seqMs = projectSrcMsToSeqMs(gSrcMs);
+        if (seqMs === null || seqMs < 0 || seqMs > seqDurationSec * 1000) return;
+        gridEntries.push({ t: toGlobalSec(seqMs), down: idx % 4 === 0 });
+      });
+
+      if (Array.isArray(beatData.onsets) && beatData.onsets.length > 0) {
+        beatData.onsets.forEach((onset, idx) => {
+          const seqMs = projectSrcMsToSeqMs(onset.time_ms);
+          if (seqMs === null || seqMs < 0 || seqMs > seqDurationSec * 1000) return;
+          beatEntries.push({
+            t: toGlobalSec(seqMs),
+            strength: onset.strength,
+            down: onset.strength >= 0.85 || idx % 4 === 0,
+          });
+        });
+      } else {
+        beatData.beats_ms.forEach((bSrcMs, idx) => {
+          const seqMs = projectSrcMsToSeqMs(bSrcMs);
+          if (seqMs === null || seqMs < 0 || seqMs > seqDurationSec * 1000) return;
+          const isDown = idx % 4 === 0;
+          beatEntries.push({
+            t: toGlobalSec(seqMs),
+            strength: isDown ? 1.0 : idx % 2 === 0 ? 0.78 : 0.5,
+            down: isDown,
+          });
+        });
+      }
+    }
+  }
+
+  beatEntries.sort((a, b) => a.t - b.t);
+  const dedupedBeatEntries: typeof beatEntries = [];
+  for (const b of beatEntries) {
+    const prev = dedupedBeatEntries[dedupedBeatEntries.length - 1];
+    if (prev && Math.abs(prev.t - b.t) < 0.02) {
+      if (b.strength > prev.strength) prev.strength = b.strength;
+      prev.down = prev.down || b.down;
+    } else {
+      dedupedBeatEntries.push({ ...b });
+    }
+  }
+
+  gridEntries.sort((a, b) => a.t - b.t);
+  const dedupedGridEntries: typeof gridEntries = [];
+  for (const g of gridEntries) {
+    const prev = dedupedGridEntries[dedupedGridEntries.length - 1];
+    if (prev && Math.abs(prev.t - g.t) < 0.02) {
+      prev.down = prev.down || g.down;
+    } else {
+      dedupedGridEntries.push({ ...g });
+    }
+  }
+
+  const gridTimes = dedupedGridEntries.map((g) => g.t);
+  const downbeatTimes =
+    dedupedGridEntries.length > 0
+      ? dedupedGridEntries.filter((g) => g.down).map((g) => g.t)
+      : dedupedBeatEntries.filter((b) => b.down).map((b) => b.t);
+
+  return {
+    bpm,
+    ...(gridTimes.length > 0 ? { offset: gridTimes[0], phase: gridTimes[0], grid: gridTimes } : {}),
+    times: dedupedBeatEntries.map((b) => b.t),
+    strength: dedupedBeatEntries.map((b) => b.strength),
+    downbeats: downbeatTimes,
+  };
+}
+
 function compileGlobalCutsAndSegments(
   ctx: BridgeCueExportContext,
   seqDurationMs: number,
@@ -420,6 +575,7 @@ export function compileGlobalBridgeSlice(ctx: BridgeCueExportContext): CutholBri
     seqDurationSec,
     toGlobalSec
   );
+  const globalBeats = compileGlobalBeats(ctx, seqDurationSec);
   const globalAudio = compileGlobalAudioEnvelope(ctx, seqDurationSec);
   const { globalDedupedCuts, globalSegments } = compileGlobalCutsAndSegments(
     ctx,
@@ -432,6 +588,7 @@ export function compileGlobalBridgeSlice(ctx: BridgeCueExportContext): CutholBri
     duration: seqDurationSec,
     words: globalDedupedWords,
     pauses: globalPauses,
+    beats: globalBeats,
     audio: globalAudio,
     cuts: globalDedupedCuts.map((c) => ({ t: c.t, ...(c.kind ? { kind: c.kind } : {}) })),
   };
@@ -449,6 +606,7 @@ export function compileGlobalBridgeSlice(ctx: BridgeCueExportContext): CutholBri
     duration: seqDurationSec,
     words: globalDedupedWords,
     pauses: globalPauses,
+    beats: globalBeats,
     audio: globalHashable.audio,
     cuts: globalDedupedCuts,
     segments: globalSegments,

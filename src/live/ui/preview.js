@@ -6,6 +6,7 @@
 // Anything the stage cannot imitate (color grade, treatments, LUTs, extension
 // effects) raises the "Approximate" badge with an "Exact frame" button.
 import { DEFAULT_SHORTCUTS, loadShortcuts, matchShortcut, resolveShortcuts } from "./shortcuts.js";
+import { createGrader } from "./color.js";
 
 const SPEEDS = [1, 2, 0.5];
 const PROXY_POLL_MS = 2500;
@@ -1091,7 +1092,54 @@ export function mount(root, ctx) {
     else if (matchShortcut(shortcutMap, e, "go-end")) { e.preventDefault(); setPlaying(false); seekTo(durationMs); }
   });
 
-  store.on("snapshot", (s) => takeSequence(s.sequence, s.snapshot?.project ?? s.project ?? null));
+  // -- colour grade (WebGL2 tetrahedral LUT over the visible video) ---------------
+  const grader = createGrader(ctx);
+  ctx.colorGrade = grader;
+  window.__cutholGrade = grader;
+  const gradeBtn = btns.grade ?? root.querySelector('[data-act="grade"]');
+  function colorItemAt(t) {
+    if (!seq) return null;
+    for (const lane of seq.lanes ?? []) {
+      for (const cue of lane.cues ?? []) {
+        if (!cue?.asset_handle) continue;
+        const start = cueStartMs(seq, cue, cueById);
+        if (t >= start && t < start + (cue.duration_ms ?? 0) && cue.color) return cue.id;
+      }
+    }
+    const found = clipAt(t);
+    if (found?.clip?.treatments?.color) return found.clip.id;
+    return null;
+  }
+  let gradeTimer = 0;
+  let lastGradeKey = "";
+  // Throttled, not debounced: playback emits playhead events every frame, and a timer reset on each
+  // one never fired while playing (the grade stayed on the previous clip until the next cut).
+  async function maybeGrade() {
+    if (gradeTimer) return;
+    gradeTimer = setTimeout(async () => {
+      gradeTimer = 0;
+      const vis = slots.find((s) => s.el.style.visibility !== "hidden") ?? slots[0];
+      const id = colorItemAt(nowMs());
+      if (!id || !vis) { grader.stop(); lastGradeKey = ""; if (gradeBtn) gradeBtn.hidden = true; return; }
+      const key = `${id}|r${store.state.revision ?? 0}`;
+      if (key === lastGradeKey && grader.state.video === vis.el) return;
+      lastGradeKey = key;
+      try {
+        const r = await grader.attach(vis.el, id, null);
+        if (gradeBtn) gradeBtn.hidden = !(r && r.graded);
+        window.dispatchEvent(new CustomEvent("cuthol:grade", { detail: { item: id, graded: !!(r && r.graded) } }));
+      } catch (e) { console.error("[color] grade attach", e); }
+    }, 120);
+  }
+  store.on("delta", maybeGrade);
+  store.on("playhead", maybeGrade);
+  store.on("state", maybeGrade);
+  if (gradeBtn) gradeBtn.addEventListener("click", () => {
+    grader.state.bypass = !grader.state.bypass;
+    gradeBtn.setAttribute("aria-pressed", String(!grader.state.bypass));
+    gradeBtn.textContent = grader.state.bypass ? "Ungraded" : "Grade";
+  });
+  store.on("snapshot", (s) => { takeSequence(s.sequence, s.snapshot?.project ?? s.project ?? null); maybeGrade(); });
   store.on("delta", (d) => {
     // New revision at the same time, playback continues without a flicker.
     // Duration comes from the server (spine and lanes); never recompute it here.

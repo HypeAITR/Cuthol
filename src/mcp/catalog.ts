@@ -14,6 +14,7 @@ import { PROJECT_ACTION_SPECS } from "./catalog_specs_project.js";
 import { TIMELINE_ACTION_SPECS } from "./catalog_specs_timeline.js";
 import { MEDIA_ACTION_SPECS } from "./catalog_specs_media.js";
 import { OUTPUT_ACTION_SPECS } from "./catalog_specs_output.js";
+import { COLOR_ACTION_SPECS } from "./catalog_specs_color.js";
 
 export type { ParamType, ParamSpec, ActionSpec, ToolSpec } from "./catalog_types.js";
 
@@ -73,6 +74,12 @@ export const TOOL_SPECS: ToolSpec[] = [
     description: "Export the edit as a cue sheet JSON, or diff/plan/apply a cue sheet file in one transaction.",
   },
   {
+    name: "color",
+    title: "Colour stages & Looks",
+    description:
+      "Measurement-backed colour: map/diff/solve grades, write block stages with `set` (the only way colour changes), manage Looks, preview variant sheets. Colour never applies itself: `solve` only proposes a patch.",
+  },
+  {
     name: "verify",
     title: "Verify the edit",
     description:
@@ -109,6 +116,7 @@ export const ACTION_SPECS: ActionSpec[] = [
   ...TIMELINE_ACTION_SPECS,
   ...MEDIA_ACTION_SPECS,
   ...OUTPUT_ACTION_SPECS,
+  ...COLOR_ACTION_SPECS,
 ];
 
 /** Tools that do not take a workspace `dir`. */

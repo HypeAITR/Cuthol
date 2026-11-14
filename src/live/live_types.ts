@@ -218,3 +218,15 @@ export interface LiveNotesPayload {
 
 /** Environment variable the live server sets when it runs a human edit through the CLI. */
 export const LIVE_ACTOR_ENV = "CUTHOL_LIVE_ACTOR";
+
+/** Graded-preview LUT payload of GET /api/color/lut and POST /api/color/preview. */
+export interface LiveColorLut {
+  ok: true;
+  item: string;
+  hash: string;
+  size: number;
+  data: string;
+  identity: boolean;
+  selftest: { samples: number; mean_de: number; p99_de: number; max_de: number };
+  bake_ms: number;
+}

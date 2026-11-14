@@ -28,7 +28,7 @@ export interface LiveEditResult {
   json: Record<string, unknown>;
 }
 
-const EDIT_ACTIONS = ["split", "trim", "delete", "move-cue", "cue-duration", "mute", "lane-lock", "lane-mute", "undo", "redo"] as const;
+const EDIT_ACTIONS = ["split", "trim", "delete", "move-cue", "cue-duration", "mute", "lane-lock", "lane-mute", "undo", "redo", "color"] as const;
 export type LiveEditAction = (typeof EDIT_ACTIONS)[number];
 
 /** Resume summary shows one line per operation, then `+N more`. */
@@ -109,6 +109,7 @@ export function buildEditCliArgs(body: LiveEditBody, seq: unknown): string[] {
 
   if (action === "lane-lock") return buildLaneLockArgs({ ...body, action, target }, seq);
   if (action === "lane-mute") return buildLaneMuteArgs({ ...body, action, target }, seq);
+  if (action === "color") return buildColorArgs({ ...body, action, target }, seq);
 
   if (!target) throw new Error(`'${action}' needs a target handle`);
   const isCue = target.startsWith("cue_");
@@ -230,6 +231,31 @@ function buildLaneMuteArgs(body: LiveEditBody, seq: unknown): string[] {
   const lanes = lanesOf(seq);
   if (lanes.length > 0 && !lanes.some((l) => l?.id === rawLane)) throw new Error(`unknown lane '${rawLane}'`);
   return ["lane", muted ? "mute" : "unmute", "--lane", rawLane];
+}
+
+function buildColorArgs(body: LiveEditBody, seq: unknown): string[] {
+  const params = asRecord(body.params);
+  const target = typeof body.target === "string" ? body.target : "";
+  if (!target) throw new Error(`'color' needs a target item id`);
+  const isCue = target.startsWith("cue_");
+  const isClip = target.startsWith("sp_");
+  if (!isCue && !isClip) throw new Error(`unknown target '${target}'`);
+  if (isClip && !findClip(seq, target)) throw new Error(`unknown clip '${target}'`);
+  if (isCue && !findCue(seq, target)) throw new Error(`unknown cue '${target}'`);
+  const patch = params.patch;
+  if (patch === undefined || (typeof patch !== "object" && typeof patch !== "string")) {
+    throw new Error(`'color' needs params.patch (a colour stage object or JSON string)`);
+  }
+  const patchText = typeof patch === "string" ? patch : JSON.stringify(patch);
+  try {
+    JSON.parse(patchText);
+  } catch {
+    throw new Error(`'color' params.patch is not valid JSON`);
+  }
+  const reason = params.reason;
+  const args = ["color", "set", "--item", target, "--patch", patchText, "--reason", typeof reason === "string" && reason ? reason : "taste"];
+  if (body.expect_rev !== undefined) args.push("--expect-rev", String(body.expect_rev));
+  return args;
 }
 
 function cliPath(): string {

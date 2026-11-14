@@ -1,0 +1,41 @@
+/* Colour and effects styles. Prefixes: .pv- (graded preview), .fx- (Effects tab + overlay), .clp- (Color menu), .sc- (scopes) */
+.pv-grade { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+
+/* Effects tab: rows like the settings screen (no boxes) */
+.fx-list { margin: 0; padding: 0 var(--s-3); list-style: none; }
+.fx-list li { border-bottom: 1px solid var(--line); }
+.fx-list li:last-child { border-bottom: none; }
+.fx-item-btn { width: 100%; display: block; padding: var(--s-2) 0; border: 0; background: transparent; color: var(--text-1); font: inherit; cursor: pointer; text-align: left; }
+.fx-item-btn:hover .fx-name { color: var(--accent, var(--text-1)); text-decoration: underline; text-underline-offset: 3px; }
+.fx-name { display: block; font-weight: var(--fw-medium); }
+.fx-hint { display: block; margin-top: var(--s-1); color: var(--text-2); font-size: var(--fs-12); }
+
+/* Overlay over the right column (Activity + tabs) */
+#rightcol { position: relative; }
+.fx-overlay { position: absolute; inset: 0; z-index: 30; display: flex; flex-direction: column; border: 1px solid var(--line-strong); }
+.fx-head { flex: none; display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) var(--s-3); border-bottom: 1px solid var(--line); }
+.fx-title { font-size: var(--fs-14); font-weight: 600; color: var(--text-1); }
+.fx-item { font-size: var(--fs-12); }
+.fx-close { margin-left: auto; width: 26px; height: 26px; border-radius: var(--r-sm); border: 0; background: transparent; color: var(--text-2); font-size: var(--fs-14); cursor: pointer; }
+.fx-close:hover { background: var(--bg-hover); color: var(--text-1); }
+.fx-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: var(--s-3); }
+
+/* Color menu */
+.clp { display: flex; flex-direction: column; gap: var(--s-3); }
+.clp-row { display: flex; align-items: center; gap: var(--s-2); }
+.clp-ab { height: 26px; padding: 0 var(--s-3); border-radius: var(--r-sm); border: 1px solid var(--line-strong); background: var(--bg-raised); color: var(--text-1); font-size: var(--fs-12); cursor: pointer; }
+.clp-ab[aria-pressed="false"] { background: var(--bg-hover); color: var(--text-2); }
+.clp-ab:disabled { opacity: 0.4; cursor: default; }
+.clp-state { font-size: var(--fs-12); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.clp-sliders { display: grid; gap: var(--s-2); }
+.clp-sliders.disabled { opacity: 0.45; pointer-events: none; }
+.clp-slider { display: grid; grid-template-columns: 84px 1fr 48px; align-items: center; gap: var(--s-2); font-size: var(--fs-12); color: var(--text-2); }
+.clp-slider input[type="range"] { width: 100%; }
+.clp-slider output { text-align: right; color: var(--text-2); }
+.clp-hint { font-size: var(--fs-12); }
+
+/* Scopes */
+.sc-head { display: flex; gap: var(--s-1); align-items: center; }
+.sc-toggle { height: 26px; padding: 0 var(--s-2); border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--bg-raised); color: var(--text-1); font-size: var(--fs-12); cursor: pointer; }
+.sc-mode { height: 26px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--bg-raised); color: var(--text-1); font-size: var(--fs-12); }
+.sc-canvas { width: 100%; aspect-ratio: 360 / 220; margin-top: var(--s-2); border-radius: var(--r-sm); border: 1px solid var(--line); background: #000; }

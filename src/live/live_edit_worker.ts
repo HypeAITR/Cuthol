@@ -18,6 +18,7 @@ import {
 import { runWorkspaceCommand } from "../cli_cmd_workspace.js";
 import { runSpineCommand } from "../cli_cmd_spine.js";
 import { runLaneCommand } from "../cli_cmd_lane.js";
+import { runColorCommand } from "../cli_cmd_color.js";
 import { readWorkspaceRevision } from "../mcp/mcp_format.js";
 import { runWorkspaceVerification } from "../verify/gates.js";
 import { LIVE_ACTOR_ENV } from "./live_types.js";
@@ -40,7 +41,7 @@ export interface LiveEditJobResult {
   stderr: string;
 }
 
-function runJob(job: LiveEditJob): LiveEditJobResult {
+async function runJob(job: LiveEditJob): Promise<LiveEditJobResult> {
   const out: string[] = [];
   const err: string[] = [];
   const log = console.log;
@@ -64,7 +65,15 @@ function runJob(job: LiveEditJob): LiveEditJobResult {
     });
     const ctx: CliCommandContext = { group: group ?? "", action, rest, flags, workspaceDir: job.projectDir, formatFlag: "" };
     const handled =
-      group === "spine" ? runSpineCommand(ctx) : group === "lane" ? runLaneCommand(ctx) : group === "workspace" ? runWorkspaceCommand(ctx) : CLI_NOT_HANDLED;
+      group === "spine"
+        ? runSpineCommand(ctx)
+        : group === "lane"
+          ? runLaneCommand(ctx)
+          : group === "workspace"
+            ? runWorkspaceCommand(ctx)
+            : group === "color" && action === "set"
+              ? await runColorCommand(ctx)
+              : CLI_NOT_HANDLED;
     if (handled === CLI_NOT_HANDLED) {
       status = 1;
       err.push(`not an edit command: ${job.args.join(" ")}`);
@@ -97,5 +106,5 @@ parentPort?.on("message", (job: LiveEditJob | { warm: string }) => {
     }
     return;
   }
-  parentPort?.postMessage(runJob(job));
+  void runJob(job).then((r) => parentPort?.postMessage(r));
 });

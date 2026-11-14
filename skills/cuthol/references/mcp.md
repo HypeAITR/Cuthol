@@ -26,7 +26,7 @@ Client configuration (JSON used by most MCP clients):
 }
 ```
 
-Requirements on the machine: Node.js ≥ 22.5, `ffmpeg`/`ffprobe` on PATH, and a Chrome that HyperFrames can launch (for overlays). API keys are only needed for transcription and voiceover; they can also live in a `.env` file inside the project folder. After adding or editing `.mcp.json`, restart the MCP client session and approve the server; to verify the server directly over stdio, send `initialize` followed by `tools/list` to `node dist/cli.js mcp` and confirm 14 tools are returned.
+Requirements on the machine: Node.js ≥ 22.5, `ffmpeg`/`ffprobe` on PATH, and a Chrome that HyperFrames can launch (for overlays). API keys are only needed for transcription and voiceover; they can also live in a `.env` file inside the project folder. After adding or editing `.mcp.json`, restart the MCP client session and approve the server; to verify the server directly over stdio, send `initialize` followed by `tools/list` to `node dist/cli.js mcp` and confirm 15 tools are returned.
 
 Environment switches:
 - **MCP server**: `CUTHOL_WORKSPACE` (default project), `CUTHOL_MCP_PROGRESSIVE=1` (start with core tools only; unlock with `discover_capabilities`), `CUTHOL_MCP_STRUCTURED=1` (also send the full JSON as `structuredContent`), `CUTHOL_MCP_TIMEOUT_MS`.
@@ -39,7 +39,7 @@ Environment switches:
 
 ## Tools
 
-14 tools: `workspace`, `library`, `brief`, `spine`, `lane`, `composition`, `speech`, `mix`, `cue`, `verify`, `monitor`, `render`, `extension`, `guide`. Multi-action tools take an `action` argument; every property description starts with the actions that use it, e.g. `[split] Split points …`. Unknown arguments are rejected with the valid list and the closest match — read the message instead of guessing again.
+15 tools: `workspace`, `library`, `brief`, `spine`, `lane`, `composition`, `speech`, `mix`, `cue`, `color`, `verify`, `monitor`, `render`, `extension`, `guide`. Multi-action tools take an `action` argument; every property description starts with the actions that use it, e.g. `[split] Split points …`. Unknown arguments are rejected with the valid list and the closest match — read the message instead of guessing again.
 
 ## Conventions
 

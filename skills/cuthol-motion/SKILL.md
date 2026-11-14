@@ -39,6 +39,21 @@ audio energy and cuts **in the composition's own seconds** (0 = cue start).
 Use the stage size from `brief` (16:9 → 1920x1080, 9:16 → 1080x1920) for `#root`
 and `data-width/height`. `C.safe` gives the title-safe box in px.
 
+## Ready-made HyperFrames blocks
+
+The HyperFrames registry has ~200 blocks (lower thirds, charts, title cards,
+overlay transitions). Use one before hand-building a named look:
+
+1. `npx hyperframes catalog lower-third` (or `--tag chart`, `--json`) to find it.
+2. Scaffold a composition, then inside its folder:
+   `npx hyperframes add <block> --no-clipboard --json` → writes
+   `compositions/<block>.html` and prints an include snippet.
+3. Paste the snippet into your `index.html` (inside `#root`, with
+   `data-start`), keep the outer `data-duration` ≥ the block's.
+4. Mount and check as usual (`lane.add_composition`, `composition.preview`):
+   blocks render with true alpha over the footage. Set texts through the
+   block's variables (`--vars`) or edit its HTML.
+
 ## Long and layered compositions
 
 - **Full-length single compositions are normal:** a composition can span the

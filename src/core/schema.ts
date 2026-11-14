@@ -7,6 +7,7 @@
  */
 
 import { OPEN_STANDARDS } from "./standards.js";
+import type { ColorLookSpec, ColorSourceSpec, ColorStageSpec } from "../color/types.js";
 
 export type AspectPreset = "9:16" | "16:9" | "1:1" | "4:5";
 
@@ -57,6 +58,8 @@ export interface LibraryItem {
    * Where a fetched media asset came from (set by `library fetch` from a media provider).
    */
   source?: MediaSourceRef;
+  /** Source kind and input transform for colour work (`color kind`). Omitted = unknown kind, input `auto`. */
+  color_source?: ColorSourceSpec;
   analysis_refs: {
     loudness?: string;
     waveform?: string;
@@ -144,6 +147,11 @@ export interface VisualTreatments {
     temperature_k: number;
     lut_uri: string | null;
   };
+  /**
+   * Block-based colour stage (`color set`), compiled to one 3D LUT after `color_grade`. Omitted = none
+   * (render identical to a compiler without colour stages).
+   */
+  color?: ColorStageSpec;
 }
 
 /**
@@ -203,7 +211,9 @@ export interface ParameterEnvelope {
     | "treatments.color_grade.brightness"
     | "treatments.color_grade.contrast"
     | "treatments.color_grade.saturation"
-    | `fx.${string}.${string}`;
+    | `fx.${string}.${string}`
+    /** Colour stage parameter: `color.<block>.<field>`, `color.<block>.amount`, `color.hsl.<id>.<field>`. */
+    | `color.${string}`;
   points: ParameterEnvelopePoint[];
 }
 
@@ -304,6 +314,8 @@ export interface LaneCue {
   typography?: TypographySpec;
   composition?: HyperFramesMountSpec;
   composition_audio?: CompositionAudioMode;
+  /** Colour stage of a visual (footage/image) cue, same model as a spine clip's `treatments.color`. */
+  color?: ColorStageSpec;
   envelopes: ParameterEnvelope[];
 }
 
@@ -373,6 +385,8 @@ export interface CutholSequence {
   };
   lanes: ParallelLane[];
   markers: TimelineMarker[];
+  /** Named project Looks (`color look create`). Omitted = none. */
+  looks?: ColorLookSpec[];
   extensions?: MountedExtensionRef[];
   /**
    * Default speech providers for this project (`speech providers` to change; the

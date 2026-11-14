@@ -10,6 +10,7 @@ import {
 import {
   CutholDiagnostic, DIAGNOSTICS
 } from "../core/diagnostics.js";
+import { checkRenderedColor } from "../color/render_check.js";
 import { CutholSequence } from "../core/schema.js";
 import { evaluateRgb24FrameBlankness } from "../monitor/preview.js";
 import { evaluateEnvelopeAt } from "../sequence/spine.js";
@@ -329,6 +330,7 @@ export function scanRenderedMp4ForBlankFrames(
 
   const diagnostics: CutholDiagnostic[] =
     events.length > 0 ? [DIAGNOSTICS.RENDER_BLANK_FRAMES_DETECTED(events)] : [];
+  try { diagnostics.push(...checkRenderedColor({ workspaceDir: process.env.CUTHOL_PROJECT_DIR ?? process.cwd(), renderedFile: mp4Path })); } catch { /* colour check is advisory */ }
 
   return {
     fps,

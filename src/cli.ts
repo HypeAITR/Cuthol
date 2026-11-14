@@ -63,6 +63,8 @@ import { runLiveCommand } from "./cli_cmd_live.js";
 import { runSettingsCommand } from "./cli_cmd_settings.js";
 import { runDoctorCommand } from "./cli_cmd_doctor.js";
 import { runSetupCommand } from "./cli_cmd_setup.js";
+import { runColorCommand } from "./cli_cmd_color.js";
+import { runExportCommand } from "./cli_cmd_export.js";
 import { maybeAutoInstallSkills } from "./core/skills_install.js";
 
 async function main(): Promise<void> {
@@ -227,6 +229,12 @@ async function main(): Promise<void> {
       break;
     case "setup":
       if ((await runSetupCommand(ctx)) !== CLI_NOT_HANDLED) return;
+      break;
+    case "color":
+      if ((await runColorCommand(ctx)) !== CLI_NOT_HANDLED) return;
+      break;
+    case "export":
+      if ((await runExportCommand(ctx)) !== CLI_NOT_HANDLED) return;
       break;
   }
 

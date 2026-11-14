@@ -305,8 +305,266 @@ export const DIAGNOSTICS = {
       "Mute a spine clip with 'cuthol spine mute --clip <id>', or pass a lane id ('ln_*') to 'cuthol lane mute --lane <id>'.",
       "spine"
     ),
+  // [local-speech G237–G239]
   // [script-ext G433, G438–G439]
   // [monitor-scaffold G214–G216]
+  // [color-schema G130–G139]   colour stage / Look validation, cluster and scope checks (verify)
+  COLOR_BLOCK_AMOUNT_RANGE: (subject: string, block: string, amount: unknown) =>
+    createDiagnostic(
+      "CUTHOL-G130",
+      "G1_SCHEMA",
+      "ERROR",
+      `Colour block '${block}' on '${subject}' has amount '${String(amount)}'; amount must be a number in 0..1.`,
+      `Set '${block}' amount between 0 and 1, e.g. 'cuthol color set --item ${subject} --amount ${block}=1' (omit amount for full strength).`,
+      subject
+    ),
+  COLOR_LOOK_UNKNOWN: (subject: string, look: string) =>
+    createDiagnostic(
+      "CUTHOL-G131",
+      "G1_SCHEMA",
+      "ERROR",
+      `Colour stage on '${subject}' binds unknown Look '${look}'.`,
+      `Bind an existing Look ('cuthol color look list') or create it with 'cuthol color look create --name ${look}'.`,
+      subject
+    ),
+  COLOR_LOOK_DUPLICATE: (look: string) =>
+    createDiagnostic(
+      "CUTHOL-G132",
+      "G1_SCHEMA",
+      "ERROR",
+      `Duplicate colour Look id '${look}'.`,
+      `Remove or rename the duplicate Look ('cuthol color look remove --look ${look}').`,
+      look
+    ),
+  COLOR_LOOK_LUT_MISSING: (look: string, uri: string) =>
+    createDiagnostic(
+      "CUTHOL-G133",
+      "G1_SCHEMA",
+      "ERROR",
+      `Look '${look}' points to LUT '${uri}', which is missing, outside the project or not a .cube/.3dl file.`,
+      `Put the .cube inside the project and recreate the Look ('cuthol color look create --name <n> --lut <file.cube>'), or remove it ('cuthol color look remove --look ${look}').`,
+      look
+    ),
+  COLOR_LOOKS_OVERLAP: (item: string, looks: string[]) =>
+    createDiagnostic(
+      "CUTHOL-G134",
+      "G1_SCHEMA",
+      "WARN",
+      `${looks.length} Looks reach '${item}' through apply_to (${looks.join(", ")}); only '${looks[0]}' is used.`,
+      `Bind the one you want ('cuthol color set --item ${item} --look <look_XX>') or narrow apply_to of the others.`,
+      item
+    ),
+  COLOR_LOOK_ON_DESIGNED_SOURCE: (item: string, look: string, kind: string) =>
+    createDiagnostic(
+      "CUTHOL-G135",
+      "G1_SCHEMA",
+      "WARN",
+      `Look '${look}' is bound to '${item}', a ${kind} source; designed colour (screen recordings, graphics) usually should not take a camera Look.`,
+      `Unbind it ('cuthol color set --item ${item} --remove look') unless the user asked for it, or correct the kind ('cuthol color kind --handle <vid_XX> --set camera').`,
+      item
+    ),
+  COLOR_HDR_WITHOUT_TRANSFORM: (handle: string, transfer: string) =>
+    createDiagnostic(
+      "CUTHOL-G136",
+      "G1_SCHEMA",
+      "WARN",
+      `Source '${handle}' is HDR (transfer ${transfer}) but its input transform is 'none'; it will look washed out or clipped in an SDR edit.`,
+      `Use 'cuthol color kind --handle ${handle} --input auto'.`,
+      handle
+    ),
+  COLOR_SIBLING_UNGRADED: (item: string, asset: string, graded: string[]) =>
+    createDiagnostic(
+      "CUTHOL-G137",
+      "G1_SCHEMA",
+      "WARN",
+      `'${item}' uses the same source '${asset}' as graded ${graded.join(", ")} but has no colour stage; the cut between them will jump.`,
+      `Copy the grade ('cuthol color set --item ${item} --patch <stage of ${graded[0]}>' or 'cuthol color look create --from-item ${graded[0]}' then bind it), or say why it differs.`,
+      item
+    ),
+  // [color-measure G240–G248]  frame sampling, map, solve, prediction inputs
+  COLOR_FRAME_SAMPLE_FAILED: (item: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G240",
+      "G2_ASSETS",
+      "ERROR",
+      `Colour frame sampling failed for item '${item}' (${detail}).`,
+      `Check the item id and that its asset file exists, then re-run.`
+    ),
+  COLOR_MAP_EMPTY: (item: string) =>
+    createDiagnostic(
+      "CUTHOL-G241",
+      "G2_ASSETS",
+      "WARN",
+      `Colour map of '${item}' has almost no measurable pixels.`,
+      `Sample more frames or check the source file.`
+    ),
+  COLOR_SOLVE_NO_TARGET: (mode: string) =>
+    createDiagnostic(
+      "CUTHOL-G242",
+      "G2_ASSETS",
+      "ERROR",
+      `Colour solve '${mode}' needs target frames.`,
+      `Pass target frames or a reference file.`
+    ),
+  // [color-render G440–G449]   stage compile, LUT self-test, input transform, keyframed colour
+  // [color-scan G510–G514]     post-render colour check against the prediction
+  COLOR_RENDER_GRADE_OK: (summary: string) =>
+    createDiagnostic(
+      "CUTHOL-G510",
+      "G5_SIGNAL",
+      "INFO",
+      `Post-render colour check matches the prediction: ${summary} (mean dE per item; 0.6-1.5 is normal).`,
+      `No action needed; the grade rendered as predicted.`
+    ),
+  COLOR_RENDER_GRADE_MISMATCH: (item: string, atMs: number, meanDe: number) =>
+    createDiagnostic(
+      "CUTHOL-G512",
+      "G5_SIGNAL",
+      "WARN",
+      `Rendered colour of '${item}' at ${atMs}ms differs from the render-free prediction (mean dE ${meanDe}; 0.6-1.5 is normal).`,
+      `Re-measure with the colour map and check the stage LUT.`,
+      item
+    ),
+  // [color-cli G640–G649]      `cuthol color` command errors
+  COLOR_COMMAND_FAILED: (action: string, reason: string) =>
+    createDiagnostic(
+      "CUTHOL-G640",
+      "SYS",
+      "ERROR",
+      `cuthol color ${action} failed: ${reason}`,
+      `Re-run with valid arguments ('cuthol help' lists the 'cuthol color ...' commands).`
+    ),
+  COLOR_ITEM_MISSING: (item: string) =>
+    createDiagnostic(
+      "CUTHOL-G641",
+      "G1_SCHEMA",
+      "ERROR",
+      `Colour item '${item}' does not exist (expected sp_XX or cue_XX).`,
+      `Check the id with 'cuthol brief --lens flow' and retry.`,
+      item
+    ),
+  // [color-live G650–G654]     Live colour endpoints and panel
+  COLOR_LIVE_LUT_FAILED: (item: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G650",
+      "G4_STAGE",
+      "ERROR",
+      `Colour LUT for '${item}' could not be compiled: ${detail}.`,
+      `Check that the item exists and its colour stage validates, then retry.`
+    ),
+  COLOR_LIVE_PREVIEW_FAILED: (item: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G651",
+      "G4_STAGE",
+      "ERROR",
+      `Colour drag preview for '${item}' failed: ${detail}.`,
+      `Release the slider and retry; the saved stage is unchanged.`
+    ),
+  COLOR_LIVE_EDIT_FAILED: (item: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G652",
+      "G4_STAGE",
+      "ERROR",
+      `Colour edit on '${item}' failed: ${detail}.`,
+      `Pause the agent first, then commit the grade with 'color set --item <id> --patch'.`
+    ),
+  COLOR_LIVE_SCOPE_FAILED: (detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G653",
+      "G4_STAGE",
+      "WARN",
+      `Colour scopes could not be computed: ${detail}.`,
+      `The graded picture is unaffected; reopen the scopes panel to retry.`
+    ),
+  COLOR_LIVE_MAP_FAILED: (item: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G654",
+      "G4_STAGE",
+      "ERROR",
+      `Colour map for '${item}' is unavailable: ${detail}.`,
+      `The text map needs the measurement build (sampleItemFrames + colorMap); the graded preview still works.`
+    ),
+  // [output G515–G519, G660–G664] 4K/alpha presets, timeline export
+  OUTPUT_ALPHA_CODEC_SELECTED: (codec: string, container: string, reason: string) =>
+    createDiagnostic(
+      "CUTHOL-G515",
+      "G5_SIGNAL",
+      "INFO",
+      `Transparent master encodes with ${codec} in ${container} (${reason}).`,
+      `Import the file directly in your editor; alpha is preserved end to end.`
+    ),
+  OUTPUT_PRESET_DIMENSIONS: (preset: string, width: number, height: number) =>
+    createDiagnostic(
+      "CUTHOL-G516",
+      "G5_SIGNAL",
+      "INFO",
+      `Render preset '${preset}' targets ${width}x${height}.`,
+      `Overlays render at the preset size; a following master reuses the cache.`
+    ),
+  OUTPUT_EXPORT_WRITTEN: (format: string, outPath: string, clips: number) =>
+    createDiagnostic(
+      "CUTHOL-G517",
+      "G5_SIGNAL",
+      "INFO",
+      `Timeline exported as ${format} to '${outPath}' (${clips} spine clip(s)).`,
+      `Import the file in your editor; check the 'not exported' lines for elements that need manual work.`
+    ),
+  OUTPUT_EXPORT_SKIPPED_KIND: (kind: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G518",
+      "G5_SIGNAL",
+      "WARN",
+      `Timeline export skipped ${kind}: ${detail}.`,
+      `Recreate these elements by hand in the target editor, or render them from Cuthol as overlay files.`
+    ),
+  OUTPUT_ALPHA_SCAN_SKIPPED: (scan: string) =>
+    createDiagnostic(
+      "CUTHOL-G519",
+      "G5_SIGNAL",
+      "INFO",
+      `Post-render scan '${scan}' does not run on transparent masters (empty areas are transparent by design).`,
+      `Inspect the alpha file over a contrasting background instead.`
+    ),
+  EXPORT_UNKNOWN_FORMAT: (got: string, want: string) =>
+    createDiagnostic(
+      "CUTHOL-G660",
+      "G1_SCHEMA",
+      "ERROR",
+      `Unknown timeline export format '${got}' (expected one of: ${want}).`,
+      `Run 'cuthol export timeline [fcpxml|xmeml|edl|otio] [--as <format>] --out <file>'.`
+    ),
+  EXPORT_NO_SPINE: () =>
+    createDiagnostic(
+      "CUTHOL-G661",
+      "G1_SCHEMA",
+      "ERROR",
+      `Timeline export needs at least one spine clip; the sequence spine is empty.`,
+      `Cut spine clips first, or export a graphics-only timeline as markers via the overlay references.`
+    ),
+  EXPORT_MARKER_ONLY: (count: number) =>
+    createDiagnostic(
+      "CUTHOL-G662",
+      "G1_SCHEMA",
+      "WARN",
+      `${count} composition/caption cue(s) exported as markers (no rendered overlay in the cache).`,
+      `Render the project first so the export can reference the overlay files.`
+    ),
+  EXPORT_MEDIA_MISSING: (handle: string) =>
+    createDiagnostic(
+      "CUTHOL-G663",
+      "G2_ASSETS",
+      "WARN",
+      `Export references media '${handle}' whose file could not be resolved to a local path.`,
+      `Check the library entry, or relink the media before importing the export.`
+    ),
+  EXPORT_EDL_AUDIO_DROPPED: (audioCues: number) =>
+    createDiagnostic(
+      "CUTHOL-G664",
+      "G1_SCHEMA",
+      "WARN",
+      `EDL carries spine/video only; ${audioCues} audio cue(s) left out of the file.`,
+      `Use fcpxml, xmeml or otio when the mix must travel with the timeline.`
+    ),
   BARE_DURATION_AS_MS: (raw: string) =>
     createDiagnostic(
       "CUTHOL-G214",
@@ -324,6 +582,32 @@ export const DIAGNOSTICS = {
       "WARN",
       `${tool} ${found} found; Cuthol is tested with ffmpeg/ffprobe 8.x (tempo, loudness and scene analysis may differ).`,
       `Install ffmpeg and ffprobe 8.x on PATH and re-run.`
+    ),
+
+  // --- Keyless local speech: CUTHOL-G237–G239 ---
+  LOCAL_SPEECH_NOT_INSTALLED: (reason: string) =>
+    createDiagnostic(
+      "CUTHOL-G237",
+      "SYS",
+      "ERROR",
+      `Keyless local speech is not installed (${reason}).`,
+      `Run 'cuthol setup --local-speech --apply' to install it, or wire 'CUTHOL_LOCAL_ASR_CMD' / 'CUTHOL_LOCAL_TTS_CMD' instead.`
+    ),
+  LOCAL_SPEECH_SETUP_FAILED: (step: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G238",
+      "SYS",
+      "ERROR",
+      `Local speech setup failed at '${step}': ${detail}`,
+      `Fix the underlying problem and re-run 'cuthol setup --local-speech --apply'.`
+    ),
+  LOCAL_SPEECH_BRIDGE_FAILED: (op: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G239",
+      "SYS",
+      "ERROR",
+      `Local speech ${op} failed: ${detail}`,
+      `Re-run 'cuthol setup --local-speech --apply' to repair the installation, then retry.`
     ),
 
   // --- Speech language: CUTHOL-G213 ---
@@ -709,7 +993,7 @@ export const DIAGNOSTICS = {
       "G4_STAGE",
       "WARN",
       `'${field}' on '${itemId}' is not applied to the render in this version.`,
-      `Leave this field at its default. On spine clips, static and enveloped brightness/contrast/saturation, color temperature and LUT reach the render; motion blur, masks and color envelopes on lane cues do not.`,
+      `Leave this field at its default. On spine clips, static and enveloped brightness/contrast/saturation, color temperature and LUT reach the render, as do block-based 'color.*' envelopes; motion blur and masks do not.`,
       itemId
     ),
 
@@ -1242,6 +1526,57 @@ export const DIAGNOSTICS = {
       `LUT file ('${lutUri}') of clip '${clipId}' is unusable: ${detail}.`,
       `Place the LUT file under the project folder as '.cube' or '.3dl' and re-attach it with 'cuthol spine grade --clip ${clipId} --lut <path>'; use '--lut none' to remove it.`,
       clipId
+    ),
+
+  // --- Colour stage (render): codes CUTHOL-G440–G449 ---
+  COLOR_LUT_SELFTEST_ABOVE_LIMIT: (itemId: string, p99: number) =>
+    createDiagnostic(
+      "CUTHOL-G440",
+      "G4_STAGE",
+      "WARN",
+      `Colour stage LUT of '${itemId}' still mismatches the block math at the fine 65 grid (p99 CIEDE2000 ${p99.toFixed(2)}); the render uses the closest LUT.`,
+      `Simplify the stage of '${itemId}' (narrow HSL qualifiers need the fine grid) and re-render.`,
+      itemId
+    ),
+
+  COLOR_LOOK_LUT_UNREADABLE: (itemId: string, lutUri: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G441",
+      "G4_STAGE",
+      "ERROR",
+      `Look LUT ('${lutUri}') of '${itemId}' is unusable: ${detail}.`,
+      `Place the Look LUT file under the project folder as '.cube' and re-attach it, or remove the Look binding from '${itemId}'.`,
+      itemId
+    ),
+
+  COLOR_ENVELOPE_TOO_MANY_FRAMES: (itemId: string, frames: number, limit: number) =>
+    createDiagnostic(
+      "CUTHOL-G442",
+      "G4_STAGE",
+      "ERROR",
+      `Keyframed colour of '${itemId}' needs ${frames} baked frames, above the cache limit (${limit} per item).`,
+      `Shorten the keyframed range of '${itemId}' or split it across items, then re-render.`,
+      itemId
+    ),
+
+  COLOR_INPUT_TRANSFORM_UNAVAILABLE: (itemId: string, kind: string) =>
+    createDiagnostic(
+      "CUTHOL-G443",
+      "G4_STAGE",
+      "ERROR",
+      `Input transform '${kind}' of '${itemId}' needs ffmpeg filters this build lacks ('zscale', 'tonemap').`,
+      `Install an ffmpeg 8.x build with 'zscale' and 'tonemap', or set the asset input to 'none'.`,
+      itemId
+    ),
+
+  COLOR_HALD_RENDER_FAILED: (itemId: string, detail: string) =>
+    createDiagnostic(
+      "CUTHOL-G444",
+      "G4_STAGE",
+      "ERROR",
+      `Keyframed colour of '${itemId}' could not bake its frame LUTs: ${detail}.`,
+      `Re-run the render (the baked frames cache under '.cuthol/blobs/color'); if it persists, simplify the colour envelopes of '${itemId}'.`,
+      itemId
     ),
 
   // ---------------------------------------------------------------------------------------------------

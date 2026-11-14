@@ -57,6 +57,9 @@ and never reused; they may appear in old projects and logs.
 | G234 | SYS ERROR | Provider script crashed / missing output → check script and config. |
 | G235 | SYS WARN | Extension TTS returned audio without alignment → no word timings; transcribe the voiceover or change provider. |
 | G236 | G2 ERROR | Media provider has no candidate with that id → `library.search` again. |
+| G237 | SYS ERROR | Keyless local speech not installed → `cuthol setup --local-speech --apply` (or wire `CUTHOL_LOCAL_*_CMD`). |
+| G238 | SYS ERROR | Local speech setup failed at a step → fix the cause, re-run with `--apply`. |
+| G239 | SYS ERROR | Local speech bridge (ASR/TTS) failed → re-run setup with `--apply`, then retry. |
 | G301 | G3 ERROR | Clip shorter than 2 frames. |
 | G302 | G3 ERROR | Gap/overlap on the spine. |
 | G303 | G3 ERROR | Transition longer than half of a neighbouring clip. |
@@ -88,6 +91,11 @@ and never reused; they may appear in old projects and logs.
 | G416 | G4 WARN / INFO | A composition cue plays audio (`<audio>`, audible `<video>`, `<hf-audio-group>`). INFO when its stem is in the Cuthol mix (it follows the cue's gain, mute, envelopes and ducking) or the cue has `composition_audio: off`; WARN while no stem has been extracted yet (render or `mix` extracts it). |
 | G435 | G4 WARN | Extracting a composition's sound failed (reason in the message); the cue stays silent in the mix → fix the composition, or `lane update-cue --cue <id> --composition-audio off`. |
 | G436 | G4 INFO | The engine rendered silence for a composition with audio markers (for example sound made only in JS) → prefer `<audio>` elements. |
+| G440 | G4 WARN | Colour stage LUT still above the self-test limit at the fine 65 grid (message gives p99 CIEDE2000); the render uses the closest LUT → simplify the stage (narrow HSL qualifiers need the fine grid) and re-render. |
+| G441 | G4 ERROR | Look LUT unreadable or outside the project → place it under the project as `.cube` and re-attach, or remove the Look binding. Render refuses to start. |
+| G442 | G4 ERROR | Keyframed colour needs more baked frames than the per-item cache limit (message gives the number) → shorten the keyframed range or split it across items. Render refuses to start. |
+| G443 | G4 ERROR | Input transform the asset needs is unavailable in this ffmpeg build (`zscale`/`tonemap` missing) → install ffmpeg 8.x with both filters, or set the asset input to `none`. Render refuses to start. |
+| G444 | G4 ERROR | Keyframed colour frame LUTs could not bake (reason in the message) → re-run (frames cache under `.cuthol/blobs/color`); simplify the envelopes if it persists. Render refuses to start. |
 | G417 | G4 WARN | Coordinate measurement failed for a cue → skipped, the rest continue. |
 | G418 | G4 WARN | Coords fell back to raw HTML (bundled fonts unavailable). |
 | G419 | G4 INFO | Coords page error or unmappable placement. |
@@ -107,5 +115,30 @@ and never reused; they may appear in old projects and logs.
 | G508 | G5 WARN | Post-render audio health: alignment offset, missing signal, or silent output gap while the source is loud (ramp-aware on ramped clips, inconclusive on periodic signals) → check the item's timing/audio chain and render again. |
 | G509 | G4 INFO | N compositions were never opened in a browser, so their scripts are unchecked → `composition.preview(cue=…)` to record a check. |
 | SYS01–08 | — | Project not found, bad time literal, journal entry unavailable, external tool spawn/exit failure (`SYS04`, e.g. `ENOENT`), missing API key, transcript missing, invalid colour, extension execution failure (`SYS08`). |
+| G240 | G2 ERROR | Colour frame sampling failed (unknown item, missing asset, ffmpeg decode failure). | Check the item id and that its asset file exists, then re-run. |
+| G241 | G2 WARN | Colour map has almost no measurable pixels. | Sample more frames or check the source file. |
+| G242 | G2 ERROR | Colour solve needs target frames but none were given. | Pass target frames or a reference file. |
+| G510 | G5 INFO | Post-render colour check matches the prediction (per-item mean dE; 0.6–1.5 is normal). | No action needed. |
+| G512 | G5 WARN | Rendered colour differs from the render-free prediction (mean dE > 3; item, instant and mean in the message). | Re-measure with the colour map and check the stage LUT. |
 | SYS09 | SYS ERROR | Subprocess command line exceeds the OS limit (`ENAMETOOLONG` / `E2BIG`); reports length, limit, clip count. |
 | SYS10 | SYS ERROR | Subprocess progress stalled: the process tree was terminated after `CUTHOL_STALL_TIMEOUT_SEC` (default 300 s; `0` disables) without progress. Reports step, last progress, stall duration. After one automatic `libx264` retry if a hardware encoder stalled. |
+| G515 | G5 INFO | Transparent master codec choice (ProRes 4444 MOV vs VP9 WebM) and why; alpha preserved end to end. |
+| G516 | G5 INFO | Render preset target dimensions (e.g. 3840x2160 for master_2160p 16:9). |
+| G517 | G5 INFO | Timeline exported (format, path, spine clip count); check not-exported lines for manual work. |
+| G518 | G5 WARN | Timeline export skipped a kind (compositions, captions, lanes); recreate by hand or from overlay renders. |
+| G519 | G5 INFO | A post-render scan skipped on transparent masters (blank/edge scans assume opaque frames). |
+| G660 | G1 ERROR | Unknown timeline export format; use fcpxml, xmeml, edl or otio. |
+| G661 | G1 ERROR | Timeline export with an empty spine. |
+| G662 | G1 WARN | Composition/caption cues exported as markers (no cached overlay). Render first to get overlay references. |
+| G663 | G2 WARN | Export references media whose file could not be resolved locally. |
+| G664 | G1 WARN | EDL left audio cues out (spine/video only by design); use fcpxml/xmeml/otio to carry the mix. |
+| G650 | G4 ERROR | Colour LUT for a Live item could not be compiled -> check the item and its stage, retry. |
+| G651 | G4 ERROR | Live colour drag preview failed -> release the slider and retry; saved stage unchanged. |
+| G652 | G4 ERROR | Live colour slider commit failed -> pause the agent, then `color set --item <id> --patch`. |
+| G653 | G4 WARN | Live colour scopes could not be computed -> graded picture unaffected; reopen the panel. |
+| G654 | G4 ERROR | Live colour text map unavailable (needs the measurement build) -> graded preview still works. |
+| G133 | G1 ERROR | A Look's `.cube`/`.3dl` is missing or outside the project -> recreate the Look from a LUT inside the project or remove it. |
+| G134 | G1 WARN | Two or more Looks reach one item through `apply_to`; only the first is used -> bind the intended one. |
+| G135 | G1 WARN | A Look is bound to a screen recording or graphic -> unbind unless asked, or correct `color kind`. |
+| G136 | G1 WARN | HDR (HLG/PQ) source with input transform `none` -> `color kind --input auto`. |
+| G137 | G1 WARN | Ungraded clip of the same source as graded clips -> copy the grade or bind a Look. |

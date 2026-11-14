@@ -61,7 +61,7 @@ export const GUIDE_TOPICS: Record<string, string> = { ...LEGACY_GUIDE_FILES };
 
 /** Tools visible before `discover_capabilities` when progressive disclosure is enabled. */
 const PROGRESSIVE_CORE_TOOLS = new Set(["workspace", "library", "brief", "spine", "lane", "verify", "monitor", "guide"]);
-const SPECIALIST_TOOLS = ["composition", "speech", "mix", "cue", "render", "extension"];
+const SPECIALIST_TOOLS = ["composition", "speech", "mix", "cue", "color", "render", "extension"];
 
 /**
  * Build the server instructions. The skill topic list is generated from a scan

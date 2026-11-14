@@ -154,6 +154,14 @@ export function resolveSourceColorSpec(
   return { isRgb: false, inMatrix: "bt601", inRange, sourceRule: "heuristic_sd" };
 }
 
+/** HDR transfer of a probed asset from its transfer tag: HLG, PQ, or SDR/everything else. */
+export function probeHdrKind(probe?: Partial<ProbeMetadata> | null): "hlg" | "pq" | "sdr" {
+  const t = (probe?.color_transfer ?? "").toLowerCase().trim();
+  if (t === "arib-std-b67") return "hlg";
+  if (t === "smpte2084") return "pq";
+  return "sdr";
+}
+
 export function probeStandaloneVideoColorMetadata(filePath: string): Partial<ProbeMetadata> {
   const absPath = path.resolve(filePath);
   if (!fs.existsSync(absPath)) return {};

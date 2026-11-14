@@ -33,6 +33,8 @@ const UNAPPLIED_COLOR_ENVELOPE = new Set<string>([
 function colorEnvelopeFields(envelopes: Array<{ parameter: string }>): string[] {
   const fields: string[] = [];
   for (const env of envelopes) {
+    // Block-based colour envelopes (`color.*`) are compiled into the stage LUT, so they are applied.
+    if (env.parameter.startsWith("color.")) continue;
     if (UNAPPLIED_COLOR_ENVELOPE.has(env.parameter) && !fields.includes(env.parameter)) {
       fields.push(env.parameter);
     }

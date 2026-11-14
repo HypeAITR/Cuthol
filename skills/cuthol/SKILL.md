@@ -3,7 +3,7 @@ name: cuthol
 description: >
   Start every Cuthol video-editing session here. Cuthol is an agent-first local
   non-linear video editor (magnetic spine timeline, lanes, speech cleanup and
-  captions, voiceover, audio mix, HyperFrames motion graphics, verification,
+  captions, voiceover, audio mix, colour grading, HyperFrames motion graphics, verification,
   render) driven through MCP tools or the `cuthol` CLI. Read this skill first in
   any session where you edit, assemble, caption, mix, check or render a video;
   load a category skill only when its task comes up.
@@ -22,6 +22,7 @@ You can drive it two ways. They are the same commands:
 | `spine(action="trim", clip="sp_01", out="4s")` | `cuthol spine trim --clip sp_01 --out 4s --dir <project>` |
 | `lane(action="add_cue", lane="ln_titles", text="Hi")` | `cuthol lane add-cue --lane ln_titles --text "Hi"` |
 | `brief(lens="flow")` | `cuthol brief --lens flow` |
+| `color(action="set", clip="sp_01", patch={...})` | `cuthol color set --clip sp_01 --patch '{...}'` |
 
 MCP names use `_` where the CLI uses `-` (`add_cue` ↔ `add-cue`,
 `comp_dir` ↔ `--comp-dir`). Error suggestions match your interface. If a tool seems missing (no ffmpeg, no browser, no speech key), run `cuthol doctor` first: one line per check, each with its fix.
@@ -155,7 +156,8 @@ Load a category skill **only when its task comes up**:
 | cuthol-speech | You need to transcribe, clean up speech, verify the cleanup, caption, synthesize a voiceover, or choose a speech provider. | "Remove the pauses and repeated takes, then rebuild the captions." |
 | cuthol-audio | You need to balance loudness, polish a voice, duck music under speech, or cut to the beat. | "The music buries the narration; duck it and normalize to -14 LUFS." |
 | cuthol-motion | You need to write, mount, preview or debug a HyperFrames overlay, or use words, beats, audio or cuts inside composition code. | "Show a counter that lands exactly on the spoken number." |
+| cuthol-color | You need to change how footage looks: warmer/cooler, brighter, a look or reference to match, matching shots, exposure or white balance. Cuthol measures and predicts; it never grades by itself. | "Make it warmer like this reference frame, but keep the white wall white." |
 | cuthol-geometry | You need to measure, without looking at a picture, whether one element covers another or how far it sits from the frame edge or another element. | "Before rendering, is the title still on the card and clear of the edge?" |
 | cuthol-review | You need to verify the edit, understand a diagnostic code, or inspect frames, sheets, the timeline or the edit structure. | "Verify says G403 — what is covered and how do I fix it?" |
-| cuthol-render | You need to render a draft or master, reuse overlay cache, pick an encoder, or check the finished file. | "Render a draft, then the master, and confirm no blank frames." |
+| cuthol-render | You need to render a draft, master, UHD or transparent master, export the timeline to another editor, reuse overlay cache, pick an encoder, or check the finished file. | "Render a draft, then the master, and confirm no blank frames." |
 | cuthol-extensions | You need a reusable helper, asset pack, media processor, clip effect, transition, recipe, planner or provider — or to run, enable or inspect one. | "Turn this three-step voiceover prep into a one-command recipe." |

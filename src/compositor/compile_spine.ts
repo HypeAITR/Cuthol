@@ -413,7 +413,9 @@ function appendSpineClipTransitionsAndScale(
     })
   );
   vFilters.push(
-    spUsesRgba || spHasDynScale || xEnv || yEnv ? BT709_TO_YUVA420P : BT709_TO_YUV420P
+    spUsesRgba || spHasDynScale || xEnv || yEnv || ctx.preset === "master_alpha"
+      ? BT709_TO_YUVA420P
+      : BT709_TO_YUV420P
   );
 
   const spSpatialFilters = vFilters.slice(spSpatialFilterStartIdx);
@@ -533,8 +535,9 @@ function overlaySpineClip(
   ({ xExpr, yExpr } = applyOutgoingTransitionPosition(ctx, { clip, hasNextClip, outTrans, xExpr, yExpr }));
 
   const nextPad = `[vc_${++ctx.vStepCounter}]`;
+  const spineOverlayFmt = ctx.preset === "master_alpha" ? "format=auto:" : "";
   ctx.filterChains.push(
-    `${ctx.currentVideoPad}${clipPad}overlay=x='${xExpr}':y='${yExpr}':eval=frame:enable='between(t,${tlInSec},${tlOutSec})':eof_action=pass,${BT709_SETPARAMS}${nextPad}`
+    `${ctx.currentVideoPad}${clipPad}overlay=x='${xExpr}':y='${yExpr}':${spineOverlayFmt}eval=frame:enable='between(t,${tlInSec},${tlOutSec})':eof_action=pass,${BT709_SETPARAMS}${nextPad}`
   );
   ctx.currentVideoPad = nextPad;
 }

@@ -18,6 +18,7 @@ import { LiveProxyManager, routeProxyRequest } from "./live_proxy.js";
 import { routeLiveCompRequest } from "./live_comp_serve.js";
 import { routeLiveFrameRequest } from "./live_frame.js";
 import { handleLiveNotesPost, routeLiveCoordsRequest } from "./live_notes_api.js";
+import { routeLiveColorRequest } from "./live_color_api.js";
 import { getSettingsView, routeLiveSettingsRequest } from "./live_settings_api.js";
 import { LIVE_SCHEMA, type LiveActivityEntry, type LiveLock, type LiveNotePacket, type LiveServerInfo } from "./live_types.js";
 
@@ -691,6 +692,9 @@ export async function runLiveServer(projectDir: string, opts: { port?: number } 
       if (url.pathname === "/api/edit" && req.method === "POST") {
         await routeLiveEditRequest(root, req, res);
         return;
+      }
+      if (url.pathname.startsWith("/api/color/") && (req.method === "GET" || req.method === "POST")) {
+        if (await routeLiveColorRequest(root, req, res, url)) return;
       }
       if (url.pathname.startsWith("/api/thumb/") && req.method === "GET") {
         await serveThumb(res, decodeURIComponent(url.pathname.slice("/api/thumb/".length)), url.searchParams.get("k"));

@@ -415,7 +415,8 @@ test("3. Self-Describing CLI (UNKNOWN_FLAG CUTHOL-G110, help --json) & CutholMcp
   const mcpAll = new CutholMcpServer();
   const listAll = await mcpAll.handleJsonRpcRequest({ jsonrpc: "2.0", id: 1, method: "tools/list" });
   const allTools = (listAll!.result as { tools: Array<{ name: string }> }).tools;
-  assert.equal(allTools.length, 14, "Expected all 14 tools by default");
+  assert.equal(allTools.length, 15, "Expected all 15 tools by default");
+  assert.ok(allTools.some((t) => t.name === "color"));
   assert.ok(allTools.some((t) => t.name === "render") && allTools.some((t) => t.name === "guide"));
   assert.ok(allTools.some((t) => t.name === "extension"));
 

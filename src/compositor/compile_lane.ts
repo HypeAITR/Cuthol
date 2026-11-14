@@ -3,6 +3,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveCueStartMs } from "../core/timeline.js";
+import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
+import { listColorItems } from "../color/blocks.js";
+import { compileColorStageFilters } from "../color/compile.js";
+import { resolveInputTransform } from "../color/input_transform.js";
 import { buildCueOverlayEnableExpr, cueOverlapsWindowMs, singleFrameInstantHitsCue } from "../core/frame_time.js";
 import { CutholSequence, getCuePlaybackRate, isStillGraphic, maxSourceDurationMs } from "../core/schema.js";
 import {
@@ -230,7 +234,8 @@ function prepareCompositionCueInput(
           )
         : undefined;
 
-    if (compMode !== "scene_host" && isFullFrameUnscaled && !hasMovingUnderneath) {
+    const keepAlpha = ctx.preset === "master_alpha";
+    if (compMode !== "scene_host" && isFullFrameUnscaled && !hasMovingUnderneath && !keepAlpha) {
       if (overlappingUnder.length === 0) {
         effectiveTransparent = false;
         opaqueBackdropColor = seq.stage.backdrop.color;
@@ -511,7 +516,8 @@ function compileCompositionLaneCue(
         ? `(H-h)/2+${Math.round((cue.placement.y_pct / 100) * renderHeight)}`
         : String(Math.round(baseCenterY + (cue.placement.y_pct / 100) * renderHeight)));
 
-  if (!effectiveTransparent && isFullFrameUnscaled && compileOptions?.singleFrameAtMs === undefined) {
+  const alphaPreset = ctx.preset === "master_alpha";
+  if (!effectiveTransparent && isFullFrameUnscaled && compileOptions?.singleFrameAtMs === undefined && !alphaPreset) {
     const ovYuvPad = `[vc_oyuv_${++ctx.vStepCounter}]`;
     const nextPad = `[vc_${ctx.vStepCounter}]`;
     ctx.filterChains.push(
@@ -523,10 +529,13 @@ function compileCompositionLaneCue(
     const base10Pad = `[vc_b10_${++ctx.vStepCounter}]`;
     const ov10Pad = `[vc_o10_${ctx.vStepCounter}]`;
     const nextPad = `[vc_${ctx.vStepCounter}]`;
+    const baseConv = alphaPreset ? BT709_TO_YUVA444P10 : BT709_TO_YUV444P10;
+    const overlayFormat = alphaPreset ? "auto" : "yuv444p10";
+    const tailConv = alphaPreset ? BT709_TO_YUVA420P : BT709_TO_YUV420P;
     ctx.filterChains.push(
-      `${ctx.currentVideoPad}${BT709_TO_YUV444P10}${base10Pad}`,
+      `${ctx.currentVideoPad}${baseConv}${base10Pad}`,
       `${hfPad}${BT709_TO_YUVA444P10}${ov10Pad}`,
-      `${base10Pad}${ov10Pad}overlay=x='${xExpr}':y='${yExpr}':format=yuv444p10:alpha=straight:eval=frame:enable='${buildCueOverlayEnableExpr(cueStartSec, cueEndSec)}':eof_action=pass:repeatlast=0,${BT709_TO_YUV420P}${nextPad}`
+      `${base10Pad}${ov10Pad}overlay=x='${xExpr}':y='${yExpr}':format=${overlayFormat}:alpha=straight:eval=frame:enable='${buildCueOverlayEnableExpr(cueStartSec, cueEndSec)}':eof_action=pass:repeatlast=0,${tailConv}${nextPad}`
     );
     ctx.currentVideoPad = nextPad;
   }
@@ -645,6 +654,9 @@ function buildVisualAssetCueFilterChain(
       ];
   const cueSpatialFilterStartIdx = vFilters.length;
 
+  // Colour hook: HDR input transform first (SDR BT.709 before any colour block), then the
+  // block-based colour stage after the source lands in RGBA (legacy order is untouched).
+  vFilters.push(...laneInputTransformFilters(cue.id, asset));
   const cueColorSpec = resolveSourceColorSpec(asset.probe, absAssetPath);
   if (cueColorSpec.isRgb) {
     vFilters.push("format=rgba");
@@ -672,6 +684,13 @@ function buildVisualAssetCueFilterChain(
   const cueRgbaIdx = vFilters.length;
   let cueUsesRgba = true;
   vFilters.push(cueColorSpec.isRgb ? "format=rgba" : BT709_TO_RGBA);
+  const cueColorStageFilters = laneColorStageFilters(ctx, {
+    cue,
+    asset,
+    envelopes: cue.envelopes,
+    durationMs: cue.duration_ms,
+  });
+  vFilters.push(...cueColorStageFilters);
 
   const cueRotEnv = cue.envelopes.find((e) => e.parameter === "placement.rotation_deg");
   const cueRotExpr = compileEnvelopeToFfmpegExpr({
@@ -714,6 +733,7 @@ function buildVisualAssetCueFilterChain(
     !xEnv &&
     !yEnv &&
     !cue.envelopes.some((e) => e.parameter.startsWith("placement.")) &&
+    cueColorStageFilters.length === 0 &&
     targetW === renderWidth &&
     targetH === renderHeight &&
     Math.abs(cue.placement.scale_x - 1) < 1e-3 &&
@@ -743,7 +763,9 @@ function buildVisualAssetCueFilterChain(
     })
   );
   vFilters.push(
-    cueUsesRgba || cueHasDynScale || xEnv || yEnv ? BT709_TO_YUVA420P : BT709_TO_YUV420P
+    cueUsesRgba || cueHasDynScale || xEnv || yEnv || ctx.preset === "master_alpha"
+      ? BT709_TO_YUVA420P
+      : BT709_TO_YUV420P
   );
   const cueSpatialFilters = vFilters.slice(cueSpatialFilterStartIdx);
   vFilters.push(`settb=AVTB`, `setpts=PTS-STARTPTS+${cueStartSec}/TB`);
@@ -787,6 +809,51 @@ function buildVisualAssetCueFilterChain(
     xExpr,
     yExpr,
   };
+}
+
+/** HDR input transform of a visual lane cue; [] for SDR. Throws G443 when unavailable. */
+function laneInputTransformFilters(
+  cueId: string,
+  asset: CutholSequence["library"][number]
+): string[] {
+  const resolved = resolveInputTransform(asset);
+  if (resolved.kind === "none") return [];
+  if (!resolved.available) {
+    throw new CutholError(DIAGNOSTICS.COLOR_INPUT_TRANSFORM_UNAVAILABLE(cueId, resolved.kind));
+  }
+  return resolved.filters;
+}
+
+/**
+ * Block-based colour stage of a visual lane cue (`color` + project Looks + colour envelopes).
+ * Runs in RGBA right after the source lands there; [] when the cue has no effective stage.
+ */
+function laneColorStageFilters(
+  ctx: VideoGraphCompileContext,
+  params: {
+    cue: LaneCueSpec;
+    asset: CutholSequence["library"][number];
+    envelopes: LaneCueSpec["envelopes"];
+    durationMs: number;
+  }
+): string[] {
+  if (!ctx.seq) return [];
+  const item = listColorItems(ctx.seq).find((c) => c.id === params.cue.id);
+  if (!item) return [];
+  return compileColorStageFilters(
+    ctx.seq,
+    { rootDir: ctx.paths.rootDir, addInput: (args: string[]) => ctx.addInput(args) },
+    {
+      item,
+      asset: params.asset,
+      envelopes: params.envelopes,
+      fps: ctx.fps,
+      durationMs: params.durationMs,
+      isRgb: true,
+      backFormat: "rgba",
+      srcRange: "pc",
+    }
+  );
 }
 
 function compileAssetLaneCue(
@@ -899,8 +966,9 @@ function compileAssetLaneCue(
     }
 
     const nextPad = `[vc_${++ctx.vStepCounter}]`;
+    const overlayFmt = ctx.preset === "master_alpha" ? "format=auto:" : "";
     ctx.filterChains.push(
-      `${ctx.currentVideoPad}${cuePad}overlay=x='${xExpr}':y='${yExpr}':eval=frame:enable='${buildCueOverlayEnableExpr(cueStartSec, cueEndSec)}':eof_action=pass,${BT709_SETPARAMS}${nextPad}`
+      `${ctx.currentVideoPad}${cuePad}overlay=x='${xExpr}':y='${yExpr}':${overlayFmt}eval=frame:enable='${buildCueOverlayEnableExpr(cueStartSec, cueEndSec)}':eof_action=pass,${BT709_SETPARAMS}${nextPad}`
     );
     ctx.currentVideoPad = nextPad;
   }

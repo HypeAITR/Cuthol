@@ -72,14 +72,14 @@ test("1. Extension lifecycle, persistent vs project precedence, manifest validat
   try {
     const mcp = new CutholMcpServer();
 
-    // 14 tools advertised in tools/list
+    // 15 tools advertised in tools/list
     const listRpc = await mcp.handleJsonRpcRequest({
       jsonrpc: "2.0",
       id: 1,
       method: "tools/list",
     });
     const tools = (listRpc?.result as { tools: Array<{ name: string }> }).tools;
-    assert.equal(tools.length, 14, "MCP server must advertise 14 tools including 'extension'");
+    assert.equal(tools.length, 15, "MCP server must advertise 15 tools including 'extension'");
     assert.ok(tools.some((t) => t.name === "extension"));
 
     // Initialize Project A

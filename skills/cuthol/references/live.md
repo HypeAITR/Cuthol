@@ -43,3 +43,17 @@ After opening, stop thinking about the window.
   "disconnected").
 - When paused, the user can mute/unmute a lane from its track header; their
   edit reaches you like any other human edit after `live_wait`.
+
+## Colour in the window
+
+The preview plays proxies through a WebGL2 canvas that samples the item's
+compiled 3D LUT with tetrahedral interpolation (the same interpolation the
+render uses), so the grade on screen matches the render. Items without a
+colour stage play exactly as before (no canvas). The Clip Info tab adds grade
+sliders (white balance, exposure, contrast, shadows, highlights, saturation,
+vibrance, Look amount) plus a scopes panel (waveform, parade, vectorscope,
+histogram, and the text colour map). Sliders work only while you are paused:
+dragging previews an unsaved LUT, releasing commits
+`color set --item <id> --patch '<json>' --reason taste`; the edit reaches you
+as a short human-edit line after `live_wait`. A Grade button wipes between
+the graded and ungraded paused frame.

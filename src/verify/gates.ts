@@ -29,6 +29,7 @@ import { verifyCompositionAudio } from "./gates_hf_audio.js";
 import { verifyEdgeMode } from "./gates_edge.js";
 import { verifyExtensionTransitions } from "./gates_transition.js";
 import { verifySpineFx } from "./gates_fx.js";
+import { verifyColorGates } from "./gates_color.js";
 
 export { verifyG1Schema, verifyG2Assets, verifyG3Timing } from "./gates_structural.js";
 export { verifyG4Stage, verifyG5Signal } from "./gates_stage_signal.js";
@@ -257,6 +258,7 @@ export function verifySequence(
     verifyG1Schema(seq, libMap, spineMap, diagnostics);
     verifyEasing(seq, diagnostics);
     verifySpineFx(seq, paths, diagnostics);
+    verifyColorGates(seq, diagnostics, paths?.rootDir);
   }
 
   // --- Gate 2: Physical Asset & Boundary Integrity (G2_ASSETS) ---

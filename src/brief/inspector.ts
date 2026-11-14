@@ -113,6 +113,22 @@ function appendLiveNotesIfCliBrief(md: string): string {
   return [md, ...formatLiveNotesBlock(notes.lines)].join("\n");
 }
 
+/** One-line colour summary for the overview lens: staged items and Looks. */
+export function describeSequenceColour(seq: CutholSequence): string {
+  let staged = 0;
+  for (const clip of seq.spine.clips) {
+    if (clip.treatments.color) staged += 1;
+  }
+  for (const lane of seq.lanes) {
+    for (const cue of lane.cues) {
+      if ((cue as { color?: unknown }).color) staged += 1;
+    }
+  }
+  const looks = seq.looks?.length ?? 0;
+  if (staged === 0 && looks === 0) return "no stages, no Looks";
+  return `${staged} staged item(s), ${looks} Look(s)`;
+}
+
 function renderOverviewLens(seq: CutholSequence): string {
   const totalMs = computeSequenceDurationMs(seq);
   const lines: string[] = [];
@@ -124,6 +140,7 @@ function renderOverviewLens(seq: CutholSequence): string {
   lines.push(
     `- Stage: \`${seq.stage.width}x${seq.stage.height}\` (\`${seq.stage.aspect}\`) @ \`${seq.stage.fps}fps\` | Backdrop: \`${seq.stage.backdrop.kind}(${seq.stage.backdrop.color})\``
   );
+  lines.push(`- Colour: \`${describeSequenceColour(seq)}\``);
   lines.push(
     `- Sequence Duration: \`${totalMs}ms\` (\`${formatTimecode(totalMs)}\`) | Magnetic Spine: \`${seq.spine.magnetic ? "ON" : "OFF"}\`${describeSpinelessExtent(seq)}`
   );

@@ -564,6 +564,10 @@ function compactPayload(
   detailed: boolean,
   values: Record<string, unknown> = {}
 ): string | null {
+  // Colour results print their `lines`; the numeric fields stay in --json / verbose.
+  if (spec.tool === "color" && !detailed && Array.isArray(env.lines) && env.lines.length) {
+    return typeof env.png === "string" ? JSON.stringify({ png: env.png }) : null;
+  }
   const payload: Record<string, unknown> = {};
   const isCleanup = spec.tool === "speech" && spec.action === "cleanup";
   const isVerifyCleanup = spec.tool === "speech" && spec.action === "verify_cleanup";
@@ -732,7 +736,10 @@ export function resolveActionSpecForCommand(
   if (tool === "workspace" && act === "journal") {
     act = subAction && subAction !== "list" ? subAction : "journal";
   }
-  if (tool === "render" && (act === "draft_480p" || act === "master_1080p")) {
+  if (
+    tool === "render" &&
+    (act === "draft_480p" || act === "master_1080p" || act === "master_2160p" || act === "master_alpha")
+  ) {
     act = null;
   }
   if (tool === "brief" && act) {
@@ -854,6 +861,12 @@ function formatVerifyCleanupSummary(env: Record<string, unknown>): string | null
     substituted.length
   );
   return lines.join("\n");
+}
+
+/** The compact text of a `color.*` result: its `lines` (measurement, prediction, side effects). */
+export function formatColorSummary(_action: string | null, env: Record<string, unknown>): string | null {
+  const lines = Array.isArray(env.lines) ? env.lines.filter((l): l is string => typeof l === "string") : [];
+  return lines.length ? lines.join("\n") : null;
 }
 
 export interface FormatEnvelopeCompactOptions {
@@ -1042,6 +1055,10 @@ export function formatEnvelopeCompact(options: FormatEnvelopeCompactOptions): {
   if (spec.tool === "library" && (spec.action === "search" || spec.action === "fetch")) {
     const media = formatMediaSourceResult(env);
     if (media) lines.push(media);
+  }
+  if (spec.tool === "color" && ok) {
+    const colorLine = formatColorSummary(spec.action, env);
+    if (colorLine) lines.push(colorLine);
   }
 
   if (ok && spec.tool === "render") {

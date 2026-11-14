@@ -12,8 +12,15 @@ import path from "node:path";
 import type { CutholSequence } from "../core/schema.js";
 import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import type { resolveSourceColorSpec } from "../library/probe.js";
+
 import type { VideoGraphCompileContext } from "./compiler.js";
 import { compileEnvelopeToFfmpegExpr, escapeFfmpegFilterPath } from "./compile_filters.js";
+import { listColorItems } from "../color/blocks.js";
+import {
+  compileColorStageFilters,
+  type ColorCompileHost,
+} from "../color/compile.js";
+import { resolveInputTransform } from "../color/input_transform.js";
 
 type SpineClipSpec = CutholSequence["spine"]["clips"][number];
 
@@ -99,6 +106,8 @@ export function buildSpineClipColorFilters(
 ): string[] {
   const { clip } = params;
   const out: string[] = [];
+  // Input transform first: HDR sources land on SDR BT.709 before any colour block.
+  out.push(...spineInputTransformFilters(ctx, params.clip.id, params.asset));
   const cg = clip.treatments.color_grade;
   const brightness = cg.brightness ?? 0;
   const contrast = cg.contrast ?? 1;
@@ -176,5 +185,54 @@ export function buildSpineClipColorFilters(
       out.push("format=yuv444p", lutFilter, `format=${back}`);
     }
   }
+  // Block-based colour stage after the legacy `color_grade` filters (legacy stays exactly as it is).
+  out.push(...spineColorStageFilters(ctx, params));
   return out;
+}
+
+/** HDR input transform of a spine clip; [] for SDR. Throws G443 when the transform is unavailable. */
+function spineInputTransformFilters(
+  ctx: VideoGraphCompileContext,
+  clipId: string,
+  asset: CutholSequence["library"][number]
+): string[] {
+  const resolved = resolveInputTransform(asset);
+  if (resolved.kind === "none") return [];
+  if (!resolved.available) {
+    throw new CutholError(DIAGNOSTICS.COLOR_INPUT_TRANSFORM_UNAVAILABLE(clipId, resolved.kind));
+  }
+  return resolved.filters;
+}
+
+/**
+ * Block-based colour stage of a spine clip (`treatments.color` + project Looks + colour
+ * envelopes). Returns [] when the item has no effective stage, keeping the pixel domain the
+ * later stages expect (RGBA for RGB sources, the source YUV format otherwise).
+ */
+function spineColorStageFilters(
+  ctx: VideoGraphCompileContext,
+  params: {
+    clip: SpineClipSpec;
+    asset: CutholSequence["library"][number];
+    clipColorSpec: ReturnType<typeof resolveSourceColorSpec>;
+  }
+): string[] {
+  if (!ctx.seq) return [];
+  const item = listColorItems(ctx.seq).find((c) => c.id === params.clip.id && c.track === "spine");
+  if (!item) return [];
+  const host: ColorCompileHost = {
+    rootDir: ctx.paths.rootDir,
+    addInput: (args: string[]) => ctx.addInput(args),
+  };
+  const pixFmt = (params.asset.probe.pix_fmt ?? "").toLowerCase().replace(/^yuvj/, "yuv");
+  return compileColorStageFilters(ctx.seq, host, {
+    item,
+    asset: params.asset,
+    envelopes: params.clip.envelopes,
+    fps: ctx.fps,
+    durationMs: params.clip.duration_ms,
+    isRgb: params.clipColorSpec.isRgb,
+    backFormat: params.clipColorSpec.isRgb ? "rgba" : pixFmt.startsWith("yuv") ? pixFmt : "yuv420p",
+    srcRange: "tv",
+  });
 }

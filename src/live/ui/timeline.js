@@ -618,8 +618,10 @@ export function mount(root, ctx) {
   // scroll it into view. Clicking anywhere else on the timeline releases it.
   agentEl.addEventListener("click", (ev) => {
     ev.stopPropagation();
-    ctx.store.set({ agentFollow: true });
-    ensureMsVisible(ctx.store.state.agentMs);
+    // Following the agent also shows its frame in the preview.
+    const ams = ctx.store.state.agentMs;
+    ctx.store.set(typeof ams === "number" ? { agentFollow: true, playheadMs: Math.round(ams) } : { agentFollow: true });
+    ensureMsVisible(ams);
   });
 
   function onTrackClick(ev, tr) {
@@ -627,7 +629,9 @@ export function mount(root, ctx) {
     const x = ev.clientX - rect.left + scroll.scrollLeft;
     const ms = x / pxPerMs;
     const hit = pickItemAt(tr.items, ms);
-    if (hit) ctx.store.set({ selection: { id: hit.id, kind: hit.kind }, agentFollow: false });
+    // Clicking a clip also moves the playhead there, so the preview, the scopes and the Color sliders
+    // all show the clip that was clicked.
+    if (hit) ctx.store.set({ selection: { id: hit.id, kind: hit.kind }, playheadMs: Math.round(ms), agentFollow: false });
     else ctx.store.set({ playheadMs: Math.round(ms), agentFollow: false });
   }
 
@@ -741,7 +745,14 @@ export function mount(root, ctx) {
     }
     if ("agentMs" in patch) {
       positionAgent();
-      if (ctx.store.state.agentFollow) ensureMsVisible(ctx.store.state.agentMs);
+      if (ctx.store.state.agentFollow) {
+        ensureMsVisible(ctx.store.state.agentMs);
+        // While following (and not playing), the preview stays on the agent's frame.
+        const ams = ctx.store.state.agentMs;
+        if (!ctx.store.state.playing && typeof ams === "number" && ams !== ctx.store.state.playheadMs) {
+          ctx.store.set({ playheadMs: Math.round(ams) });
+        }
+      }
       requestDraw();
     }
     if ("mode" in patch) syncMode();

@@ -85,18 +85,22 @@ export function mount(root, ctx) {
   }
 
   function render() {
+    const kept = body.querySelector(".cl-wrap");
     const hit = findSelection();
     if (!hit) {
       body.innerHTML = `<div class="in-empty muted">Select a clip or cue<br>to inspect it</div>`;
+      if (kept) body.appendChild(kept);
       return;
     }
     const title = hit.kind === "scene" ? hit.scene.label ?? hit.scene.id
       : hit.kind === "clip" ? hit.clip.id : hit.cue.id;
     const sub = hit.kind === "scene" ? "Scene" : hit.kind === "clip" ? `Spine clip · ${hit.clip.asset_handle ?? ""}` : `Lane cue · ${hit.cue.kind ?? ""}`;
+    const keep = body.querySelector(".cl-wrap");
     body.innerHTML =
       `<div class="in-title">${escapeHtml(title)}</div><div class="in-sub dim">${escapeHtml(sub)}</div>` +
       thumbFor(hit) +
       `<dl class="in-rows">` + rowsFor(hit).map(([k, v]) => `<div class="in-row"><dt class="dim">${k}</dt><dd class="mono">${escapeHtml(v)}</dd></div>`).join("") + `</dl>`;
+    if (keep) body.appendChild(keep);
     const img = body.querySelector(".in-thumb");
     if (img) img.addEventListener("error", () => img.closest(".in-thumbwrap")?.remove());
   }
@@ -104,6 +108,7 @@ export function mount(root, ctx) {
   ctx.store.on("snapshot", render);
   ctx.store.on("delta", render);
   ctx.store.on("state", render);
+  ctx.store.on("lock", render);
   render();
 }
 

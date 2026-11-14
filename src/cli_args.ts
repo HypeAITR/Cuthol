@@ -39,13 +39,53 @@ const BOOLEAN_FLAGS = new Set([
   "force",
   // cuthol setup
   "apply",
+  "local-speech",
   // cuthol live
   "global",
   "no-window",
+  "remove",
+  // [color boolean flags]
+  "graded",
+  "replace",
+  // [export boolean flags]
 ]);
 
 export const KNOWN_CLI_FLAGS = new Set([
   ...BOOLEAN_FLAGS,
+  "wb",
+  "exposure",
+  "tone",
+  "curve",
+  "wheel",
+  "hsl",
+  "sat",
+  "vibrance",
+  "look",
+  "amount",
+  "patch",
+  "reason",
+  "a",
+  "b",
+  "from",
+  "to",
+  "mode",
+  "technical",
+  "item",
+  "count",
+  "label",
+  // [color flags]
+  "items",
+  "cluster",
+  "image",
+  "targets",
+  "variants",
+  "blocks",
+  "apply-to",
+  "kinds",
+  "set",
+  "from-item",
+  // [export flags]
+  "as",
   // cuthol live
   "port",
   "timeout",
@@ -414,6 +454,9 @@ const REST_BUDGETS: Record<string, RestBudget> = {
 
   "render.draft_480p": { max: 1, occupiedBy: ["out"] },
   "render.master_1080p": { max: 1, occupiedBy: ["out"] },
+  "render.master_2160p": { max: 1, occupiedBy: ["out"] },
+  "render.master_alpha": { max: 1, occupiedBy: ["out"] },
+  "export.timeline": { max: 1, occupiedBy: ["as"] },
 
   "extension.create": { max: 1, occupiedBy: ["name"] },
   "extension.show": { max: 1, occupiedBy: ["name"] },

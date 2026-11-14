@@ -156,6 +156,21 @@ function dragSplitter(el, axis, prop, min, max) {
 dragSplitter(document.getElementById("hsplit"), "x", "--side-w", 240, 520);
 dragSplitter(document.getElementById("vsplit"), "y", "--tl-h", 160, 600);
 
+// Colour panel guard: the side column (sliders + scopes) must never cover the
+// timeline. Checked after scroll, zoom and resize; a violation is logged.
+function checkPanelOverlap() {
+  const right = document.getElementById("rightcol");
+  const tl = document.querySelector('[data-region="timeline"]');
+  if (!right || !tl) return;
+  const r = right.getBoundingClientRect(), t = tl.getBoundingClientRect();
+  const overlaps = r.bottom > t.top && r.top < t.bottom && r.right > t.left && r.left < t.right;
+  if (overlaps) console.error("[color] side panel overlaps the timeline", { right: r.toJSON(), timeline: t.toJSON() });
+  return !overlaps;
+}
+window.addEventListener("resize", () => checkPanelOverlap());
+document.getElementById("mid")?.addEventListener("scroll", () => checkPanelOverlap(), { passive: true });
+window.__cutholPanelOverlap = checkPanelOverlap;
+
 const REGIONS = ["topbar", "scenes", "preview", "activity", "tabs", "timeline", "edit"];
 for (const name of REGIONS) {
   try {

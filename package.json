@@ -8,8 +8,17 @@
     "cuthol": "./dist/cli.js",
     "cuthol-mcp": "./dist/cli.js"
   },
+  "files": [
+    "dist",
+    "!dist/test",
+    "src/live/ui",
+    "skills",
+    "examples",
+    "llms.txt"
+  ],
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "npm run build",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/test.mjs",
     "test:serial": "node --import ./dist/test/test_setup.js --test --test-concurrency=1 dist/test/*.test.js",

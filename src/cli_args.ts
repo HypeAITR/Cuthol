@@ -37,6 +37,8 @@ const BOOLEAN_FLAGS = new Set([
   "all",
   "refresh",
   "force",
+  // cuthol setup
+  "apply",
   // cuthol live
   "global",
   "no-window",

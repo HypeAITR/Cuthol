@@ -47,6 +47,8 @@ export function printHelp(): void {
       "  cuthol skills install [--agent <id>[,<id>]] [--dir <skills-dir>] [--force]",
       "  cuthol skills check [--agent <id>[,<id>]] [--dir <skills-dir>]",
       "  cuthol skills remove [--agent <id>[,<id>]] [--dir <skills-dir>]",
+      "  cuthol doctor [--json]",
+      "  cuthol setup [--agent <id>[,<id>]] [--apply] [--force]",
       "  cuthol mcp",
       "  cuthol live open [--no-window] [--dir <dir>]",
       "  cuthol live status [--dir <dir>]",

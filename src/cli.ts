@@ -61,6 +61,8 @@ import { runExtensionCommand } from "./cli_cmd_extension.js";
 import { runSkillsCommand } from "./cli_cmd_skills.js";
 import { runLiveCommand } from "./cli_cmd_live.js";
 import { runSettingsCommand } from "./cli_cmd_settings.js";
+import { runDoctorCommand } from "./cli_cmd_doctor.js";
+import { runSetupCommand } from "./cli_cmd_setup.js";
 import { maybeAutoInstallSkills } from "./core/skills_install.js";
 
 async function main(): Promise<void> {
@@ -219,6 +221,12 @@ async function main(): Promise<void> {
       break;
     case "settings":
       if (runSettingsCommand(ctx) !== CLI_NOT_HANDLED) return;
+      break;
+    case "doctor":
+      if ((await runDoctorCommand(ctx)) !== CLI_NOT_HANDLED) return;
+      break;
+    case "setup":
+      if ((await runSetupCommand(ctx)) !== CLI_NOT_HANDLED) return;
       break;
   }
 

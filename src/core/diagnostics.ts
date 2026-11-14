@@ -237,6 +237,8 @@ export const DIAGNOSTICS = {
       `Setting '${key}' is locked by environment variable ${variable}; unset it to change the stored value.`,
       `Unset ${variable} and re-run, or keep the environment value.`
     ),
+  // [doctor G625–G629]
+  // [setup G630–G634]
   // [lane-mute G125–G126]
   LANE_MUTE_SPINE: () =>
     createDiagnostic(

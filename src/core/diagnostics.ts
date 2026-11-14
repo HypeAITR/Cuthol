@@ -238,6 +238,22 @@ export const DIAGNOSTICS = {
       `Unset ${variable} and re-run, or keep the environment value.`
     ),
   // [doctor G625–G629]
+  DOCTOR_FFMPEG_MISSING: () =>
+    createDiagnostic(
+      "CUTHOL-G625",
+      "SYS",
+      "ERROR",
+      "ffmpeg or ffprobe was not found on PATH.",
+      "Install ffmpeg 8.x (ffmpeg and ffprobe) and put it on PATH."
+    ),
+  DOCTOR_BROWSER_MISSING: () =>
+    createDiagnostic(
+      "CUTHOL-G626",
+      "SYS",
+      "ERROR",
+      "No Chrome/Chromium browser was found for HyperFrames rendering.",
+      "Install Google Chrome or Microsoft Edge and retry."
+    ),
   // [setup G630–G634]
   // [lane-mute G125–G126]
   LANE_MUTE_SPINE: () =>

@@ -42,6 +42,8 @@ and never reused; they may appear in old projects and logs.
 | G211 | G2 ERROR | An op refused to overwrite outside edits → show, adopt or revert, then retry. |
 | G212 | G2 WARN | ffmpeg/ffprobe below 8.x (Cuthol is tested with 8.x; tempo, loudness and scene analysis may differ) → install 8.x; also shown at render start. |
 | G213 | SYS ERROR | ASR provider cannot auto-detect the speech language and no `lang` was given → re-run transcribe with `lang`. |
+| G625 | SYS ERROR | `doctor` found no ffmpeg/ffprobe on PATH → install ffmpeg 8.x. |
+| G626 | SYS ERROR | `doctor` found no Chrome/Chromium for HyperFrames rendering → install Chrome or Edge. |
 | G214 | — WARN | `composition scaffold` / `lane add-composition` read a bare `--duration` under 100 as milliseconds. The value is unchanged → pass `4s` or `4000ms` if you meant seconds. Values with units never warn. |
 | G230 | G1 ERROR | Unknown provider id → use a listed one. |
 | G231 | G2 ERROR | Extension does not provide that provider kind → `extension show` its `providers`. |

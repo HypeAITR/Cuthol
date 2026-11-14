@@ -24,7 +24,7 @@ You can drive it two ways. They are the same commands:
 | `brief(lens="flow")` | `cuthol brief --lens flow` |
 
 MCP names use `_` where the CLI uses `-` (`add_cue` ↔ `add-cue`,
-`comp_dir` ↔ `--comp-dir`). Error suggestions match your interface.
+`comp_dir` ↔ `--comp-dir`). Error suggestions match your interface. If a tool seems missing (no ffmpeg, no browser, no speech key), run `cuthol doctor` first: one line per check, each with its fix.
 
 ## MCP or CLI
 

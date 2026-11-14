@@ -114,6 +114,8 @@ export async function synthesizeVoiceover(options: {
   let words: RawTranscriptWord[];
   let wasCached = false;
   let extAlignmentKind: ExtensionTtsAlignmentKind | undefined;
+  let localPlaceholder: boolean | undefined;
+  let localPlaceholderWarning: string | undefined;
   let probedSha256: string;
   let probedMeta: ReturnType<typeof probeLocalMediaFile>["probe"];
 
@@ -157,6 +159,8 @@ export async function synthesizeVoiceover(options: {
           tempWavPath: audioFilePath,
         });
         words = res.words;
+        localPlaceholder = res.is_placeholder_audio;
+        localPlaceholderWarning = res.placeholder_warning;
       } else {
         const res = await synthesizeWithElevenLabs({
           text: options.text,
@@ -246,10 +250,15 @@ export async function synthesizeVoiceover(options: {
       ? `Extension TTS provider '${extProviderName}' returned audio without word or character alignment, so no word timings are available.`
       : undefined;
 
-  const isPlaceholder = provider === "local" && !process.env.CUTHOL_LOCAL_TTS_CMD;
-  const placeholderWarning = isPlaceholder
-    ? "CUTHOL_LOCAL_TTS_CMD is not set, so a synthetic formant placeholder tone was produced instead of speech; for real speech use ElevenLabs, CUTHOL_LOCAL_TTS_CMD or an ext: TTS provider."
-    : undefined;
+  // The local provider reports its own result (real Piper audio vs custom command);
+  // the env heuristic below only covers cache hits from before this reporting existed.
+  const isPlaceholder =
+    localPlaceholder ?? (provider === "local" && !process.env.CUTHOL_LOCAL_TTS_CMD);
+  const placeholderWarning =
+    localPlaceholderWarning ??
+    (isPlaceholder
+      ? "CUTHOL_LOCAL_TTS_CMD is not set, so a synthetic formant placeholder tone was produced instead of speech; for real speech use ElevenLabs, CUTHOL_LOCAL_TTS_CMD or an ext: TTS provider."
+      : undefined);
 
   // If the asset is already in the library with its transcript ref set and no lane placement is requested,
   // avoid creating a redundant journal revision.

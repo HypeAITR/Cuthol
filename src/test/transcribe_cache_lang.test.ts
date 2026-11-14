@@ -29,6 +29,11 @@ import { generateSequenceCaptions } from "../speech/captions.js";
 import { cleanupClipDialogue } from "../speech/cleanup.js";
 import { TranscriptDocument } from "../speech/providers.js";
 import { loadCachedTranscriptForAsset, transcribeLibraryAsset } from "../speech/transcribe.js";
+import { fakeLocalSpeechInstall } from "./fixtures.js";
+
+// Keyless local speech needs an installation; tests use the stub bridge (no venv, deterministic).
+const localSpeech = fakeLocalSpeechInstall();
+test.after(() => localSpeech.restore());
 
 const TEST_ROOT = path.resolve(process.cwd(), "test-workspace/transcribe_cache_lang");
 const CLI = path.resolve(process.cwd(), "dist/cli.js");

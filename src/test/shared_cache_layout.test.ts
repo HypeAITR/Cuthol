@@ -28,6 +28,11 @@ import { generateSequenceCaptions } from "../speech/captions.js";
 import { synthesizeVoiceover } from "../speech/synthesize.js";
 import { transcribeLibraryAsset } from "../speech/transcribe.js";
 import { runWorkspaceVerification } from "../verify/gates.js";
+import { fakeLocalSpeechInstall } from "./fixtures.js";
+
+// Keyless local speech needs an installation; tests use the stub bridge (no venv, deterministic).
+const localSpeech = fakeLocalSpeechInstall();
+test.after(() => localSpeech.restore());
 
 const TEST_ROOT = path.resolve(process.cwd(), "test-workspace", "shared_cache_layout");
 

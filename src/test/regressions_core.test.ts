@@ -37,6 +37,11 @@ import {
 import { stepJournal } from "../core/workspace.js";
 import { compileEnvelopeToFfmpegExpr } from "../compositor/compiler.js";
 import { synthesizeVoiceover } from "../speech/synthesize.js";
+import { fakeLocalSpeechInstall } from "./fixtures.js";
+
+// Keyless local speech needs an installation; tests use the stub bridge (no venv, deterministic).
+const localSpeech = fakeLocalSpeechInstall();
+test.after(() => localSpeech.restore());
 
 const TEST_ROOT = path.resolve(process.cwd(), "test-workspace");
 

@@ -190,7 +190,7 @@ test("ext TTS without alignment warns honestly and invents no timings", async ()
   assert.equal(caps.cues_created, 0);
 });
 
-test("ext TTS cache is separate per provider version and from local", async () => {
+test("ext TTS cache is separate per provider version; local TTS without installation fails G237", async () => {
   const wsDir = path.join(TEST_ROOT, "ws_tts_cache");
   fs.rmSync(wsDir, { recursive: true, force: true });
   initWorkspace({ dir: wsDir, title: "Ext TTS cache", aspect: "16:9", fps: 30 });
@@ -210,10 +210,10 @@ test("ext TTS cache is separate per provider version and from local", async () =
   const savedLocalTtsCmd = process.env.CUTHOL_LOCAL_TTS_CMD;
   delete process.env.CUTHOL_LOCAL_TTS_CMD;
   try {
-    const local = await synthesizeVoiceover({ workspaceDir: wsDir, text, provider: "local" });
-    assert.equal(local.cached, false);
-    assert.equal(local.provider, "local");
-    assert.equal(local.is_placeholder_audio, true);
+    await assert.rejects(
+      synthesizeVoiceover({ workspaceDir: wsDir, text, provider: "local" }),
+      /CUTHOL-G237/
+    );
   } finally {
     if (savedLocalTtsCmd !== undefined) process.env.CUTHOL_LOCAL_TTS_CMD = savedLocalTtsCmd;
   }

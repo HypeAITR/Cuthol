@@ -13,6 +13,7 @@ import { listInstalledBrowsers } from "../live/live_browsers.js";
 import { findLocalHyperFramesCliMjs } from "../compositor/hf_common.js";
 import { listSkillsStatus } from "./skills_install.js";
 import { resolveBundledGsapMinJs } from "./package_resolve.js";
+import { localSpeechInstallState } from "../speech/local_engine.js";
 
 export type DoctorStatus = "ok" | "warn" | "fail";
 
@@ -38,6 +39,8 @@ export interface DoctorProbes {
   deepgramKeyPresent?: boolean;
   elevenlabsKeyPresent?: boolean;
   skillsSummary?: string | null;
+  localSpeech?: "installed" | "not-installed" | "broken";
+  localSpeechDetail?: string;
 }
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -191,6 +194,28 @@ export function checkSpeechKeys(probes: DoctorProbes = {}): DoctorCheck {
   };
 }
 
+export function checkLocalSpeech(probes: DoctorProbes = {}): DoctorCheck {
+  const state = probes.localSpeech ?? localSpeechInstallState().state;
+  const detail = probes.localSpeechDetail ?? localSpeechInstallState().reason;
+  if (state === "installed") {
+    return { id: "local-speech", status: "ok", found: `keyless local speech installed (${detail})`, fix: "none" };
+  }
+  if (state === "broken") {
+    return {
+      id: "local-speech",
+      status: "fail",
+      found: `keyless local speech is broken (${detail})`,
+      fix: "Re-run 'cuthol setup --local-speech --apply' to repair it. [CUTHOL-G239]",
+    };
+  }
+  return {
+    id: "local-speech",
+    status: "warn",
+    found: "keyless local speech is not installed (cloud keys or explicit CUTHOL_LOCAL_*_CMD still work)",
+    fix: "Run 'cuthol setup --local-speech --apply' for keyless transcription and voiceover. [CUTHOL-G237]",
+  };
+}
+
 export function checkSkills(probes: DoctorProbes = {}): DoctorCheck {
   const summary = probes.skillsSummary ?? null;
   if (summary === null) {
@@ -270,5 +295,5 @@ function defaultProbes(): DoctorProbes {
 
 export function collectDoctorChecks(probes?: DoctorProbes): DoctorCheck[] {
   const p = probes ?? defaultProbes();
-  return [checkNode(p), checkFfmpeg(p), checkBrowser(p), checkHyperframes(p), checkSpeechKeys(p), checkSkills(p)];
+  return [checkNode(p), checkFfmpeg(p), checkBrowser(p), checkHyperframes(p), checkSpeechKeys(p), checkLocalSpeech(p), checkSkills(p)];
 }

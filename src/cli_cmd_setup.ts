@@ -2,6 +2,11 @@
 import { CutholError, DIAGNOSTICS } from "./core/diagnostics.js";
 import { isValidAgentId } from "./core/skills_install.js";
 import { applySetup } from "./core/mcp_register.js";
+import {
+  applyLocalSpeechSetup,
+  describeLocalSpeechSetup,
+  planLocalSpeechSetup,
+} from "./core/local_speech_setup.js";
 import { boolFlag, strFlag } from "./cli_args.js";
 import {
   CLI_NOT_HANDLED,
@@ -13,6 +18,52 @@ import {
 export async function runSetupCommand(ctx: CliCommandContext): Promise<CliCommandResult> {
   const { flags, workspaceDir } = ctx;
   if (ctx.group !== "setup" || ctx.action !== undefined) return CLI_NOT_HANDLED;
+
+  if (boolFlag(flags, "local-speech", false)) {
+    const plan = planLocalSpeechSetup({
+      model: strFlag(flags, "model"),
+      voice: strFlag(flags, "voice"),
+    });
+    const wantsLocalJson = Boolean(flags["json"]);
+    if (!boolFlag(flags, "apply", false)) {
+      const lines = describeLocalSpeechSetup(plan);
+      if (wantsLocalJson) {
+        emitEnvelopeJson(workspaceDir, "setup.local-speech", {
+          action: "setup.local-speech",
+          dry_run: true,
+          ...plan,
+        });
+        return;
+      }
+      for (const line of lines) console.log(line);
+      return;
+    }
+    const startedAt = Date.now();
+    const { noop, seconds } = await applyLocalSpeechSetup(
+      { model: plan.model, voice: plan.voice, apply: true },
+      startedAt
+    );
+    if (wantsLocalJson) {
+      emitEnvelopeJson(workspaceDir, "setup.local-speech", {
+        action: "setup.local-speech",
+        dry_run: false,
+        noop,
+        seconds,
+        ...plan,
+      });
+      return;
+    }
+    if (noop) {
+      console.log(
+        `local speech already installed in '${plan.root}' (model ${plan.model}, voice ${plan.voice}); nothing to do.`
+      );
+      return;
+    }
+    console.log(
+      `local speech installed in '${plan.root}' (model ${plan.model}, voice ${plan.voice}) in ${seconds}s.`
+    );
+    return;
+  }
 
   const agentRaw = strFlag(flags, "agent");
   const ids = agentRaw

@@ -207,7 +207,7 @@ test("env defaults apply without flags (local ASR sidecar, ext TTS)", async () =
   }
 });
 
-test("local door stays backward compatible without any provider setting", async () => {
+test("local door stays backward compatible for sidecar ASR; local TTS without installation fails G237", async () => {
   const wsDir = path.join(TEST_ROOT, "ws_local_compat");
   fs.rmSync(wsDir, { recursive: true, force: true });
   initWorkspace({ dir: wsDir, title: "compat", aspect: "16:9", fps: 30 });
@@ -233,12 +233,10 @@ test("local door stays backward compatible without any provider setting", async 
     assert.equal(tr.transcript.provider, "local");
     assert.equal(tr.transcript.model, "local-sidecar");
 
-    const vo = await synthesizeVoiceover({ workspaceDir: wsDir, text: "merhaba", provider: "local" });
-    assert.equal(vo.provider, "local");
-    assert.equal(vo.is_placeholder_audio, true);
-    assert.equal(vo.has_alignment, true);
-    assert.equal(vo.alignment_kind, "word");
-    assert.equal(vo.alignment_warning, undefined);
+    await assert.rejects(
+      synthesizeVoiceover({ workspaceDir: wsDir, text: "merhaba", provider: "local" }),
+      /CUTHOL-G237/
+    );
   } finally {
     restoreProviderEnv(saved);
     if (savedLocalTtsCmd !== undefined) process.env.CUTHOL_LOCAL_TTS_CMD = savedLocalTtsCmd;

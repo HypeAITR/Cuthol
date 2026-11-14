@@ -29,18 +29,20 @@ search ignores case and diacritics.
   every clip and voiceover cue using that asset, and stay correct after trims,
   speed changes and cuts. Check brand names and rare nouns with
   `library.query(text=…)` first — they are often misheard.
-- Providers: `deepgram` (default, needs `DEEPGRAM_API_KEY`), `local` (needs a
-  `<file>.transcript.json` sidecar or `CUTHOL_LOCAL_ASR_CMD`), or
-  `ext:<extension>` (an extension ASR provider). See *Providers* below.
+- Providers: `deepgram` (default, needs `DEEPGRAM_API_KEY`), `local`
+  (keyless when set up, else a `<file>.transcript.json` sidecar or
+  `CUTHOL_LOCAL_ASR_CMD`), or `ext:<extension>` (an extension ASR provider).
+  See *Providers* below.
 
 ## Voiceover
 
 `speech.synthesize(text, voice?, speed?, place_on_lane="ln_vo", at |
 anchor+offset)` creates a `vo_XX` asset with exact word timings from the TTS
 itself (no ASR pass needed, spelling preserved). Default provider `elevenlabs`
-(needs `ELEVENLABS_API_KEY`). `provider="local"` without `CUTHOL_LOCAL_TTS_CMD`
-gives placeholder tones (`is_placeholder_audio: true`) — fine for timing tests,
-not for delivery. `provider="ext:<extension>"` uses an extension TTS provider;
+(needs `ELEVENLABS_API_KEY`). `provider="local"` synthesizes real Turkish
+speech once keyless local speech is set up (no keys, no wiring); without the
+installation it fails with `[CUTHOL-G237]`. Local word timings are proportional
+estimates. `CUTHOL_LOCAL_TTS_CMD`, when set, still wins. `provider="ext:<extension>"` uses an extension TTS provider;
 without alignment it reports `has_alignment: false` plus a warning instead of
 inventing timings. Pass `lang` with the text's language: it is recorded with the
 voiceover's transcript. Without it, text with Turkish-only letters is recorded as
@@ -81,6 +83,16 @@ version + options, so providers never share records.
 Two ways to use local models: the `local` door (sidecar transcript, or
 `CUTHOL_LOCAL_ASR_CMD` / `CUTHOL_LOCAL_TTS_CMD`) or an `ext:` provider
 extension (see `cuthol-extensions`).
+
+Keyless local speech needs no API keys and no hand-wiring: run
+`cuthol setup --local-speech --apply` once (private venv under the user data
+folder, pinned faster-whisper + Piper voice), then `provider="local"` just
+works; explicit `CUTHOL_LOCAL_*_CMD` still wins when set. Choose it for
+offline or zero-cost transcription and voiceover. Limits: product and brand
+names are sometimes misheard (pass them as project keyterms, forwarded as
+Whisper hotwords), numbers come back as digits, and Turkish TTS word timings
+are proportional estimates, not measured. The `small` model is ~2x faster
+than `large-v3-turbo` at similar timing quality.
 
 Music and effects can come from a provider shelf: `library.search(provider=
 "ext:media-folder", kind="music", query="calm", min="10s", max="60s")` lists

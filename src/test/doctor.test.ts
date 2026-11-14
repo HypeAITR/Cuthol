@@ -34,6 +34,8 @@ function healthy(): DoctorProbes {
     deepgramKeyPresent: true,
     elevenlabsKeyPresent: true,
     skillsSummary: "claude-code: 1 installed",
+    localSpeech: "installed",
+    localSpeechDetail: "faster-whisper small, piper tr_TR-dfki-medium",
   };
 }
 

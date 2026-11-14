@@ -33,7 +33,11 @@ import {
   polishVoiceAudio,
 } from "../mix/audio_mix.js";
 import { captureMonitorFrame } from "../monitor/preview.js";
-import { missingKeys } from "./fixtures.js";
+import { missingKeys, fakeLocalSpeechInstall } from "./fixtures.js";
+
+// Keyless local speech needs an installation; tests use the stub bridge (no venv, deterministic).
+const localSpeech = fakeLocalSpeechInstall();
+test.after(() => localSpeech.restore());
 
 const TEST_ROOT = path.resolve(process.cwd(), "test-workspace");
 

@@ -189,6 +189,7 @@ export async function transcribeLibraryAsset(options: {
           audioFilePath: absMediaPath,
           language: lang,
           durationMs: item.probe.duration_ms,
+          keyterms: options.keyterms,
         });
       } else {
         // Extract clean 16 kHz mono WAV into `.cuthol/blobs/` for fast upload to Deepgram

@@ -5,7 +5,8 @@
  * 1. `duckMusicUnderDialogue` does NOT duck across 0..14000ms on untranscribed spine B-roll clips when `ln_vo` voiceover is present, and emits `CUTHOL-G504`.
  * 2. `verifySequence` emits `CUTHOL-G306` (`LANE_EXTENDS_PAST_SPINE`) when `ln_vo` / `ln_captions` / `ln_bgm` extend past the primary `spine` duration (e.g. 14000ms vs 12000ms).
  * 3. `measureCuePixelBox` accurately detects HyperFrames `title_card` / `stat_callout` / `badge_overlay` / `lower_third` geometry, and `captureMonitorFrame` draws overflowing top boxes OVER the HUD bar without clipping.
- * 4. `synthesizeVoiceover` with `--provider local` (when `CUTHOL_LOCAL_TTS_CMD` is unset) explicitly flags `is_placeholder_audio: true` and `placeholder_warning`.
+ * 4. `synthesizeVoiceover` with `--provider local` reports real audio (`is_placeholder_audio: false`)
+ *    with proportional-estimate timings when the keyless installation is present.
  * 5. A HyperFrames overlay is never replaced by a drawbox stand-in; legacy stand-in blobs (`.fallback.json`) are re-rendered.
  * 6. Real neural Turkish speech + multi-shot video regression test (`transcribe` -> `cleanup` -> `captions` -> `duck` -> `verify`).
  */
@@ -28,7 +29,7 @@ import { cleanupClipDialogue } from "../speech/cleanup.js";
 import { generateSequenceCaptions } from "../speech/captions.js";
 import { captureMonitorFrame } from "../monitor/preview.js";
 import { renderSequenceToMp4 } from "../render/renderer.js";
-import { fixturePath, missingKeys } from "./fixtures.js";
+import { fakeLocalSpeechInstall, fixturePath, missingKeys } from "./fixtures.js";
 const SPEECH_CACHE_DIR = fixturePath("speech-cache");
 
 const TEST_ROOT = path.resolve(process.cwd(), "test-workspace");
@@ -85,16 +86,22 @@ test("Ducking skips untranscribed spine footage when ln_vo exists (G504), and G3
   appendSpineClip({ workspaceDir: wsDir, assetHandle: "vid_01", sourceInMs: 0, sourceOutMs: 7000 });
   appendSpineClip({ workspaceDir: wsDir, assetHandle: "vid_02", sourceInMs: 0, sourceOutMs: 7000 });
 
-  // Synthesize a voiceover placed on ln_vo at 2000..4500ms (also covers the placeholder flag)
-  const voRes = await synthesizeVoiceover({
-    workspaceDir: wsDir,
-    text: "Kısa seslendirme cümlesi.",
-    provider: "local",
-    placeOnLane: "ln_vo",
-    atMs: 2000,
-  });
-  assert.equal(voRes.is_placeholder_audio, true);
-  assert.ok(voRes.placeholder_warning?.includes("CUTHOL_LOCAL_TTS_CMD"));
+  // Synthesize a voiceover placed on ln_vo at 2000..4500ms (keyless local TTS via a fake installation)
+  const fakeSpeech = fakeLocalSpeechInstall();
+  let voRes: Awaited<ReturnType<typeof synthesizeVoiceover>>;
+  try {
+    voRes = await synthesizeVoiceover({
+      workspaceDir: wsDir,
+      text: "Kısa seslendirme cümlesi.",
+      provider: "local",
+      placeOnLane: "ln_vo",
+      atMs: 2000,
+    });
+  } finally {
+    fakeSpeech.restore();
+  }
+  assert.equal(voRes.is_placeholder_audio, false);
+  assert.ok(voRes.placeholder_warning?.includes("proportional estimates"));
 
   addLaneCue({
     workspaceDir: wsDir,

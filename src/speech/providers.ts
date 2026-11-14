@@ -13,6 +13,12 @@ import fs from "node:fs";
 import { CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
 import { requireApiKey } from "../core/env.js";
 import { OPEN_STANDARDS } from "../core/standards.js";
+import {
+  LOCAL_SPEECH_DEFAULT_MODEL,
+  localSpeechStatus,
+  runLocalAsrBridge,
+  runLocalTtsBridge,
+} from "./local_engine.js";
 
 export type AsrProviderId = "deepgram" | "local" | `ext:${string}`;
 export type TtsProviderId = "elevenlabs" | "local" | `ext:${string}`;
@@ -303,6 +309,8 @@ export async function transcribeWithLocalProvider(options: {
   audioFilePath: string;
   language?: string;
   durationMs: number;
+  keyterms?: string[];
+  modelName?: string;
 }): Promise<TranscriptDocument> {
   const sidecarPath = `${options.audioFilePath}.transcript.json`;
   if (fs.existsSync(sidecarPath)) {
@@ -421,12 +429,38 @@ export async function transcribeWithLocalProvider(options: {
     };
   }
 
-  throw new CutholError(
-    DIAGNOSTICS.EXTERNAL_TOOL_FAILED(
-      "local ASR provider",
-      "Provide a '<file>.transcript.json' sidecar or set CUTHOL_LOCAL_ASR_CMD to a local Whisper binary."
-    )
-  );
+  // Keyless fallback: the private installation from `cuthol setup --local-speech --apply`.
+  const localStatus = localSpeechStatus();
+  if (!localStatus.installed) {
+    throw new CutholError(DIAGNOSTICS.LOCAL_SPEECH_NOT_INSTALLED(localStatus.reason));
+  }
+  const keyterms =
+    options.keyterms && options.keyterms.length > 0 ? options.keyterms : ["Cuthol", "HyperFrames"];
+  const bridge = runLocalAsrBridge({
+    audioFilePath: options.audioFilePath,
+    language: options.language,
+    modelName: options.modelName ?? LOCAL_SPEECH_DEFAULT_MODEL,
+    keyterms,
+  });
+  const sanitizedBridgeWords = bridge.words
+    .filter((w) => w && typeof w.word === "string")
+    .map((w) => ({
+      word: w.word,
+      punctuated_word: typeof w.punctuated_word === "string" ? w.punctuated_word : w.word,
+      source_start_ms: Number.isFinite(Number(w.source_start_ms)) ? Math.round(Number(w.source_start_ms)) : 0,
+      source_end_ms: Number.isFinite(Number(w.source_end_ms)) ? Math.round(Number(w.source_end_ms)) : 100,
+      confidence: Number.isFinite(Number(w.confidence)) ? Number(w.confidence) : 0.99,
+    }));
+  const { words, disfluencies } = annotateWordsAndDisfluencies(sanitizedBridgeWords, options.durationMs);
+  return {
+    provider: "local",
+    model: `faster-whisper-${bridge.modelName}`,
+    language: bridge.language,
+    duration_ms: options.durationMs,
+    text: words.map((w) => w.punctuated_word).join(" "),
+    words,
+    disfluencies,
+  };
 }
 
 /**
@@ -617,6 +651,8 @@ export async function synthesizeWithLocalProvider(options: {
   }
 
   let totalDurationMs = Math.max(600, cursorMs + 120);
+  let builtInVoiceId: string | null = null;
+  let builtInModelId: string | null = null;
 
   const customTtsCmd = process.env.CUTHOL_LOCAL_TTS_CMD;
   if (customTtsCmd) {
@@ -665,78 +701,48 @@ export async function synthesizeWithLocalProvider(options: {
       }
       totalDurationMs = actualDurationMs;
     }
-  } else {
-    // Synthesize formant-like voice cadence 48kHz 16-bit mono PCM WAV directly in memory
-    // (avoids FFmpeg lavfi aevalsrc single-quote escaping & expression-tree depth limits on long texts)
-    const sampleRate = 48000;
-    const numSamples = Math.max(1, Math.round((totalDurationMs / 1000) * sampleRate));
-    const headerSize = 44;
-    const dataSize = numSamples * 2;
-    const wavBuf = Buffer.alloc(headerSize + dataSize);
-
-    // RIFF WAVE header (PCM s16le mono 48000 Hz)
-    wavBuf.write("RIFF", 0, "ascii");
-    wavBuf.writeUInt32LE(36 + dataSize, 4);
-    wavBuf.write("WAVE", 8, "ascii");
-    wavBuf.write("fmt ", 12, "ascii");
-    wavBuf.writeUInt32LE(16, 16); // Subchunk1Size (PCM)
-    wavBuf.writeUInt16LE(1, 20); // AudioFormat = 1 (PCM)
-    wavBuf.writeUInt16LE(1, 22); // NumChannels = 1
-    wavBuf.writeUInt32LE(sampleRate, 24); // SampleRate
-    wavBuf.writeUInt32LE(sampleRate * 2, 28); // ByteRate
-    wavBuf.writeUInt16LE(2, 32); // BlockAlign
-    wavBuf.writeUInt16LE(16, 34); // BitsPerSample
-    wavBuf.write("data", 36, "ascii");
-    wavBuf.writeUInt32LE(dataSize, 40);
-
-    const twoPiOverSr = (2 * Math.PI) / sampleRate;
-    const fadeSamples = Math.min(240, Math.floor(sampleRate * 0.005)); // 5ms de-click envelope on word edges
-
-    const segments =
-      rawWords.length > 0
-        ? rawWords.map((w) => ({
-            startSample: Math.max(0, Math.floor((w.source_start_ms / 1000) * sampleRate)),
-            endSample: Math.min(numSamples, Math.ceil((w.source_end_ms / 1000) * sampleRate)),
-          }))
-        : [{ startSample: 0, endSample: numSamples }];
-
-    for (const seg of segments) {
-      for (let s = seg.startSample; s < seg.endSample; s++) {
-        let env = 1.0;
-        const fromStart = s - seg.startSample;
-        const toEnd = seg.endSample - 1 - s;
-        if (fadeSamples > 0) {
-          if (fromStart < fadeSamples) env = fromStart / fadeSamples;
-          else if (toEnd < fadeSamples) env = Math.min(env, toEnd / fadeSamples);
-        }
-        const phase = s * twoPiOverSr;
-        const sampleVal =
-          env *
-          (0.35 * Math.sin(165 * phase) +
-            0.25 * Math.sin(720 * phase) +
-            0.12 * Math.sin(2400 * phase));
-        const pcm16 = Math.max(-32768, Math.min(32767, Math.round(sampleVal * 32767)));
-        wavBuf.writeInt16LE(pcm16, headerSize + s * 2);
+  } else if (localSpeechStatus().installed) {
+    // Keyless fallback: real speech from the private Piper installation.
+    const configuredVoice =
+      options.voiceId && options.voiceId !== "local_default" ? options.voiceId : undefined;
+    const tts = runLocalTtsBridge({
+      text: options.text,
+      voiceId: configuredVoice,
+      outWavPath: options.tempWavPath,
+    });
+    builtInVoiceId = `piper-${tts.voiceId}`;
+    builtInModelId = "piper-tts";
+    const actualMs = Math.max(100, tts.durationMs);
+    if (rawWords.length > 0) {
+      const scale = actualMs / totalDurationMs;
+      for (let i = 0; i < rawWords.length; i++) {
+        const scaledStart = Math.max(0, Math.min(actualMs - 1, Math.round(rawWords[i].source_start_ms * scale)));
+        const scaledEnd = Math.max(scaledStart + 1, Math.min(actualMs, Math.round(rawWords[i].source_end_ms * scale)));
+        rawWords[i].source_start_ms = scaledStart;
+        rawWords[i].source_end_ms = scaledEnd;
       }
     }
-
-    fs.writeFileSync(options.tempWavPath, wavBuf);
+    totalDurationMs = actualMs;
+  } else {
+    throw new CutholError(
+      DIAGNOSTICS.LOCAL_SPEECH_NOT_INSTALLED(localSpeechStatus().reason)
+    );
   }
 
   const audioBuffer = fs.readFileSync(options.tempWavPath);
   const { words } = annotateWordsAndDisfluencies(rawWords, totalDurationMs);
 
-  const isPlaceholder = !customTtsCmd;
+  const isBuiltIn = builtInVoiceId !== null;
   return {
     provider: "local",
-    voice_id: options.voiceId ?? "local_default",
-    model_id: isPlaceholder ? "local-placeholder-tone" : "local-custom-cmd",
+    voice_id: builtInVoiceId ?? options.voiceId ?? "local_default",
+    model_id: builtInModelId ?? "local-custom-cmd",
     audio_buffer: audioBuffer,
     duration_ms: totalDurationMs,
     words,
-    is_placeholder_audio: isPlaceholder,
-    placeholder_warning: isPlaceholder
-      ? "CUTHOL_LOCAL_TTS_CMD is not set, so a synthetic formant placeholder tone was produced instead of speech; for real speech use ElevenLabs, CUTHOL_LOCAL_TTS_CMD or an ext: TTS provider."
+    is_placeholder_audio: false,
+    placeholder_warning: isBuiltIn
+      ? "Word timings are proportional estimates: Piper emits no word timestamps."
       : undefined,
   };
 }

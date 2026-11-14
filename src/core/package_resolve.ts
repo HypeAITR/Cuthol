@@ -23,16 +23,19 @@ export function packageRootDir(): string {
 }
 
 /**
- * Resolves `relPath` (relative to the package root, e.g.
- * `node_modules/gsap/dist/gsap.min.js`) against Node's module resolver first,
- * then the package-root path as a fallback. Returns the first path that exists,
- * or `null` when neither exists.
+ * Resolves `subPath` inside the installed `packageName` (e.g.
+ * `bin/hyperframes.mjs` in `hyperframes`). Node's own resolver finds the
+ * package directory (via the always-exported `./package.json` subpath, which
+ * works even when the package's `exports` map hides the file itself); the
+ * Cuthol package-root `node_modules` copy stays as a fallback for layouts the
+ * resolver cannot see. Returns the first path that exists, or `null`.
  */
 export function resolvePackageFile(packageName: string, subPath: string, fallbackRelPath: string): string | null {
   try {
     const require = createRequire(import.meta.url);
-    const resolved = require.resolve(`${packageName}/${subPath}`);
-    if (fs.existsSync(resolved)) return resolved;
+    const manifest = require.resolve(`${packageName}/package.json`);
+    const candidate = path.join(path.dirname(manifest), subPath);
+    if (fs.existsSync(candidate)) return candidate;
   } catch {
     // Fall through to the package-root fallback below.
   }

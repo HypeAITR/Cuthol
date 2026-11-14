@@ -375,11 +375,21 @@ test("4. legacy-computed elements stay byte-identical", async () => {
     { doc: docs[2], key: "pic", item: [340.3, 251.9, 115.8, 115.8], ink: [365.2, 284.9, 66, 49.8] },
     { doc: docs[3], key: "txt", item: [200, 98, 167.6, 59], ink: [203, 109, 161.2, 47] },
   ];
+  // The golden values were recorded on Windows. Text ink comes from rasterized glyph pixels, and other
+  // platforms antialias the same font differently (measured on Linux CI: ink off by 1 px, layout boxes
+  // identical). So text ink is exact on Windows and within 1 px elsewhere; layout boxes and image ink
+  // stay exact everywhere.
+  const textInkTolerance = process.platform === "win32" ? 0 : 1;
   for (const c of cases) {
     assert.equal(c.doc.frames.length, 30);
     for (const fr of c.doc.frames) {
       assert.deepEqual(boxOf(c.doc, c.key, fr.f), c.item, `${c.key} f${fr.f} item`);
-      assert.deepEqual(inkOf(c.doc, c.key, fr.f), c.ink, `${c.key} f${fr.f} ink`);
+      const ink = inkOf(c.doc, c.key, fr.f);
+      if (c.key === "txt" && textInkTolerance > 0 && ink && c.ink) {
+        ink.forEach((v, i) => assert.ok(Math.abs(v - c.ink![i]) <= textInkTolerance, `${c.key} f${fr.f} ink[${i}] ${v} vs ${c.ink![i]}`));
+      } else {
+        assert.deepEqual(ink, c.ink, `${c.key} f${fr.f} ink`);
+      }
     }
   }
 });

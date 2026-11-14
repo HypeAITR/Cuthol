@@ -229,8 +229,12 @@ test("server: undo then a new commit streams the real operation, not redo", asyn
     stepJournal(dir, "undo");
     const undo = await waitFor(
       () => {
-        const ev = sse.events.find((e) => e.name === "delta");
-        return ev ? (JSON.parse(ev.data) as LiveDelta) : null;
+        for (const ev of sse.events) {
+          if (ev.name !== "delta") continue;
+          const d = JSON.parse(ev.data) as LiveDelta;
+          if (d.revision !== d.from_revision) return d;
+        }
+        return null;
       },
       10000,
       "undo delta"
@@ -239,10 +243,15 @@ test("server: undo then a new commit streams the real operation, not redo", asyn
     sse.events.length = 0;
     // New commit on the undone cursor: reuses the revision number, prunes the branch.
     trimSpineClip({ workspaceDir: dir, clipId: "sp_01", sourceOutMs: 2500 });
+    // The cursor-moving delta; Linux file watchers may first report an in-place update (same revision).
     const pruned = await waitFor(
       () => {
-        const ev = sse.events.find((e) => e.name === "delta");
-        return ev ? (JSON.parse(ev.data) as LiveDelta) : null;
+        for (const ev of sse.events) {
+          if (ev.name !== "delta") continue;
+          const d = JSON.parse(ev.data) as LiveDelta;
+          if (d.revision !== d.from_revision) return d;
+        }
+        return null;
       },
       10000,
       "pruned-branch delta"

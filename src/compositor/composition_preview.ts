@@ -17,8 +17,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { spawnWatchedSync } from "../core/subprocess.js";
+import { resolveHyperFramesCliMjs } from "../core/package_resolve.js";
 import { hyperFramesProcessEnv } from "./hf_common.js";
 import { isVisualCue, resolveCueStartMs } from "../core/timeline.js";
 import { CutholDiagnostic, CutholError, DIAGNOSTICS } from "../core/diagnostics.js";
@@ -45,8 +45,6 @@ import {
   probeScriptRecordsChildSync,
   scriptRecordToDiagnostic,
 } from "./hf_script_errors.js";
-
-const PACKAGE_ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 export interface AlphaGateFrameMetrics {
   at_sec: number;
@@ -79,8 +77,8 @@ export interface CompositionPreviewResult {
 }
 
 function findLocalHyperFramesCliMjs(): string {
-  const pkgCandidate = path.resolve(PACKAGE_ROOT_DIR, "node_modules/hyperframes/bin/hyperframes.mjs");
-  if (fs.existsSync(pkgCandidate)) return pkgCandidate;
+  const resolved = resolveHyperFramesCliMjs();
+  if (resolved) return resolved;
   return path.resolve(process.cwd(), "node_modules/hyperframes/bin/hyperframes.mjs");
 }
 

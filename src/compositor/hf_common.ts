@@ -1,13 +1,11 @@
 // HyperFrames bridge shared pieces: package root, local CLI/GSAP lookup, public types, encoder hint helpers (split out of hyperframes_bridge.ts).
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   resolveVideoEncoderPreference
 } from "../core/env.js";
 import { probeAndVerifyVideoEncoder } from "../render/encoder.js";
-
-const PACKAGE_ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+import { resolveBundledGsapMinJs, resolveHyperFramesCliMjs } from "../core/package_resolve.js";
 
 export type HyperFramesPresetKind =
   | "title_card"
@@ -65,9 +63,9 @@ export interface HyperFramesLintResult {
 }
 
 export function findLocalHyperFramesCliMjs(): string {
-  const pkgCandidate = path.resolve(PACKAGE_ROOT_DIR, "node_modules/hyperframes/bin/hyperframes.mjs");
-  if (fs.existsSync(pkgCandidate)) {
-    return pkgCandidate;
+  const resolved = resolveHyperFramesCliMjs();
+  if (resolved) {
+    return resolved;
   }
   return path.resolve(process.cwd(), "node_modules/hyperframes/bin/hyperframes.mjs");
 }
@@ -174,13 +172,9 @@ export function readInvokedHyperFramesVersion(): string {
 }
 
 export function findLocalGsapMinJs(): string {
-  const pkgCandidate = path.resolve(PACKAGE_ROOT_DIR, "node_modules/gsap/dist/gsap.min.js");
-  if (fs.existsSync(pkgCandidate)) {
-    return pkgCandidate;
-  }
-  const cwdCandidate = path.resolve(process.cwd(), "node_modules/gsap/dist/gsap.min.js");
-  if (fs.existsSync(cwdCandidate)) {
-    return cwdCandidate;
+  const resolved = resolveBundledGsapMinJs();
+  if (resolved) {
+    return resolved;
   }
   throw new Error("Local node_modules/gsap/dist/gsap.min.js not found.");
 }

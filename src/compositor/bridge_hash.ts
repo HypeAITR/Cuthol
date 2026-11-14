@@ -2,22 +2,16 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   CUTHOL_BRIDGE_SCHEMA,
   CUTHOL_RUNTIME_VERSION, CutholBridgeV1
 } from "./cuthol_runtime.js";
 import { readInvokedHyperFramesVersion } from "./hf_common.js";
-
-const BRIDGE_PACKAGE_ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+import { resolveBundledGsapMinJs } from "../core/package_resolve.js";
 
 /** Locates the package-local `gsap.min.js` so compositions never depend on a CDN. */
 export function findBundledGsapMinJs(): string | null {
-  const candidates = [
-    path.resolve(BRIDGE_PACKAGE_ROOT_DIR, "node_modules/gsap/dist/gsap.min.js"),
-    path.resolve(process.cwd(), "node_modules/gsap/dist/gsap.min.js"),
-  ];
-  return candidates.find((p) => fs.existsSync(p)) ?? null;
+  return resolveBundledGsapMinJs();
 }
 
 const IGNORED_COMPOSITION_SUBDIRS = new Set([

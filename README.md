@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-0D1117?style=flat-square"></a>
-  <img alt="Version 0.3.5" src="https://img.shields.io/badge/version-0.3.5-FF5A1F?style=flat-square">
+  <img alt="Version 0.3.6" src="https://img.shields.io/badge/version-0.3.6-FF5A1F?style=flat-square">
   <img alt="MCP: 14 tools" src="https://img.shields.io/badge/MCP-14%20tools-FF5A1F?style=flat-square">
   <img alt="Node.js 22.5+" src="https://img.shields.io/badge/node-%E2%89%A522.5-0D1117?style=flat-square">
   <img alt="FFmpeg 8" src="https://img.shields.io/badge/ffmpeg-8.x-0D1117?style=flat-square">
@@ -41,58 +41,45 @@
 ## Install
 
 ```bash
-git clone https://github.com/HypeAITR/Cuthol.git cuthol
-cd cuthol && npm install && npm run build
+npm install -g cuthol
+cuthol setup            # shows which agent tools it found and what it would register
+cuthol setup --apply    # registers the Cuthol MCP server with them
+cuthol doctor           # checks ffmpeg 8, a Chromium browser, HyperFrames and optional speech keys
 ```
 
-Then connect it to your agent. Use the absolute path of your clone.
+`cuthol setup` registers the MCP server with Claude Code (through the `claude` CLI), Codex, Cursor and Gemini CLI. It backs up every config file before writing, keeps everything else in it, and never replaces a different `cuthol` entry unless you pass `--force`. Start a new agent session afterwards; most clients read MCP servers only at session start.
 
-<details open>
-<summary><strong>Claude Code</strong></summary>
+No global install? `npx -y cuthol setup --apply` registers `npx -y cuthol mcp` instead.
+
+`cuthol doctor` prints one line per check and a one-line fix for anything missing; `--json` returns the same as data, and the exit code is 1 when a required tool is missing.
+
+<details>
+<summary><strong>From source</strong></summary>
 
 ```bash
-claude mcp add cuthol -- node /absolute/path/to/cuthol/dist/cli.js mcp
+git clone https://github.com/HypeAITR/Cuthol.git cuthol
+cd cuthol && npm install && npm run build
+node dist/cli.js setup --apply
 ```
 </details>
 
 <details>
-<summary><strong>Codex</strong> — <code>~/.codex/config.toml</code></summary>
+<summary><strong>Register the MCP server by hand</strong></summary>
 
-```toml
-[mcp_servers.cuthol]
-command = "node"
-args = ["/absolute/path/to/cuthol/dist/cli.js", "mcp"]
-```
-</details>
+`cuthol setup` prints the exact entry for your machine. It is a stdio server started as `node <cuthol>/dist/cli.js mcp`, where `<cuthol>` is your clone or the global install (`npm root -g` shows its folder). Use the absolute path.
 
-<details>
-<summary><strong>Cursor</strong> — <code>.cursor/mcp.json</code></summary>
-
-```json
-{
-  "mcpServers": {
-    "cuthol": { "command": "node", "args": ["/absolute/path/to/cuthol/dist/cli.js", "mcp"] }
-  }
-}
-```
-</details>
-
-<details>
-<summary><strong>Gemini CLI</strong> — <code>~/.gemini/settings.json</code></summary>
-
-```json
-{
-  "mcpServers": {
-    "cuthol": { "command": "node", "args": ["/absolute/path/to/cuthol/dist/cli.js", "mcp"] }
-  }
-}
-```
-</details>
-
-<details>
-<summary><strong>Any other MCP client</strong></summary>
-
-Register a stdio server that runs `node /absolute/path/to/cuthol/dist/cli.js mcp`. Start a new session afterwards; most clients read MCP servers only at session start.
+- **Claude Code:** `claude mcp add cuthol -- node /absolute/path/to/cuthol/dist/cli.js mcp`
+- **Codex** (`~/.codex/config.toml`):
+  ```toml
+  [mcp_servers.cuthol]
+  command = "node"
+  args = ["/absolute/path/to/cuthol/dist/cli.js", "mcp"]
+  ```
+- **Cursor** (`~/.cursor/mcp.json`) and **Gemini CLI** (`~/.gemini/settings.json`):
+  ```json
+  { "mcpServers": { "cuthol": { "command": "node", "args": ["/absolute/path/to/cuthol/dist/cli.js", "mcp"] } } }
+  ```
+- **Any other MCP client:** register a stdio server with the same command.
 </details>
 
 ### Agent skills (installed for you)
@@ -101,7 +88,7 @@ Cuthol teaches your agent through skills: an entry skill, `cuthol`, that the age
 
 The first time you run any `cuthol` command, the skills are installed into every agent tool found on your machine (Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot, OpenCode and the shared `~/.agents` folder) and kept up to date afterwards; skills you edited yourself are left alone. Start a new agent session to load them. Manage them with `cuthol skills list | install | check | remove`, or set `CUTHOL_SKILLS_AUTO=0` to turn the automatic install off. Over MCP the same content is served by the `guide` tool.
 
-**Requirements:** Node.js ≥ 22.5, `ffmpeg` and `ffprobe` 8.x on `PATH` (`verify` and render warn with `CUTHOL-G212` on an older major), and a Chrome/Chromium that HyperFrames can launch for motion graphics (`npx hyperframes doctor`). Speech is optional: `DEEPGRAM_API_KEY` (transcription) and `ELEVENLABS_API_KEY` (voiceover) in the environment or a project `.env` — or a local model or another service through an [extension provider](examples/extensions).
+**Requirements** (`cuthol doctor` checks them): Node.js ≥ 22.5, `ffmpeg` and `ffprobe` 8.x on `PATH` (`verify` and render warn with `CUTHOL-G212` on an older major), and a Chrome/Chromium that HyperFrames can launch for motion graphics (`npx hyperframes doctor`). Speech is optional: `DEEPGRAM_API_KEY` (transcription) and `ELEVENLABS_API_KEY` (voiceover) in the environment or a project `.env` — or a local model or another service through an [extension provider](examples/extensions).
 
 ## What you can ask
 

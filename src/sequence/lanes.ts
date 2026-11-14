@@ -234,6 +234,16 @@ export function addLaneCue(options: {
             durationMs = Math.max(1, Math.round(Math.max(1, sourceOutMs - srcIn) / rate));
           }
         }
+      } else if (
+        !options.explicitDuration &&
+        sourceOutMs === undefined &&
+        asset &&
+        !isStillGraphic(asset) &&
+        asset.probe.duration_ms > 0
+      ) {
+        // The default length must never run past the end of the media: cap it at what is left.
+        const remainingMs = asset.probe.duration_ms - (sourceInMs ?? 0);
+        if (remainingMs > 0 && remainingMs < durationMs) durationMs = remainingMs;
       }
 
       const playback =

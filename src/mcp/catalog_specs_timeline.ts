@@ -302,7 +302,7 @@ export const TIMELINE_ACTION_SPECS: ActionSpec[] = [
       { name: "at", type: "time", description: `Absolute timeline start (default 0). Ignored when anchor is set. ${TIME_HELP}` },
       { name: "anchor", type: "string", description: "Spine clip id (sp_XX) or lane cue id (cue_XX) to attach to; the cue then follows that clip or cue through edits." },
       { name: "offset", type: "time", description: "Offset from the anchor clip/cue's start (default 0)." },
-      { name: "duration", type: "time", description: "Cue length (default 3000ms, or scaled from asset length when rate is set)." },
+      { name: "duration", type: "time", description: "Cue length (default 3000ms, capped at the media left after the in-point; scaled from asset length when rate is set)." },
       { name: "in", type: "time", description: `Source in point for media cues (default 0). ${TIME_HELP}` },
       { name: "out", type: "time", description: `Source out point for media cues. ${TIME_HELP}` },
       { name: "rate", type: "number", description: "Playback rate for audio/media cues, e.g. 1.3 (faster) or 0.75 (slower)." },

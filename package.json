@@ -1,6 +1,6 @@
 {
   "name": "cuthol",
-  "version": "0.3.7",
+  "version": "0.3.9",
   "description": "Agent-first open-source non-linear video editor (NLE) powered by HyperFrames and open media standards.",
   "license": "MIT",
   "type": "module",
@@ -13,6 +13,7 @@
     "!dist/test",
     "src/live/ui",
     "skills",
+    "scripts/local_speech.py",
     "examples",
     "llms.txt"
   ],

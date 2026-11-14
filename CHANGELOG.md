@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.7 — 2026-11-14
+
+### Fixed
+- `cuthol doctor` reported GSAP as missing (and exited with 1) when npm installed it in a parent `node_modules` — the usual layout for `npx cuthol` and for installing Cuthol inside a project. It now finds GSAP the same way the renderer does. Rendering was not affected.
+
 ## 0.3.6 — 2026-11-14
 
 Getting started takes one install and two commands.

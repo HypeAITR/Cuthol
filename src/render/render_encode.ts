@@ -16,9 +16,11 @@ import {
 } from "../compositor/compiler.js";
 import {
   BT709_COLOR_OUTPUT_ARGS,
+  buildAlphaCodecArgs,
   buildVideoCodecArgs,
   H264_BT709_VUI_BSF,
   isHardwareEncoder,
+  type AlphaVideoCodec,
   type RenderEncoderFallback,
   resolveMaxHardwareEncoderSessions,
   type VideoEncoderCodec,
@@ -66,6 +68,33 @@ export interface RenderEncodeStageResult {
   fps: number;
   activeEncoder: VideoEncoderCodec;
   encoderFallback: RenderEncoderFallback | null;
+}
+
+let cachedAlphaCodec: AlphaVideoCodec | null = null;
+
+/**
+ * Picks the transparent-master video codec for this ffmpeg build: ProRes 4444
+ * when the build encodes prores_ks, else VP9 with alpha. The choice is
+ * probed once per process and reported in the render summary.
+ */
+export function resolveAlphaVideoCodec(): AlphaVideoCodec {
+  if (cachedAlphaCodec) return cachedAlphaCodec;
+  try {
+    const proc = spawnWatchedSync("ffmpeg", ["-hide_banner", "-encoders"], {
+      encoding: "utf8",
+      step: "ffmpeg encoder list probe",
+      stallTimeoutMs: 10_000,
+    });
+    const out = String(proc.stdout ?? "");
+    cachedAlphaCodec = /(^|\s)prores_ks(\s|$)/m.test(out) ? "prores_ks" : "libvpx-vp9";
+  } catch {
+    cachedAlphaCodec = "libvpx-vp9";
+  }
+  return cachedAlphaCodec;
+}
+
+export function clearCachedAlphaCodec(): void {
+  cachedAlphaCodec = null;
 }
 
 interface VideoSegTask {
@@ -153,6 +182,31 @@ function buildSingleSegmentFfmpegArgs(params: {
     estimateCommandLineLength("ffmpeg", plan.inputArgs) + effectiveFilterComplex.length > 12000;
   if (useScript) {
     fs.writeFileSync(filterScriptPath, effectiveFilterComplex, "utf8");
+  }
+  if (preset === "master_alpha") {
+    const alphaCodec = resolveAlphaVideoCodec();
+    const audioArgs =
+      alphaCodec === "prores_ks"
+        ? ["-c:a", "aac", "-b:a", "192k"]
+        : ["-c:a", "libopus", "-b:a", "128k"];
+    return [
+      "-y",
+      "-v",
+      "error",
+      ...plan.inputArgs,
+      ...(useScript
+        ? ["-/filter_complex", filterScriptPath]
+        : ["-filter_complex", effectiveFilterComplex]),
+      "-map",
+      effectiveVideoOutPad,
+      "-map",
+      plan.audioOutPad,
+      "-t",
+      (plan.totalDurationMs / 1000).toFixed(3),
+      ...buildAlphaCodecArgs(alphaCodec),
+      ...audioArgs,
+      tmpOut,
+    ];
   }
   return [
     "-y",

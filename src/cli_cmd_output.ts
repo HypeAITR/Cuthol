@@ -120,7 +120,11 @@ export function runMonitorCommand(ctx: CliCommandContext): CliCommandResult {
 
 export function runRenderCommand(ctx: CliCommandContext): CliCommandResult {
   const { action, rest, flags, workspaceDir } = ctx;
-  const isActionPreset = action === "draft_480p" || action === "master_1080p";
+  const isActionPreset =
+    action === "draft_480p" ||
+    action === "master_1080p" ||
+    action === "master_2160p" ||
+    action === "master_alpha";
   const preset =
     (strFlag(flags, "preset", isActionPreset ? (action as RenderPreset) : "master_1080p") as RenderPreset) ??
     "master_1080p";

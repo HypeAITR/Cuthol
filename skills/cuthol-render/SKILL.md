@@ -1,10 +1,11 @@
 ---
 name: cuthol-render
 description: >
-  Render a Cuthol edit to video: draft_480p and master_1080p presets,
-  overlay cache and re-render reasons, overlay-res handoff, encoder selection,
-  render progress and watchdog, long timelines, and post-render blank, edge
-  and audio checks. Load when rendering, re-rendering, or diagnosing a render.
+  Render a Cuthol edit to video: draft_480p, master_1080p, master_2160p and
+  master_alpha presets, timeline export to other editors, overlay cache and
+  re-render reasons, overlay-res handoff, encoder selection, render progress
+  and watchdog, long timelines, and post-render blank, edge and audio checks.
+  Load when rendering, re-rendering, exporting a timeline, or diagnosing a render.
 ---
 
 # Render: drafts, masters, cache, checks
@@ -47,6 +48,30 @@ is a cache hit (`overlays.summary` says `native capture for master reuse`).
 The draft takes longer because the capture is full size. `master_1080p`
 ignores the option.
 
+## Presets: 4K and transparent masters
+
+`master_2160p` is the UHD master: twice the 1080p stage dimensions on every
+aspect (3840x2160 for 16:9, 2160x3840 for 9:16), same codecs and checks as
+`master_1080p`. `master_alpha` keeps transparency: transparent backdrop,
+single-segment encode, ProRes 4444 `.mov` when this ffmpeg build encodes
+`prores_ks`, else VP9-with-alpha `.webm` (the choice is probed at render
+time; the render summary reports it). Alpha output carries the normal audio
+mix. The opaque blank-frame and edge-strip scans do not run on alpha output
+(empty areas are transparent by design); inspect it over a contrasting
+background instead.
+
+## Timeline export to other editors
+
+`cuthol export timeline --format fcpxml|xmeml|edl|otio --out <file>` maps
+the sequence onto the frame grid: spine clips (source in/out, timeline
+position, constant speed, cross dissolves), lane footage/graphic cues as
+upper video tracks, audio lanes (music, sfx, voiceover) with gain, markers.
+Compositions and captions are not portable: they export as references to
+their rendered overlay files when the overlay cache holds them, else as
+markers with a note. The command always lists what was not exported, one
+line per kind, and never drops anything silently. EDL carries spine/video
+only by design (CMX3600).
+
 ## Encoders and colour
 
 The composite encode picks `h264_nvenc` (NVIDIA) → `h264_amf` (AMD) →
@@ -60,6 +85,19 @@ BT.2020 sources convert with a G208 note. Workers: `--workers <W>`
 (`CUTHOL_WORKERS`); concurrent overlays: `CUTHOL_OVERLAY_CONCURRENCY=<K>`
 (`1` forces sequential). Pipeline details: `references/pipeline.md`.
 Stored settings behind the same variables: `references/settings.md`.
+
+## Colour stage in the render
+
+Each item's block stage (`treatments.color`, lane `color`, project `looks[]`)
+compiles to ONE 3D LUT (`src/color/lut.ts` baking; `src/color/compile.ts`
+wiring) applied as a single `lut3d` on explicit `gbrp16le` after the legacy
+`color_grade` filters (which stay byte-identical without colour fields).
+Keyframed colour (`color.*` envelopes) bakes one CLUT per distinct value set
+and feeds them with `haldclut` as a frame sequence; frames cache under
+`.cuthol/blobs/color/`. Input transform runs before any colour block:
+`auto` tone-maps HLG/PQ sources (transfer tag) to SDR BT.709
+(`zscale` + `tonemap=hable`); explicit `none|hlg_to_sdr|pq_to_sdr` overrides
+per asset (`resolveInputTransform`). Diagnostics live in the G440–G449 block.
 
 ## Progress, watchdog, long timelines
 

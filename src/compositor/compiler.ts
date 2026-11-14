@@ -15,14 +15,27 @@ import {
 } from "../library/probe.js";
 import { compileSequenceAudioPlan } from "./compile_audio.js";
 import { StaticStillLayerSpec } from "./compile_backdrop.js";
-import { BT709_TO_YUV420P } from "./compile_color.js";
+import { BT709_TO_YUV420P, BT709_TO_YUVA420P } from "./compile_color.js";
 import { compileLane } from "./compile_lane.js";
 import { compileSpineClip } from "./compile_spine.js";
 export { escapeFfmpegFilterPath, compileEnvelopeToFfmpegExpr } from "./compile_filters.js";
 export { buildMasterAudioFinalizeFilter, compileSequenceAudioPlan } from "./compile_audio.js";
 export type { CompileAudioOptions, CompiledAudioPlan } from "./compile_audio.js";
 
-export type RenderPreset = "draft_480p" | "master_1080p";
+export type RenderPreset = "draft_480p" | "master_1080p" | "master_2160p" | "master_alpha";
+
+export function isAlphaPreset(preset: RenderPreset): boolean {
+  return preset === "master_alpha";
+}
+
+export function isMasterPreset(preset: RenderPreset): boolean {
+  return preset === "master_1080p" || preset === "master_2160p" || preset === "master_alpha";
+}
+
+/** Output pixel-format conversion filter for a preset (alpha presets keep the alpha plane). */
+export function presetPixFormatFilter(preset: RenderPreset): string {
+  return isAlphaPreset(preset) ? BT709_TO_YUVA420P : BT709_TO_YUV420P;
+}
 
 export interface CompiledRenderPlan {
   inputArgs: string[];
@@ -119,7 +132,12 @@ function initVideoGraphCompileContext(
   const totalDurationMs = computeRenderDurationMs(seq, compileOptions?.minDurationMs ?? 0);
   const totalDurationSec = Number((totalDurationMs / 1000).toFixed(3));
 
-  const scaleFactor = preset === "draft_480p" ? 480 / Math.min(seq.stage.width, seq.stage.height) : 1.0;
+  const scaleFactor =
+    preset === "draft_480p"
+      ? 480 / Math.min(seq.stage.width, seq.stage.height)
+      : preset === "master_2160p"
+        ? 2.0
+        : 1.0;
   const renderWidth = Math.max(16, Math.round((seq.stage.width * scaleFactor) / 2) * 2);
   const renderHeight = Math.max(16, Math.round((seq.stage.height * scaleFactor) / 2) * 2);
   const fps = seq.stage.fps;
@@ -190,13 +208,23 @@ function initVideoGraphCompileContext(
     vStepCounter: 0,
   };
 
+  const alpha = isAlphaPreset(preset);
   const bgHex = seq.stage.backdrop.color.replace(/^#/, "0x");
-  const bgInputIdx = ctx.addInput([
-    "-f",
-    "lavfi",
-    "-i",
-    `color=c=${bgHex}:s=${renderWidth}x${renderHeight}:r=${fps}:d=${bgDurationSec},format=rgb24,${BT709_TO_YUV420P},settb=AVTB`,
-  ]);
+  const bgInputIdx = ctx.addInput(
+    alpha
+      ? [
+          "-f",
+          "lavfi",
+          "-i",
+          `color=c=0x00000000:s=${renderWidth}x${renderHeight}:r=${fps}:d=${bgDurationSec},format=yuva420p,settb=AVTB`,
+        ]
+      : [
+          "-f",
+          "lavfi",
+          "-i",
+          `color=c=${bgHex}:s=${renderWidth}x${renderHeight}:r=${fps}:d=${bgDurationSec},format=rgb24,${BT709_TO_YUV420P},settb=AVTB`,
+        ]
+  );
 
   ctx.currentVideoPad = `[${bgInputIdx}:v]`;
   if (activeWin && winLeadStartMs > 0) {
@@ -211,7 +239,10 @@ function initVideoGraphCompileContext(
 }
 
 function resolveDirectVideoBlobPath(ctx: VideoGraphCompileContext): string | null {
-  const { compileOptions, assFilePaths, drawnVisualLayers, fps, totalDurationMs } = ctx;
+  const { compileOptions, assFilePaths, drawnVisualLayers, fps, totalDurationMs, preset } = ctx;
+  // The transparent master never remuxes an opaque overlay blob: the copy
+  // would bake the stage backdrop into every pixel and destroy the alpha plane.
+  if (preset === "master_alpha") return null;
   // Determine if the entire sequence visual output is satisfied by a single full-frame opaque HyperFrames MP4 blob
   let directVideoBlobPath: string | null = null;
   if (
@@ -271,12 +302,13 @@ export function compileSequenceRenderPlan(
 
   // Finalize Video Output Pad (preserve AVTB so FFmpeg -t duration trim does not round down to 1/fps)
   const finalVideoPad = "[vout]";
+  const pixFmt = presetPixFormatFilter(preset);
   if (ctx.activeWin && compileOptions?.singleFrameAtMs === undefined) {
     ctx.filterChains.push(
-      `${ctx.currentVideoPad}trim=start=${ctx.winStartSec}:end=${ctx.winEndSec},setpts=PTS-STARTPTS,${BT709_TO_YUV420P},settb=AVTB${finalVideoPad}`
+      `${ctx.currentVideoPad}trim=start=${ctx.winStartSec}:end=${ctx.winEndSec},setpts=PTS-STARTPTS,${pixFmt},settb=AVTB${finalVideoPad}`
     );
   } else {
-    ctx.filterChains.push(`${ctx.currentVideoPad}${BT709_TO_YUV420P},settb=AVTB${finalVideoPad}`);
+    ctx.filterChains.push(`${ctx.currentVideoPad}${pixFmt},settb=AVTB${finalVideoPad}`);
   }
 
   // --- 3. Compile Audio Graph via the single shared `compileSequenceAudioPlan` ---

@@ -65,11 +65,11 @@ export const OUTPUT_ACTION_SPECS: ActionSpec[] = [
     tool: "render",
     action: null,
     argv: ["render"],
-    summary: "Render to MP4.",
+    summary: "Render to MP4 (transparent master_alpha renders MOV/WebM with alpha).",
     mutates: false,
     long: true,
     params: [
-      { name: "preset", type: "string", description: "draft_480p (quick check) or master_1080p (default).", enum: ["draft_480p", "master_1080p"] },
+      { name: "preset", type: "string", description: "draft_480p (quick check), master_1080p (default), master_2160p (UHD), or master_alpha (transparent).", enum: ["draft_480p", "master_1080p", "master_2160p", "master_alpha"] },
       {
         name: "overlay_res",
         type: "string",
@@ -292,6 +292,18 @@ export const OUTPUT_ACTION_SPECS: ActionSpec[] = [
         description:
           "Manual topic: a skill name ('cuthol' when omitted, or a category skill), '<skill>/<reference>' for a reference file, a legacy alias (overview, editing, speech_mix, compositions, verify_monitor, extensions, mcp), or 'ext:<name>' for an extension's README.md.",
       },
+    ],
+  },
+  {
+    tool: "render",
+    action: "export_timeline",
+    argv: ["export", "timeline"],
+    summary: "Export the edit as a timeline for another editor: fcpxml (Final Cut Pro, Resolve), xmeml (Premiere, Resolve), edl (spine only), otio. Lists what could not be exported.",
+    mutates: false,
+    textOutput: true,
+    params: [
+      { name: "format", type: "string", flag: "as", description: "Timeline format.", enum: ["fcpxml", "xmeml", "edl", "otio"], required: true },
+      { name: "out", type: "string", description: "Output file path.", required: true },
     ],
   },
 ];

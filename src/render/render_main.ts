@@ -18,10 +18,13 @@ import {
 } from "../compositor/hyperframes_bridge.js";
 import { resolveDraftOverlayRes, setDraftNativeOverlayCapture } from "../compositor/hf_render.js";
 import {
+  type AlphaVideoCodec,
+  alphaOutputExtension,
   type RenderEncoderFallback,
   resolveVideoEncoderForRender,
   type VideoEncoderCodec,
 } from "./encoder.js";
+import { resolveAlphaVideoCodec } from "./render_encode.js";
 import {
   CutholError,
   DIAGNOSTICS,
@@ -149,7 +152,13 @@ function prepareSequenceRender(options: {
   const activeEncoder: VideoEncoderCodec = encDecision.encoder;
   const encoderFallback: RenderEncoderFallback | null = encDecision.fallback;
 
-  const defaultOut = path.join(resolveRenderOutputDir(paths.rootDir), `render_r${sequence.meta.revision}_${preset}.mp4`);
+  const alphaCodec: AlphaVideoCodec | null =
+    preset === "master_alpha" ? resolveAlphaVideoCodec() : null;
+  const defaultExt = alphaCodec ? alphaOutputExtension(alphaCodec) : ".mp4";
+  const defaultOut = path.join(
+    resolveRenderOutputDir(paths.rootDir),
+    `render_r${sequence.meta.revision}_${preset}${defaultExt}`
+  );
   const resolvedOut = options.outputPath
     ? path.isAbsolute(options.outputPath)
       ? options.outputPath
@@ -158,11 +167,25 @@ function prepareSequenceRender(options: {
 
   fs.mkdirSync(path.dirname(resolvedOut), { recursive: true });
   fs.mkdirSync(paths.blobsDir, { recursive: true });
-  const tmpOut = `${resolvedOut}.${process.pid}.${Date.now()}.tmp.mp4`;
+  const tmpOut = `${resolvedOut}.${process.pid}.${Date.now()}.tmp${defaultExt}`;
 
   const totalDurationMs = computeRenderDurationMs(sequence);
   const maxItemsPerSegment = resolveMaxClipsPerRenderSegment();
-  const segments = computeRenderTimeSegments(sequence, totalDurationMs, maxItemsPerSegment);
+  // The transparent master keeps one uninterrupted alpha pipeline: per-segment
+  // intermediates are opaque MP4 and would destroy the alpha plane at the joins.
+  const segments =
+    preset === "master_alpha"
+      ? [
+          {
+            index: 0,
+            startFrame: 0,
+            endFrame: Math.max(1, Math.ceil((totalDurationMs / 1000) * Math.max(1, sequence.stage.fps))),
+            frameCount: Math.max(1, Math.ceil((totalDurationMs / 1000) * Math.max(1, sequence.stage.fps))),
+            startMs: 0,
+            endMs: totalDurationMs,
+          },
+        ]
+      : computeRenderTimeSegments(sequence, totalDurationMs, maxItemsPerSegment);
 
   const uniqueCompCount = countActiveUniqueCompositions(sequence, paths.rootDir);
   const overlayConcurrency = resolveOverlayConcurrency({
@@ -226,6 +249,7 @@ function runPostRenderChecks(params: {
   totalDurationMs: number;
   maxItemsPerSegment: number;
   verification: VerificationReport;
+  preset: RenderPreset;
 }): {
   blankScan: PostRenderBlankScanResult;
   blankScanMs: number;
@@ -240,7 +264,38 @@ function runPostRenderChecks(params: {
     totalDurationMs,
     maxItemsPerSegment,
     verification,
+    preset,
   } = params;
+
+  // Transparent masters are intentionally blank where nothing is drawn: the
+  // opaque blank-frame and edge-strip scans do not apply to alpha output.
+  // Audio health still runs (the alpha file carries the normal mix).
+  if (preset === "master_alpha") {
+    const tAudioHealth0 = Date.now();
+    const audioHealth = scanRenderedMp4AudioHealth(resolvedOut, sequence, paths, {
+      maxItemsPerSegment,
+    });
+    const audioHealthMs = Date.now() - tAudioHealth0;
+    for (const diag of audioHealth.diagnostics) {
+      verification.diagnostics.push(diag);
+      verification.warning_count += 1;
+    }
+    return {
+      blankScan: {
+        fps: Math.max(1, sequence.stage.fps),
+        total_frames: 0,
+        scan_duration_ms: 0,
+        events: [],
+        blank_frames_count: 0,
+        blank_at_s: [],
+        diagnostics: [],
+      },
+      blankScanMs: 0,
+      edgeStripScanMs: 0,
+      audioHealth,
+      audioHealthMs,
+    };
+  }
 
   const tScan0 = Date.now();
   const blankScan = scanRenderedMp4ForBlankFrames(resolvedOut, sequence);
@@ -375,6 +430,7 @@ export function renderSequenceToMp4(options: {
       totalDurationMs: prep.totalDurationMs,
       maxItemsPerSegment: prep.maxItemsPerSegment,
       verification: prep.verification,
+      preset: prep.preset,
     });
     finishLiveRender(collectLiveScanFindings(prep.verification.diagnostics.slice(diagsBeforeScans)));
 

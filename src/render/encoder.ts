@@ -30,8 +30,8 @@ import {
 } from "../core/env.js";
 import { spawnWatchedSync } from "../core/subprocess.js";
 import { EncoderVerificationResult, VideoEncoderCodec, isHardwareEncoder, buildVideoCodecArgs, BT709_COLOR_OUTPUT_ARGS, ResolvedRenderEncoder, preferenceToHardwareCodec, getAutoHardwareEncoderOrder, HardwareEncoderCodec } from "./encoder_args.js";
-export { BT709_COLOR_OUTPUT_ARGS, H264_BT709_VUI_BSF, isHardwareEncoder, preferenceToHardwareCodec, getAutoHardwareEncoderOrder, resolveMaxHardwareEncoderSessions, buildVideoCodecArgs } from "./encoder_args.js";
-export type { VideoEncoderCodec, HardwareEncoderCodec, RenderEncoderFallback, EncoderVerificationResult, ResolvedRenderEncoder } from "./encoder_args.js";
+export { BT709_COLOR_OUTPUT_ARGS, H264_BT709_VUI_BSF, isHardwareEncoder, preferenceToHardwareCodec, getAutoHardwareEncoderOrder, resolveMaxHardwareEncoderSessions, buildVideoCodecArgs, buildAlphaCodecArgs, alphaOutputExtension, ALPHA_CODEC_CHOICE_NOTE } from "./encoder_args.js";
+export type { VideoEncoderCodec, HardwareEncoderCodec, RenderEncoderFallback, EncoderVerificationResult, ResolvedRenderEncoder, AlphaVideoCodec } from "./encoder_args.js";
 
 
 const ENCODER_PROBE_CACHE_VERSION = "cuthol-encoder-probe-v2";

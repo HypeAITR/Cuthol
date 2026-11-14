@@ -117,9 +117,34 @@ export function resolveMaxHardwareEncoderSessions(encoder: VideoEncoderCodec): n
  *   unless `-bsf:v h264_metadata=...` is applied. Pairing explicit BT.709 filtergraph conversion with
  *   `-colorspace bt709` + `h264_metadata` VUI tags produces accurate BT.709 output (~49-51 dB).
  */
+export type AlphaVideoCodec = "prores_ks" | "libvpx-vp9";
+
+export function isDraftPreset(preset: string): boolean {
+  return preset === "draft_480p";
+}
+
+export const ALPHA_CODEC_CHOICE_NOTE =
+  "master_alpha keeps the alpha plane: ProRes 4444 (.mov) when this ffmpeg build encodes prores_ks reliably, else VP9 with alpha (.webm). Measured at render time by probing the ffmpeg build.";
+
+/**
+ * Video codec arguments for the transparent master preset. ProRes 4444 in MOV
+ * is preferred (editors import it directly); VP9/WebM is the fallback when
+ * this ffmpeg build cannot encode prores_ks. Both keep the alpha plane.
+ */
+export function buildAlphaCodecArgs(codec: AlphaVideoCodec): string[] {
+  if (codec === "prores_ks") {
+    return ["-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", "-vendor", "ap10"];
+  }
+  return ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "18", "-pix_fmt", "yuva420p", "-auto-alt-ref", "0"];
+}
+
+export function alphaOutputExtension(codec: AlphaVideoCodec): string {
+  return codec === "prores_ks" ? ".mov" : ".webm";
+}
+
 export function buildVideoCodecArgs(
   encoder: VideoEncoderCodec,
-  preset: "draft_480p" | "master_1080p"
+  preset: "draft_480p" | "master_1080p" | "master_2160p" | "master_alpha"
 ): string[] {
   switch (encoder) {
     case "h264_nvenc":

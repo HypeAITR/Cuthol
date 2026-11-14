@@ -14,8 +14,8 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-0D1117?style=flat-square"></a>
-  <img alt="Version 0.3.7" src="https://img.shields.io/badge/version-0.3.7-FF5A1F?style=flat-square">
-  <img alt="MCP: 14 tools" src="https://img.shields.io/badge/MCP-14%20tools-FF5A1F?style=flat-square">
+  <img alt="Version 0.3.9" src="https://img.shields.io/badge/version-0.3.9-FF5A1F?style=flat-square">
+  <img alt="MCP: 15 tools" src="https://img.shields.io/badge/MCP-15%20tools-FF5A1F?style=flat-square">
   <img alt="Node.js 22.5+" src="https://img.shields.io/badge/node-%E2%89%A522.5-0D1117?style=flat-square">
   <img alt="FFmpeg 8" src="https://img.shields.io/badge/ffmpeg-8.x-0D1117?style=flat-square">
 </p>
@@ -37,6 +37,12 @@
 </p>
 
 ---
+
+**Why Cuthol if you already have HyperFrames?** HyperFrames turns HTML into video; it is the motion-graphics engine Cuthol is built on. Cuthol is the editor around it:
+
+- **Your footage stays real video.** Camera files, screen recordings and audio are cut, retimed, graded and mixed in FFmpeg, not re-rendered through a browser.
+- **The edit is text an agent can read.** One project file with a spine, lanes, words, beats and diagnostics; every change is a typed command that is checked and can be undone.
+- **Nothing to sign up for.** Everything runs on your machine; speech services are optional and replaceable.
 
 ## Install
 
@@ -151,7 +157,7 @@ Editing software is built around a person with a mouse and a timeline they can s
 - **Text views of the edit.** Compact lenses (overview, flow, canvas, detail), transcripts with word timings, and exact per-frame geometry of every motion-graphics element.
 - **Images only where they help.** Frame previews and contact sheets come from the same pipeline as the final render: what the agent sees is what ships.
 - **Nothing is lost.** An atomic journal with undo previews; verification gates before every render; results reported as short diffs.
-- **Light on context.** The entry skill is about 10 KB; each category skill (6–9 KB) is loaded only when its task comes up. The MCP server exposes 14 tools whose schemas cost about 13k tokens once per session (measured).
+- **Light on context.** The entry skill is about 10 KB; each category skill (6–9 KB) is loaded only when its task comes up. The MCP server exposes 15 tools whose schemas cost about 15k tokens once per session (measured).
 
 ## Features
 
@@ -159,8 +165,9 @@ Editing software is built around a person with a mouse and a timeline they can s
 |---|---|
 | **Timeline** | A magnetic primary storyline (`spine`) plus typed parallel lanes (titles, captions, b-roll, motion graphics, voiceover, sfx, music). Cues anchor to clips and follow later trims. Long recordings with thousands of cuts and long compositions are normal use. |
 | **Clip effects** | Applied in the render graph, so the source and its transcript binding stay intact: speed ramps that picture, audio and word timings all follow; brightness, contrast, saturation, white balance and `.cube`/`.3dl` LUTs (static or animated); per-clip effect chains; mirrored or stretched edge fill; cubic-bezier and step easing; transitions from extensions. |
+| **Colour** | Measured, never automatic: a short text map of a clip or a reference (tones, neutral axis, colourfulness, hue sectors), editable blocks (white balance, exposure, tone, curves, wheels, HSL secondaries, saturation, named Looks) compiled to one LUT, a render-free prediction with side effects after every change, proposals toward another clip or a before/after pair, variant sheets with the untouched picture first, keyframed colour and HDR-to-SDR. |
 | **Speech** | Transcription with word timings and automatic language detection; pause and filler cleanup whose cut edges sit in real silence and never eat a kept word; an optional post-cleanup check; repeated phrases and restarted sentences offered for review instead of cut blindly; word-highlighted captions; voiceover synthesis. |
-| **Providers** | Deepgram and ElevenLabs are built in. Local models and other services plug in as extension providers — speech recognition, voiceover, and music/sound-effect sources searched and fetched into the library with their source and licence recorded. Secrets stay in the environment and are never written to the project. |
+| **Providers** | Deepgram and ElevenLabs are built in. Local models and other services plug in as extension providers — speech recognition, voiceover, and music/sound-effect sources searched and fetched into the library with their source and licence recorded. Secrets stay in the environment and are never written to the project. Keyless transcription and voiceover on your machine: `cuthol setup --local-speech --apply`. |
 | **Mix** | Loudness normalization to a target (ITU-R BS.1770, e.g. −14 LUFS / −1 dBTP), voice polish, ducking under speech, cut alignment to a beat grid. |
 | **Motion graphics** | HyperFrames compositions composited with true alpha. A runtime (`window.__cuthol`) exposes word times, beats, the beat grid and cut points — for the composition's own window and for the whole edit. Sound inside a composition (`<audio>`, audio groups, automation) enters the Cuthol mix as a per-cue stem that follows lane gain, ducking and loudness. A video can be made of motion graphics alone. |
 | **Layout measurement** | Per-frame boxes of every composition element with tight glyph ink (also inside rotated or scaled containers), opacity, stacking and grouping. A one-shot geometry query reports gaps, overlaps (with rotated shapes), the element on top and distances to the frame edges — so an agent checks a layout in text. |
@@ -168,17 +175,17 @@ Editing software is built around a person with a mouse and a timeline they can s
 | **Safety** | Integer-millisecond model, atomic journal with undo previews and `expect_rev`, lane locking, five verification gates (schema, assets, timing, stage, signal) with structured diagnostics, and detection of files changed outside Cuthol, shown as exact changes that can be adopted or reverted. |
 | **Reframe** | Single-subject tracking when placing 16:9 footage on a 9:16 stage, with manual correction. |
 | **Extensions** | Agents add their own tools without rebuilding Cuthol: composition helpers, asset packs, processors, clip effects, transitions, recipes, planners and providers. Per project or installed for every project. [Example extensions](examples/extensions) show each kind with working editing techniques: slide, wipe and flash transitions, film-look effects, freeze and fade processors, speed-ramp recipes, montage planners and a caption kit. |
-| **Render** | No time limit, progress reporting, a stall watchdog, overlays cached by the data they use, parallel overlay capture, GPU encoding with a colour check (NVIDIA, AMD, Intel, VAAPI, VideoToolbox) and CPU fallback. Output is always BT.709. |
+| **Render** | No time limit, progress reporting, a stall watchdog, overlays cached by the data they use, parallel overlay capture, GPU encoding with a colour check (NVIDIA, AMD, Intel, VAAPI, VideoToolbox) and CPU fallback. Output is always BT.709. Presets for drafts, 1080p, UHD and a transparent ProRes 4444 master; the timeline exports to Final Cut Pro, Premiere, Resolve (FCPXML, XML, EDL) and OpenTimelineIO. |
 
 ## Built on HyperFrames
 
-[HyperFrames](https://github.com/heygen-com/hyperframes) renders HTML and GSAP into video. Cuthol is the editor around it: footage, speech, the mix, the timeline, verification and the final composite. Agents write HyperFrames compositions as usual; Cuthol feeds them the edit's timing (words, beats, cuts), places them on lanes, previews them over the real footage and composites them with alpha.
+[HyperFrames](https://github.com/heygen-com/hyperframes) renders HTML and GSAP into video. Cuthol is the editor around it: footage, speech, the mix, the timeline, verification and the final composite. Agents write HyperFrames compositions as usual; Cuthol feeds them the edit's timing (words, beats, cuts), places them on lanes, previews them over the real footage and composites them with alpha. Ready-made registry blocks work too: `npx hyperframes add lt-clean-bar` inside a composition folder, include the snippet, and mount it on a lane like any other composition.
 
 ## How it works
 
 ```mermaid
 flowchart LR
-  A["AI agent"] -->|"MCP (14 tools)"| C["Cuthol"]
+  A["AI agent"] -->|"MCP (15 tools)"| C["Cuthol"]
   A -->|"CLI + skill"| C
   C --> S["cuthol.sequence.json<br/>spine · lanes · library"]
   C --> J["Journal<br/>undo · redo · expect_rev"]
@@ -253,7 +260,7 @@ On Windows laptops with two GPUs, the headless Chrome that captures motion graph
 
 ## Contributing
 
-Issues and pull requests are welcome. The source map is in [`src/ARCHITECTURE.md`](src/ARCHITECTURE.md) and the working rules for coding agents in [`AGENTS.md`](AGENTS.md). Please keep changes covered by a reproducible check: a rendered frame, a diff of the render plan, or a test.
+Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md), the [code of conduct](CODE_OF_CONDUCT.md) and, for security reports, [SECURITY.md](SECURITY.md). The source map is in [`src/ARCHITECTURE.md`](src/ARCHITECTURE.md) and the working rules for coding agents in [`AGENTS.md`](AGENTS.md). Please keep changes covered by a reproducible check: a rendered frame, a diff of the render plan, or a test.
 
 ```bash
 npm run build && npm test

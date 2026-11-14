@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # Cuthol needs ffmpeg/ffprobe 8.x (distribution packages are older).
+      - name: Install ffmpeg 8.1
+        run: |
+          curl -fsSL -o /tmp/ffmpeg.tar.xz \
+            https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz
+          mkdir -p /tmp/ffmpeg && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg --strip-components=1
+          echo "/tmp/ffmpeg/bin" >> "$GITHUB_PATH"
+
+      - run: ffmpeg -version | head -1
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Doctor
+        run: node dist/cli.js doctor || true
+        env:
+          CUTHOL_SKILLS_AUTO: "0"
+
+      # No speech keys and no recorded fixtures here: those tests skip with a reason.
+      - name: Test
+        run: npm test
+        env:
+          CUTHOL_SKILLS_AUTO: "0"

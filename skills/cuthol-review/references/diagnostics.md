@@ -29,6 +29,11 @@ and never reused; they may appear in old projects and logs.
 | G123 | G1 ERROR | Transition params invalid (builtins take none) → fix per the manifest. |
 | G124 | G1 ERROR | Colour temperature outside 1000..40000 K → `--temperature 6500` (neutral, no filter). |
 | G125 | G1 ERROR | `lane mute` targeting `spine` → the spine is not a lane; `spine mute --clip <id>` for a clip, `lane mute --lane <id>` for a lane. |
+| G630 | SYS ERROR | `setup` target config file unparseable (left unwritten) → fix the file syntax, re-run `--apply`. |
+| G631 | G1 ERROR | `setup --agent` names an unknown agent id → use `claude-code`, `codex`, `cursor` or `gemini-cli`. |
+| G632 | SYS INFO | `setup` tool has no writable config (manual registration) → follow the tool's MCP docs with the printed command. |
+| G633 | SYS WARN | `setup` found an existing different cuthol entry (kept) → re-run with `--force` to replace. |
+| G634 | SYS ERROR | `setup` could not back up or write the config → check the folder exists and is writable. |
 | G201 | G2 ERROR | File missing on disk. |
 | G202 | G2 ERROR | Source range beyond the media length. |
 | G203 | G2 ERROR | Audio operation on an asset without audio. |

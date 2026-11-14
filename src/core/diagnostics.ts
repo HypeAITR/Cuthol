@@ -255,6 +255,46 @@ export const DIAGNOSTICS = {
       "Install Google Chrome or Microsoft Edge and retry."
     ),
   // [setup G630–G634]
+  SETUP_CONFIG_UNPARSEABLE: (file: string) =>
+    createDiagnostic(
+      "CUTHOL-G630",
+      "SYS",
+      "ERROR",
+      `'${file}' cannot be parsed; left unchanged.`,
+      `Fix the file syntax and re-run 'cuthol setup --apply'.`
+    ),
+  SETUP_UNKNOWN_AGENT: (id: string) =>
+    createDiagnostic(
+      "CUTHOL-G631",
+      "G1_SCHEMA",
+      "ERROR",
+      `Unknown agent id '${id}' for setup.`,
+      `Use one of: claude-code, codex, cursor, gemini-cli.`
+    ),
+  SETUP_MANUAL_ONLY: (id: string, instruction: string) =>
+    createDiagnostic(
+      "CUTHOL-G632",
+      "SYS",
+      "INFO",
+      `Agent tool '${id}' has no writable config; registration is manual: ${instruction}`,
+      `Follow the tool's MCP docs to register the printed command.`
+    ),
+  SETUP_DIFFERENT_ENTRY: (where: string) =>
+    createDiagnostic(
+      "CUTHOL-G633",
+      "SYS",
+      "WARN",
+      `An existing cuthol entry in '${where}' runs a different command; not replaced without --force.`,
+      `Re-run with '--force' to replace it.`
+    ),
+  SETUP_WRITE_FAILED: (file: string, reason: string) =>
+    createDiagnostic(
+      "CUTHOL-G634",
+      "SYS",
+      "ERROR",
+      `Could not write '${file}': ${reason}.`,
+      `Check that the folder exists and is writable.`
+    ),
   // [lane-mute G125–G126]
   LANE_MUTE_SPINE: () =>
     createDiagnostic(

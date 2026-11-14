@@ -44,13 +44,21 @@
 - **The edit is text an agent can read.** One project file with a spine, lanes, words, beats and diagnostics; every change is a typed command that is checked and can be undone.
 - **Nothing to sign up for.** Everything runs on your machine; speech services are optional and replaceable.
 
+> **New in 0.3.9** — **colour grading for agents**: Cuthol measures colour as a short text map, the agent writes editable blocks, and every change comes back with a predicted result before anything renders · a **Color** panel with scopes in Cuthol Live · **UHD** and **transparent (ProRes 4444)** masters · **timeline export** to Premiere, Resolve, Final Cut Pro and OpenTimelineIO · **keyless speech** on your machine. [Changelog](CHANGELOG.md)
+
 ## Install
 
 ```bash
 npm install -g cuthol
 cuthol setup            # shows which agent tools it found and what it would register
 cuthol setup --apply    # registers the Cuthol MCP server with them
-cuthol doctor           # checks ffmpeg 8, a Chromium browser, HyperFrames and optional speech keys
+cuthol doctor           # checks ffmpeg 8, a Chromium browser, HyperFrames and speech
+```
+
+Optional, for transcription and voiceover without any API key (downloads about 550 MB once):
+
+```bash
+cuthol setup --local-speech --apply
 ```
 
 `cuthol setup` registers the MCP server with Claude Code (through the `claude` CLI), Codex, Cursor and Gemini CLI. It backs up every config file before writing, keeps everything else in it, and never replaces a different `cuthol` entry unless you pass `--force`. Start a new agent session afterwards; most clients read MCP servers only at session start.
@@ -60,41 +68,31 @@ No global install? `npx -y cuthol setup --apply` registers `npx -y cuthol mcp` i
 `cuthol doctor` prints one line per check and a one-line fix for anything missing; `--json` returns the same as data, and the exit code is 1 when a required tool is missing.
 
 <details>
-<summary><strong>From source</strong></summary>
-
-```bash
-git clone https://github.com/HypeAITR/Cuthol.git cuthol
-cd cuthol && npm install && npm run build
-node dist/cli.js setup --apply
-```
-</details>
-
-<details>
 <summary><strong>Register the MCP server by hand</strong></summary>
 
-`cuthol setup` prints the exact entry for your machine. It is a stdio server started as `node <cuthol>/dist/cli.js mcp`, where `<cuthol>` is your clone or the global install (`npm root -g` shows its folder). Use the absolute path.
+`cuthol setup` prints the exact entry for your machine. It is a stdio server started as `cuthol mcp` (or `npx -y cuthol mcp` without a global install).
 
-- **Claude Code:** `claude mcp add cuthol -- node /absolute/path/to/cuthol/dist/cli.js mcp`
+- **Claude Code:** `claude mcp add cuthol -- cuthol mcp`
 - **Codex** (`~/.codex/config.toml`):
   ```toml
   [mcp_servers.cuthol]
-  command = "node"
-  args = ["/absolute/path/to/cuthol/dist/cli.js", "mcp"]
+  command = "cuthol"
+  args = ["mcp"]
   ```
 - **Cursor** (`~/.cursor/mcp.json`) and **Gemini CLI** (`~/.gemini/settings.json`):
   ```json
-  { "mcpServers": { "cuthol": { "command": "node", "args": ["/absolute/path/to/cuthol/dist/cli.js", "mcp"] } } }
+  { "mcpServers": { "cuthol": { "command": "cuthol", "args": ["mcp"] } } }
   ```
-- **Any other MCP client:** register a stdio server with the same command.
+- **Any other MCP client:** register a stdio server with the same command. If your client cannot find `cuthol` on `PATH`, use the absolute path of `node` and of `dist/cli.js` inside the global install (`npm root -g` shows the folder).
 </details>
 
 ### Agent skills (installed for you)
 
-Cuthol teaches your agent through skills: an entry skill, `cuthol`, that the agent reads at the start of a session, and category skills it loads only when the task needs them — `cuthol-editing`, `cuthol-speech`, `cuthol-audio`, `cuthol-motion`, `cuthol-geometry`, `cuthol-review`, `cuthol-render` and `cuthol-extensions`.
+Cuthol teaches your agent through skills: an entry skill, `cuthol`, that the agent reads at the start of a session, and category skills it loads only when the task needs them — `cuthol-editing`, `cuthol-speech`, `cuthol-audio`, `cuthol-color`, `cuthol-motion`, `cuthol-geometry`, `cuthol-review`, `cuthol-render` and `cuthol-extensions`.
 
 The first time you run any `cuthol` command, the skills are installed into every agent tool found on your machine (Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot, OpenCode and the shared `~/.agents` folder) and kept up to date afterwards; skills you edited yourself are left alone. Start a new agent session to load them. Manage them with `cuthol skills list | install | check | remove`, or set `CUTHOL_SKILLS_AUTO=0` to turn the automatic install off. Over MCP the same content is served by the `guide` tool.
 
-**Requirements** (`cuthol doctor` checks them): Node.js ≥ 22.5, `ffmpeg` and `ffprobe` 8.x on `PATH` (`verify` and render warn with `CUTHOL-G212` on an older major), and a Chrome/Chromium that HyperFrames can launch for motion graphics (`npx hyperframes doctor`). Speech is optional: `DEEPGRAM_API_KEY` (transcription) and `ELEVENLABS_API_KEY` (voiceover) in the environment or a project `.env` — or a local model or another service through an [extension provider](examples/extensions).
+**Requirements** (`cuthol doctor` checks them): Node.js ≥ 22.5, `ffmpeg` and `ffprobe` 8.x on `PATH` (`verify` and render warn with `CUTHOL-G212` on an older major), and a Chrome/Chromium that HyperFrames can launch for motion graphics. Cuthol pins **HyperFrames 0.9.15** and GSAP 3.14.2 (exact versions in `package.json`, installed with Cuthol; `cuthol doctor` checks them). Speech is optional and has three routes: keyless on your machine (`cuthol setup --local-speech --apply`: faster-whisper and Piper), cloud with `DEEPGRAM_API_KEY` (transcription) and `ELEVENLABS_API_KEY` (voiceover) in the environment or a project `.env`, or any other service through an [extension provider](examples/extensions).
 
 ## What you can ask
 
@@ -105,6 +103,8 @@ Once Cuthol is connected, talk to your agent the way you would brief an editor:
 - *"Make a 30-second launch video with motion graphics that hit the beat."*
 - *"Speed-ramp the last clip from 1× to 3× and keep the sound in sync."*
 - *"Check that no title is covered or cut off before you render the master."*
+- *"Make it warmer like this reference frame, but keep the white wall white — and match the second camera to the first."*
+- *"Render a transparent version of the title animation and export the timeline for Premiere."*
 
 The agent works through typed commands, reads the result as text, looks at real preview frames when it needs to, and every change can be undone.
 
@@ -118,6 +118,7 @@ Watch your agent edit, and step in when you want to. Cuthol Live is a window on 
 
 - **Leave notes on the picture.** Press `N`, click the frame and write what you want changed. The agent receives the note, with the frame, alongside the result of its next command, and handles it first.
 - **Pause and edit yourself.** Pause the agent and split, delete, trim, duplicate, mute or undo on the timeline. When you resume, the agent gets a summary of your changes; while it works, the edit tools stay dimmed so the two of you never edit at once.
+- **See the colour.** The preview shows each clip's grade exactly as it renders. Effects → Color opens before/after, waveform, parade, vectorscope and histogram for the clip you clicked, and sliders for white balance, exposure, contrast, shadows, highlights, saturation and vibrance while the agent is paused.
 - **See the render.** Render stages, progress and an estimate of the time left show in the window.
 - **Settings in one place.** Hardware acceleration and which graphics card encodes, render workers, the output and cache folders, which browser draws the window, and keyboard shortcuts. A setting the agent changed is marked, and a change you make is passed on to the agent.
 
@@ -203,28 +204,32 @@ The edit lives in one project file and changes only through Cuthol commands. Eac
 ## Use it from the command line
 
 ```bash
-node dist/cli.js workspace init ./my-video --aspect 9:16 --fps 30
-node dist/cli.js library ingest talk.mp4 music.mp3 --dir ./my-video
-node dist/cli.js spine append --asset vid_01 --dir ./my-video
-node dist/cli.js speech transcribe --handle vid_01 --dir ./my-video
-node dist/cli.js speech cleanup --dry-run --dir ./my-video
-node dist/cli.js speech captions --style active_word --dir ./my-video
-node dist/cli.js mix normalize --dir ./my-video
-node dist/cli.js brief --lens flow --dir ./my-video
-node dist/cli.js monitor sheet --grid 4x3 --dir ./my-video
-node dist/cli.js verify --dir ./my-video
-node dist/cli.js render --preset master_1080p --dir ./my-video
+cuthol workspace init ./my-video --aspect 9:16 --fps 30
+cuthol library ingest talk.mp4 music.mp3 --dir ./my-video
+cuthol spine append --asset vid_01 --dir ./my-video
+cuthol speech transcribe --handle vid_01 --dir ./my-video
+cuthol speech cleanup --dry-run --dir ./my-video
+cuthol speech captions --style active_word --dir ./my-video
+cuthol mix normalize --dir ./my-video
+cuthol color map --item sp_01 --dir ./my-video
+cuthol color set --item sp_01 --wb 15 --tone contrast=0.15 --vibrance 0.2 --dir ./my-video
+cuthol brief --lens flow --dir ./my-video
+cuthol monitor sheet --grid 4x3 --dir ./my-video
+cuthol verify --dir ./my-video
+cuthol render --preset master_1080p --dir ./my-video
+cuthol export timeline fcpxml --out ./my-video.fcpxml --dir ./my-video
 ```
 
-Each command prints a full JSON result; add `--compact` for the short text an agent sees over MCP. `node dist/cli.js help` lists every command and `help --json` prints machine-readable schemas. Over MCP, agents start with `guide(topic="overview")`.
+Each command prints a full JSON result; add `--compact` for the short text an agent sees over MCP. `cuthol help` lists every command and `help --json` prints machine-readable schemas. Over MCP, agents start with `guide(topic="overview")`.
 
 | MCP group | Tools |
 |---|---|
 | Project and media | `workspace`, `library`, `brief` |
 | Editing | `spine`, `lane`, `composition` |
 | Speech and sound | `speech`, `mix` |
+| Colour | `color` |
 | Batch edits | `cue` |
-| Checking and output | `verify`, `monitor`, `render` |
+| Checking and output | `verify`, `monitor`, `render` (also timeline export) |
 | Extensions | `extension` |
 | Help | `guide` |
 
@@ -254,7 +259,7 @@ Each command prints a full JSON result; add `--compact` for the short text an ag
 
 The same render, cache and window settings can be changed in the Cuthol Live settings screen or with `cuthol settings list | get | set | reset`; an environment variable always wins over a saved setting.
 
-Rendering presets: `draft_480p` (a fast proxy for checking) and `master_1080p` (the deliverable). Diagnostics read `[CUTHOL-Gxxx] what | Suggestion: next step`.
+Rendering presets: `draft_480p` (a fast proxy for checking), `master_1080p` (the deliverable), `master_2160p` (UHD, 2× for every aspect) and `master_alpha` (ProRes 4444 with a real alpha channel, for motion graphics over a transparent backdrop). `cuthol export timeline fcpxml|xmeml|edl|otio --out <file>` hands the edit to Final Cut Pro, Premiere Pro, DaVinci Resolve or any OpenTimelineIO tool and lists anything that cannot travel. Diagnostics read `[CUTHOL-Gxxx] what | Suggestion: next step`.
 
 On Windows laptops with two GPUs, the headless Chrome that captures motion graphics usually gets the integrated GPU. 3D-heavy compositions render faster after setting `chrome-headless-shell.exe` to "High performance" under Settings → System → Display → Graphics.
 
@@ -263,7 +268,10 @@ On Windows laptops with two GPUs, the headless Chrome that captures motion graph
 Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md), the [code of conduct](CODE_OF_CONDUCT.md) and, for security reports, [SECURITY.md](SECURITY.md). The source map is in [`src/ARCHITECTURE.md`](src/ARCHITECTURE.md) and the working rules for coding agents in [`AGENTS.md`](AGENTS.md). Please keep changes covered by a reproducible check: a rendered frame, a diff of the render plan, or a test.
 
 ```bash
-npm run build && npm test
+git clone https://github.com/HypeAITR/Cuthol.git cuthol
+cd cuthol && npm install && npm run build
+npm test
+node dist/cli.js setup --apply    # point your agent tools at this checkout
 ```
 
 `npm test` runs the suite in two stages: files that are safe to overlap in parallel, then the ones that time renders, probe hardware encoders or call paid services one at a time. Most tests make their own media with ffmpeg. A few also check larger recorded projects or real footage when they are present (`CUTHOL_TEST_FIXTURES`, `CUTHOL_TRIAL_MEDIA`), and the live speech tests run only when `DEEPGRAM_API_KEY` / `ELEVENLABS_API_KEY` are set. Anything missing is skipped with the reason, never failed.

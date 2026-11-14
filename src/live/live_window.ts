@@ -81,7 +81,8 @@ function defaultReadRegistry(key: string, valueName: string): string | null {
 function windowsCandidates(env: NodeJS.ProcessEnv): { edge: string[]; chrome: string[] } {
   const edge: string[] = [];
   const chrome: string[] = [];
-  const push = (list: string[], ...parts: string[]) => list.push(path.join(...parts));
+  // Windows candidate paths always use Windows rules (also when the search is evaluated elsewhere, e.g. tests on Linux).
+  const push = (list: string[], ...parts: string[]) => list.push(path.win32.join(...parts));
   if (env["ProgramFiles"]) {
     push(edge, env["ProgramFiles"], "Microsoft", "Edge", "Application", "msedge.exe");
     push(chrome, env["ProgramFiles"], "Google", "Chrome", "Application", "chrome.exe");

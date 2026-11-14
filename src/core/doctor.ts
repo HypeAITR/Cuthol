@@ -12,6 +12,7 @@ import { FFMPEG_TESTED_MAJOR, getFfmpegVersionInfo } from "./ffmpeg_version.js";
 import { listInstalledBrowsers } from "../live/live_browsers.js";
 import { findLocalHyperFramesCliMjs } from "../compositor/hf_common.js";
 import { listSkillsStatus } from "./skills_install.js";
+import { resolveBundledGsapMinJs } from "./package_resolve.js";
 
 export type DoctorStatus = "ok" | "warn" | "fail";
 
@@ -238,9 +239,10 @@ function defaultProbes(): DoctorProbes {
   } catch {
     hfVersion = null;
   }
+  // Same resolver the renderer uses: npm may hoist gsap into a parent node_modules (npx, project installs).
   let gsapPresent = false;
   try {
-    gsapPresent = fs.existsSync(path.resolve(PACKAGE_ROOT_DIR, "node_modules/gsap/package.json"));
+    gsapPresent = resolveBundledGsapMinJs() !== null;
   } catch {
     gsapPresent = false;
   }

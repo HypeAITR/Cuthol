@@ -200,6 +200,14 @@ export function checkSkills(probes: DoctorProbes = {}): DoctorCheck {
       fix: "Run 'cuthol setup' to register Cuthol with your agent tool.",
     };
   }
+  if (/\b(outdated|missing|not[ _-]installed)\b/.test(summary)) {
+    return {
+      id: "skills",
+      status: "warn",
+      found: summary,
+      fix: "Run 'cuthol skills install' and start a new agent session.",
+    };
+  }
   return { id: "skills", status: "ok", found: summary, fix: "none" };
 }
 

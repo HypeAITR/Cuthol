@@ -34,11 +34,13 @@ export async function runSetupCommand(ctx: CliCommandContext): Promise<CliComman
   const wantsJson = Boolean(flags["json"]);
   if (wantsJson) {
     emitEnvelopeJson(workspaceDir, "setup", { ...report });
-    console.log("Start a new agent session to load the MCP server.");
     return;
   }
   if (!report.dry_run) {
-    emitEnvelopeJson(workspaceDir, "setup", { ...report });
+    for (const tool of report.tools) {
+      console.log(`${tool.id}: ${tool.action}${tool.backup ? ` (backup: ${tool.backup})` : ""}`);
+    }
+    for (const diag of report.diagnostics) console.log(diag.formatted);
     console.log("Start a new agent session to load the MCP server.");
     return;
   }

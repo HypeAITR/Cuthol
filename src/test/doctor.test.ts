@@ -99,6 +99,15 @@ test("no agent tool detected warns", () => {
   assert.equal(check.status, "warn");
 });
 
+test("outdated or missing skills warn with the install fix; user-modified skills stay ok", () => {
+  for (const summary of ["claude-code: 2 outdated, 7 installed", "codex: 1 missing, 8 installed"]) {
+    const check = checkSkills({ skillsSummary: summary });
+    assert.equal(check.status, "warn");
+    assert.match(check.fix, /cuthol skills install/);
+  }
+  assert.equal(checkSkills({ skillsSummary: "codex: 1 modified, 8 installed" }).status, "ok");
+});
+
 test("unresolvable hyperframes fails", () => {
   const check = checkHyperframes({ hyperframesResolved: false, gsapPresent: true });
   assert.equal(check.status, "fail");

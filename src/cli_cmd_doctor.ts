@@ -24,7 +24,7 @@ export async function runDoctorCommand(ctx: CliCommandContext): Promise<CliComma
     });
   } else {
     for (const check of checks) {
-      console.log(`${check.status} ${check.id}: ${check.found} | fix: ${check.fix}`);
+      console.log(`${check.status} ${check.id}: ${check.found}${check.status === "ok" ? "" : ` | fix: ${check.fix}`}`);
     }
     console.log(`doctor: ${okCount} ok, ${warnCount} warn, ${failCount} fail`);
     console.log("Run 'cuthol setup' to register Cuthol (MCP) with your agent tools.");
